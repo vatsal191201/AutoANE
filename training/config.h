@@ -162,3 +162,80 @@ static void layer_grads_free(LayerGrads *g) {
     free(g->Wq);free(g->Wk);free(g->Wv);free(g->Wo);
     free(g->W1);free(g->W2);free(g->W3);free(g->rms_att);free(g->rms_ffn);
 }
+
+// ===== LoRA adapter types =====
+// Merge-based: W_eff = W_base + B@A, no forward/backward changes needed
+typedef struct {
+    int rank;
+    float *Aq, *Bq;   // Wq: A[rank,DIM], B[Q_DIM,rank]
+    float *Ak, *Bk;   // Wk: A[rank,DIM], B[KV_DIM,rank]
+    float *Av, *Bv;   // Wv: A[rank,DIM], B[KV_DIM,rank]
+    float *Ao, *Bo;   // Wo: A[rank,Q_DIM], B[DIM,rank]
+    float *Wq_base, *Wk_base, *Wv_base, *Wo_base;
+} LoRALayer;
+
+typedef struct { AdamState Aq, Bq, Ak, Bk, Av, Bv, Ao, Bo; } LoRAAdam;
+typedef struct { float *Aq, *Bq, *Ak, *Bk, *Av, *Bv, *Ao, *Bo; } LoRAGrads;
+
+static LoRALayer lora_layer_alloc(int rank) {
+    LoRALayer l; l.rank = rank;
+    l.Aq=(float*)calloc((size_t)rank*DIM,4);     l.Bq=(float*)calloc((size_t)Q_DIM*rank,4);
+    l.Ak=(float*)calloc((size_t)rank*DIM,4);     l.Bk=(float*)calloc((size_t)KV_DIM*rank,4);
+    l.Av=(float*)calloc((size_t)rank*DIM,4);     l.Bv=(float*)calloc((size_t)KV_DIM*rank,4);
+    l.Ao=(float*)calloc((size_t)rank*Q_DIM,4);   l.Bo=(float*)calloc((size_t)DIM*rank,4);
+    l.Wq_base=(float*)malloc(WQ_SZ*4); l.Wk_base=(float*)malloc(WK_SZ*4);
+    l.Wv_base=(float*)malloc(WV_SZ*4); l.Wo_base=(float*)malloc(WO_SZ*4);
+    return l;
+}
+static void lora_layer_free(LoRALayer *l) {
+    free(l->Aq);free(l->Bq);free(l->Ak);free(l->Bk);
+    free(l->Av);free(l->Bv);free(l->Ao);free(l->Bo);
+    free(l->Wq_base);free(l->Wk_base);free(l->Wv_base);free(l->Wo_base);
+}
+static LoRAAdam lora_adam_alloc(int rank) {
+    LoRAAdam a;
+    a.Aq=adam_alloc((size_t)rank*DIM);     a.Bq=adam_alloc((size_t)Q_DIM*rank);
+    a.Ak=adam_alloc((size_t)rank*DIM);     a.Bk=adam_alloc((size_t)KV_DIM*rank);
+    a.Av=adam_alloc((size_t)rank*DIM);     a.Bv=adam_alloc((size_t)KV_DIM*rank);
+    a.Ao=adam_alloc((size_t)rank*Q_DIM);   a.Bo=adam_alloc((size_t)DIM*rank);
+    return a;
+}
+static void lora_adam_free(LoRAAdam *a) {
+    adam_free(&a->Aq);adam_free(&a->Bq);adam_free(&a->Ak);adam_free(&a->Bk);
+    adam_free(&a->Av);adam_free(&a->Bv);adam_free(&a->Ao);adam_free(&a->Bo);
+}
+static LoRAGrads lora_grads_alloc(int rank) {
+    LoRAGrads g;
+    g.Aq=(float*)calloc((size_t)rank*DIM,4);     g.Bq=(float*)calloc((size_t)Q_DIM*rank,4);
+    g.Ak=(float*)calloc((size_t)rank*DIM,4);     g.Bk=(float*)calloc((size_t)KV_DIM*rank,4);
+    g.Av=(float*)calloc((size_t)rank*DIM,4);     g.Bv=(float*)calloc((size_t)KV_DIM*rank,4);
+    g.Ao=(float*)calloc((size_t)rank*Q_DIM,4);   g.Bo=(float*)calloc((size_t)DIM*rank,4);
+    return g;
+}
+static void lora_grads_zero(LoRAGrads *g, int rank) {
+    memset(g->Aq,0,(size_t)rank*DIM*4);     memset(g->Bq,0,(size_t)Q_DIM*rank*4);
+    memset(g->Ak,0,(size_t)rank*DIM*4);     memset(g->Bk,0,(size_t)KV_DIM*rank*4);
+    memset(g->Av,0,(size_t)rank*DIM*4);     memset(g->Bv,0,(size_t)KV_DIM*rank*4);
+    memset(g->Ao,0,(size_t)rank*Q_DIM*4);   memset(g->Bo,0,(size_t)DIM*rank*4);
+}
+static void lora_grads_free(LoRAGrads *g) {
+    free(g->Aq);free(g->Bq);free(g->Ak);free(g->Bk);
+    free(g->Av);free(g->Bv);free(g->Ao);free(g->Bo);
+}
+
+// Merge: W_eff[out,in] = W_base[out,in] + B[out,rank] @ A[rank,in]
+static void lora_merge_weight(float *W_eff, const float *W_base, const float *B, const float *A,
+                              int out_dim, int rank, int in_dim) {
+    memcpy(W_eff, W_base, (size_t)out_dim*in_dim*4);
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                out_dim, in_dim, rank, 1.0f, B, rank, A, in_dim, 1.0f, W_eff, in_dim);
+}
+
+// Project dW → LoRA grads: dB += dW @ A^T, dA += B^T @ dW
+static void lora_grad_project(float *dA, float *dB, const float *dW, const float *A, const float *B,
+                              int out_dim, int rank, int in_dim) {
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                out_dim, rank, in_dim, 1.0f, dW, in_dim, A, in_dim, 1.0f, dB, rank);
+    cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                rank, in_dim, out_dim, 1.0f, B, rank, dW, in_dim, 1.0f, dA, in_dim);
+}

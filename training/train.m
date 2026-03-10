@@ -191,11 +191,15 @@ int main(int argc, char *argv[]) {
 
         bool do_resume = false, from_scratch = false;
         bool use_cpu_attn_bwd = false;  // CPU fp32 SDPA backward (fixes attention gradient underflow)
+        bool use_lora = false;
+        int lora_rank = 8;
         const char *data_path = DEFAULT_DATA_PATH;
         for (int i=1; i<argc; i++) {
             if (strcmp(argv[i], "--resume") == 0) do_resume = true;
             else if (strcmp(argv[i], "--scratch") == 0) from_scratch = true;
             else if (strcmp(argv[i], "--cpu-attn-bwd") == 0) use_cpu_attn_bwd = true;
+            else if (strcmp(argv[i], "--lora") == 0) use_lora = true;
+            else if (strcmp(argv[i], "--lora-rank") == 0 && i+1<argc) lora_rank = atoi(argv[++i]);
             else if (strcmp(argv[i], "--steps") == 0 && i+1<argc) total_steps = atoi(argv[++i]);
             else if (strcmp(argv[i], "--lr") == 0 && i+1<argc) max_lr = atof(argv[++i]);
             else if (strcmp(argv[i], "--accum") == 0 && i+1<argc) accum_steps = atoi(argv[++i]);
@@ -262,6 +266,38 @@ int main(int argc, char *argv[]) {
             for(int i=0;i<DIM;i++) rms_final[i]=1.0f;
             float escale = 0.02f;
             for(size_t i=0;i<(size_t)VOCAB*DIM;i++) embed[i]=escale*(2*drand48()-1);
+        }
+
+        // LoRA initialization
+        LoRALayer lora_layers[NLAYERS];
+        LoRAAdam lora_adam[NLAYERS];
+        LoRAGrads lora_grads_arr[NLAYERS];
+        if (use_lora) {
+            int r = lora_rank;
+            float a_scale = 1.0f / sqrtf((float)r);
+            size_t lora_params = 0;
+            for (int L = 0; L < NLAYERS; L++) {
+                lora_layers[L] = lora_layer_alloc(r);
+                lora_adam[L] = lora_adam_alloc(r);
+                lora_grads_arr[L] = lora_grads_alloc(r);
+                // Copy base weights (frozen)
+                memcpy(lora_layers[L].Wq_base, lw[L].Wq, WQ_SZ*4);
+                memcpy(lora_layers[L].Wk_base, lw[L].Wk, WK_SZ*4);
+                memcpy(lora_layers[L].Wv_base, lw[L].Wv, WV_SZ*4);
+                memcpy(lora_layers[L].Wo_base, lw[L].Wo, WO_SZ*4);
+                // Init A with small random, B with zero (so LoRA starts as identity)
+                for (size_t i = 0; i < (size_t)r*DIM; i++) lora_layers[L].Aq[i] = a_scale*(2*drand48()-1);
+                for (size_t i = 0; i < (size_t)r*DIM; i++) lora_layers[L].Ak[i] = a_scale*(2*drand48()-1);
+                for (size_t i = 0; i < (size_t)r*DIM; i++) lora_layers[L].Av[i] = a_scale*(2*drand48()-1);
+                for (size_t i = 0; i < (size_t)r*Q_DIM; i++) lora_layers[L].Ao[i] = a_scale*(2*drand48()-1);
+                // B matrices stay zero (calloc)
+                lora_params += 2*((size_t)r*DIM) + (size_t)Q_DIM*r + (size_t)KV_DIM*r*2 + (size_t)KV_DIM*r + (size_t)r*Q_DIM + (size_t)DIM*r;
+            }
+            size_t rms_params = (size_t)NLAYERS * 2 * DIM + DIM;
+            printf("LoRA: rank=%d, adapter params=%.1fK, trainable RMS params=%.1fK\n",
+                   r, (float)lora_params/1e3, (float)rms_params/1e3);
+            printf("  Adapters on: Wq, Wk, Wv, Wo (attention projections)\n");
+            printf("  Frozen: W1, W2, W3, embed (FFN + embedding)\n");
         }
 
         // Precompute transposed weights for forward/backward kernels
@@ -874,6 +910,34 @@ int main(int argc, char *argv[]) {
                 // Adam update
                 for (int L=0; L<NLAYERS; L++) {
                     LayerGrads *g = &grads[L];
+                    if (use_lora) {
+                        // Project full weight grads → LoRA grads, then update adapters
+                        LoRALayer *ll = &lora_layers[L];
+                        LoRAGrads *lg = &lora_grads_arr[L];
+                        LoRAAdam *la_l = &lora_adam[L];
+                        int r = ll->rank;
+                        lora_grad_project(lg->Aq, lg->Bq, g->Wq, ll->Aq, ll->Bq, Q_DIM, r, DIM);
+                        lora_grad_project(lg->Ak, lg->Bk, g->Wk, ll->Ak, ll->Bk, KV_DIM, r, DIM);
+                        lora_grad_project(lg->Av, lg->Bv, g->Wv, ll->Av, ll->Bv, KV_DIM, r, DIM);
+                        lora_grad_project(lg->Ao, lg->Bo, g->Wo, ll->Ao, ll->Bo, DIM, r, Q_DIM);
+                        adam_update(ll->Aq, lg->Aq, &la_l->Aq, adam_t, lr, adam_b1, adam_b2, adam_eps, wd);
+                        adam_update(ll->Bq, lg->Bq, &la_l->Bq, adam_t, lr, adam_b1, adam_b2, adam_eps, wd);
+                        adam_update(ll->Ak, lg->Ak, &la_l->Ak, adam_t, lr, adam_b1, adam_b2, adam_eps, wd);
+                        adam_update(ll->Bk, lg->Bk, &la_l->Bk, adam_t, lr, adam_b1, adam_b2, adam_eps, wd);
+                        adam_update(ll->Av, lg->Av, &la_l->Av, adam_t, lr, adam_b1, adam_b2, adam_eps, wd);
+                        adam_update(ll->Bv, lg->Bv, &la_l->Bv, adam_t, lr, adam_b1, adam_b2, adam_eps, wd);
+                        adam_update(ll->Ao, lg->Ao, &la_l->Ao, adam_t, lr, adam_b1, adam_b2, adam_eps, wd);
+                        adam_update(ll->Bo, lg->Bo, &la_l->Bo, adam_t, lr, adam_b1, adam_b2, adam_eps, wd);
+                        // Merge: W_eff = W_base + B @ A
+                        lora_merge_weight(lw[L].Wq, ll->Wq_base, ll->Bq, ll->Aq, Q_DIM, r, DIM);
+                        lora_merge_weight(lw[L].Wk, ll->Wk_base, ll->Bk, ll->Ak, KV_DIM, r, DIM);
+                        lora_merge_weight(lw[L].Wv, ll->Wv_base, ll->Bv, ll->Av, KV_DIM, r, DIM);
+                        lora_merge_weight(lw[L].Wo, ll->Wo_base, ll->Bo, ll->Ao, DIM, r, Q_DIM);
+                        // RMS norms still trainable (small, no LoRA needed)
+                        adam_update(lw[L].rms_att, g->rms_att, &la[L].rms_att, adam_t, lr, adam_b1, adam_b2, adam_eps, 0.0f);
+                        adam_update(lw[L].rms_ffn, g->rms_ffn, &la[L].rms_ffn, adam_t, lr, adam_b1, adam_b2, adam_eps, 0.0f);
+                        // FFN weights frozen — no update for W1, W2, W3
+                    } else {
                     adam_update(lw[L].Wq, g->Wq, &la[L].Wq, adam_t, lr, adam_b1, adam_b2, adam_eps, wd);
                     adam_update(lw[L].Wk, g->Wk, &la[L].Wk, adam_t, lr, adam_b1, adam_b2, adam_eps, wd);
                     adam_update(lw[L].Wv, g->Wv, &la[L].Wv, adam_t, lr, adam_b1, adam_b2, adam_eps, wd);
@@ -883,6 +947,7 @@ int main(int argc, char *argv[]) {
                     adam_update(lw[L].W3, g->W3, &la[L].W3, adam_t, lr, adam_b1, adam_b2, adam_eps, wd);
                     adam_update(lw[L].rms_att, g->rms_att, &la[L].rms_att, adam_t, lr, adam_b1, adam_b2, adam_eps, 0.0f);
                     adam_update(lw[L].rms_ffn, g->rms_ffn, &la[L].rms_ffn, adam_t, lr, adam_b1, adam_b2, adam_eps, 0.0f);
+                    }
 
                     // Update transposed weight buffers
                     transpose_weight(Wqt_buf[L], lw[L].Wq, Q_DIM, DIM);
@@ -904,12 +969,17 @@ int main(int argc, char *argv[]) {
                     stage_kv_bwd_weights(pls[L].kvBwd_in, lw[L].Wk, lw[L].Wv);
                 }
                 adam_update(rms_final, grms_final, &arms_final, adam_t, lr, adam_b1, adam_b2, adam_eps, 0.0f);
-                adam_update(embed, gembed, &aembed, adam_t, lr, adam_b1, adam_b2, adam_eps, wd);
-                free(cembed);
-                cembed = vocab_compact_embed(embed, &vm, DIM);
+                if (!use_lora) {
+                    adam_update(embed, gembed, &aembed, adam_t, lr, adam_b1, adam_b2, adam_eps, wd);
+                    free(cembed);
+                    cembed = vocab_compact_embed(embed, &vm, DIM);
+                }
 
                 // Zero grads
                 for (int L=0; L<NLAYERS; L++) layer_grads_zero(&grads[L]);
+                if (use_lora) {
+                    for (int L=0; L<NLAYERS; L++) lora_grads_zero(&lora_grads_arr[L], lora_rank);
+                }
                 memset(grms_final, 0, DIM*4);
                 memset(gembed, 0, (size_t)VOCAB*DIM*4);
                 memset(gcembed, 0, (size_t)CV*DIM*4);
@@ -948,6 +1018,7 @@ int main(int argc, char *argv[]) {
         printf("num_steps:        %d\n", total_steps_done);
         printf("num_params_M:     %.1f\n", total_p / 1e6);
         printf("depth:            %d\n", NLAYERS);
+        if (use_lora) printf("lora_rank:        %d\n", lora_rank);
 
         // Cleanup
         for (int L=0; L<NLAYERS; L++) {
@@ -955,6 +1026,7 @@ int main(int argc, char *argv[]) {
             layer_acts_free(&acts[L]); layer_grads_free(&grads[L]);
             free(Wqt_buf[L]); free(Wkt_buf[L]); free(Wvt_buf[L]); free(Wot_buf[L]);
             free(W1t_buf[L]); free(W2t_buf[L]); free(W3t_buf[L]);
+            if (use_lora) { lora_layer_free(&lora_layers[L]); lora_adam_free(&lora_adam[L]); lora_grads_free(&lora_grads_arr[L]); }
         }
         free_per_layer(pls, plr);
         free_kern(dk.sdpaFwd); free_kern(dk.woFwd); free_kern(dk.ffnFused);

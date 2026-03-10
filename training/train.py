@@ -31,6 +31,10 @@ ADAM_B2 = 0.95      # Adam beta2
 # Mixed precision
 CPU_ATTN_BWD = True  # use CPU fp32 for attention backward (fixes gradient underflow)
 
+# LoRA fine-tuning
+LORA_ENABLED = False  # enable LoRA (freeze base weights, train adapters only)
+LORA_RANK = 8         # LoRA rank (4-16 typical)
+
 # Budget
 TIME_BUDGET = 120   # wall-clock seconds for quick experiments
 
@@ -121,6 +125,8 @@ def main():
     ]
     if CPU_ATTN_BWD:
         cmd.append("--cpu-attn-bwd")
+    if LORA_ENABLED:
+        cmd.extend(["--lora", "--lora-rank", str(LORA_RANK)])
     print(f"\nTraining for {TIME_BUDGET}s...")
     print(f"Command: {' '.join(cmd)}\n")
 
