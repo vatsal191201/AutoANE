@@ -1,0 +1,213 @@
+# AutoANE
+
+**Train neural networks on Apple Neural Engine — the 19 TFLOPS your Mac isn't using.**
+
+AutoANE combines [maderix/ANE](https://github.com/maderix/ANE) (the first neural network training system for Apple's Neural Engine) with [karpathy/autoresearch](https://github.com/karpathy/autoresearch) (automated hyperparameter search via AI agents) to enable autonomous model training on hardware that sits idle in every Mac, iPad, and iPhone.
+
+## Why This Exists
+
+Your Mac has a Neural Engine delivering up to 38 TOPS / 19 TFLOPS FP16 — and it does nothing 99.9% of the time. MLX and PyTorch use the GPU, which means:
+
+- **Your Mac becomes unusable during training** (GPU renders UI, video, 3D — same chip)
+- **MLX has memory leaks** that crash 128GB machines during fine-tuning ([mlx#1406](https://github.com/ml-explore/mlx/issues/1406), [mlx#2254](https://github.com/ml-explore/mlx/issues/2254))
+- **19 TFLOPS of compute sits completely idle**
+
+ANE training uses a **separate compute unit** from the GPU. Train models while editing video, rendering 3D, or just using your computer normally.
+
+### Energy Efficiency
+
+| Hardware | FP16 TFLOPS | Power | Efficiency (TFLOPS/W) |
+|----------|-------------|-------|-----------------------|
+| M4 ANE | 19 | ~2.8W | **6.6** |
+| A100 GPU | 312 | ~400W | 0.08 |
+
+ANE is **80x more power-efficient per FLOP** than an A100. Hard power gating means zero leakage when idle.
+
+## What It Does
+
+1. **ANE Training Engine** — Trains Llama-family transformers (RMSNorm + GQA + RoPE + SwiGLU) entirely on the Neural Engine via reverse-engineered private APIs
+2. **Autoresearch** — AI agent automatically searches for optimal model architecture and hyperparameters within your time/hardware budget
+3. **No ML expertise required** — Give it data and a time budget, autoresearch figures out the rest
+
+### Architecture
+
+```
+User: "Here's my data. Train something."
+         |
+    [Autoresearch Agent]
+    - Profiles your hardware
+    - Picks starting architecture
+    - LOOP: tweak params -> train on ANE -> measure loss -> keep/revert
+    - Returns best model for YOUR Mac + YOUR data
+         |
+    [ANE Training Engine]
+    - 10 MIL kernels compiled once at startup
+    - Weights staged via IOSurface (no recompilation per step)
+    - fp16 ANE matmuls + fp32 CPU accumulation
+    - DeepNet scaling for fp16 stability
+         |
+    Best model -> export to GGUF/CoreML
+```
+
+## Quick Start
+
+**Requirements:** macOS 15+, Apple Silicon (M1/M2/M3/M4)
+
+```bash
+# Clone
+git clone https://github.com/vatsal191201/AutoANE.git
+cd AutoANE/training
+
+# Download training data (TinyStories, ~40MB)
+# Place tinystories_smollm2_data00.bin in training/ directory
+
+# Build for SmolLM2-360M (default)
+make MODEL=smollm2_360m
+
+# Train from scratch (5 minutes)
+./train --scratch --time 300
+
+# Or use autoresearch (requires Claude Code or similar agent)
+python3 train.py
+```
+
+### Supported Models
+
+| Model | Params | Layers | Config |
+|-------|--------|--------|--------|
+| Stories110M | 109M | 12 | MHA 12/12, dim=768 |
+| SmolLM2-135M | 135M | 30 | GQA 9/3, dim=576 |
+| SmolLM2-360M | 362M | 32 | GQA 15/5, dim=960 |
+| Autoresearch | Variable | Agent-tuned | Auto-configured |
+
+### Build Options
+
+```bash
+make MODEL=stories110m      # 109M params, fastest
+make MODEL=smollm2_135m     # 135M params
+make MODEL=smollm2_360m     # 362M params (default baseline)
+make MODEL=autoresearch     # Agent-configured (via train.py)
+```
+
+## How Training Works
+
+### ANE Kernel Pipeline
+
+The system compiles **10 MIL (Machine Learning Intermediate Language) kernels per layer** at startup:
+
+| Kernel | Purpose |
+|--------|---------|
+| sdpaFwd | Scaled dot-product attention (forward) |
+| ffnFused | SwiGLU FFN with residual connection (forward) |
+| woFwd | Output projection (forward, GQA) |
+| sdpaBwd1/2 | Attention backward (two-pass) |
+| qBwd | Query projection backward |
+| kvBwd | Key/value projection backward |
+| wotBwd | Output projection backward (transpose) |
+| ffnBwdW2t | FFN W2 backward |
+| ffnBwdW13t | FFN W1/W3 backward |
+
+Weights are staged via **IOSurface spatial dimensions** — the compiled program never changes, only the weight data gets patched each step. This avoids the 4.2s recompilation cost that naive ANE training requires.
+
+### Training Loop
+
+Each step:
+1. **Forward pass**: ANE (attention + FFN) + CPU (RMSNorm, residual add)
+2. **Loss**: CPU cross-entropy with fp32 accumulation
+3. **Backward pass**: ANE (activation gradients) + CPU (weight gradients via cblas)
+4. **Optimizer**: AdamW with gradient accumulation and cosine LR decay
+
+### fp16 Stability
+
+ANE computes in fp16. DeepNet scaling (`res_alpha = 1/sqrt(2*N_layers)`) keeps activations bounded:
+- Without scaling: activations overflow to inf at layer ~20
+- With scaling: stable training for 32+ layers, activations in [-6, +7] range
+
+## Autoresearch Integration
+
+The autoresearch system lets an AI agent (Claude Code, etc.) automatically optimize the model:
+
+1. Agent reads `training/program.md` for the protocol
+2. Edits hyperparameters in `training/train.py`
+3. Commits, runs training with time budget
+4. Parses `final_loss` from output
+5. Keeps improvement or reverts
+6. Loops forever, exploring the search space
+
+Key finding from autoresearch: **"In a fixed time window, more optimizer steps beats more parameters."**
+
+### Editable Hyperparameters
+
+```python
+# Architecture (triggers recompile ~2s)
+DEPTH = 32          # transformer layers
+DIM = 960           # model dimension
+HIDDEN = 2560       # FFN hidden dim
+HEADS = 15          # query attention heads
+KV_HEADS = 5        # key/value heads (GQA)
+HEAD_DIM = 64       # per-head dimension
+SEQ = 256           # sequence length
+
+# Training
+LR = 3e-4           # peak learning rate
+WARMUP_STEPS = 100  # linear warmup
+ACCUM_STEPS = 10    # gradient accumulation
+GRAD_CLIP = 1.0     # gradient norm clipping
+```
+
+## Project Structure
+
+```
+AutoANE/
+├── training/
+│   ├── train.m              # Main training binary (Objective-C)
+│   ├── mil_dynamic.h        # MIL kernel generator (10 kernels/layer)
+│   ├── io.h                 # IOSurface I/O, weight staging
+│   ├── config.h             # Derived sizes, memory allocation
+│   ├── cpu_ops.h            # RMSNorm, residual, loss, AdamW
+│   ├── Makefile             # Build system
+│   ├── train.py             # Autoresearch agent wrapper
+│   ├── program.md           # Agent protocol
+│   └── models/              # Model configurations
+│       ├── smollm2_360m.h
+│       ├── smollm2_135m.h
+│       ├── stories110m.h
+│       └── autoresearch.h   # Auto-generated
+├── tools/
+│   ├── hf_to_ane.py         # HuggingFace -> ANE weight converter
+│   └── gguf_to_ane.py       # GGUF -> ANE weight converter
+├── bridge/
+│   ├── ane_bridge.h         # C-callable ANE API
+│   ├── ane_bridge.m         # Bridge implementation
+│   └── Makefile
+└── docs/
+    └── ...
+```
+
+## Known Limitations
+
+- **Attention gradients**: SDPA backward on ANE produces near-zero dq/dk/dv due to fp16 underflow. Training still works (embedding + FFN gradients flow), but attention layers learn slowly. CPU fp32 SDPA backward is planned.
+- **Fine-tuning pretrained models**: DeepNet scaling (required for fp16 stability) is incompatible with pretrained weight magnitudes. Training from scratch works; fine-tuning is an active research area.
+- **Sequence length**: Currently limited to SEQ=256. Longer sequences increase SDPA backward overflow risk.
+- **Private APIs**: Uses `_ANEClient`, `_ANECompiler` — undocumented Apple frameworks that could change.
+
+## Roadmap
+
+- [ ] CPU fp32 SDPA backward (fix attention gradient underflow)
+- [ ] LoRA fine-tuning support (freeze base weights, train adapters)
+- [ ] Mixed precision backward (ANE fp16 forward, CPU fp32 backward)
+- [ ] Background training daemon (train while you work)
+- [ ] GGUF/CoreML export pipeline
+- [ ] Validation/eval on held-out data
+- [ ] SimpleStories dataset support
+- [ ] Longer sequence lengths
+
+## Credits
+
+- **[Andrej Karpathy](https://github.com/karpathy)** — [autoresearch](https://github.com/karpathy/autoresearch): the automated hyperparameter search protocol that powers the agent loop. AutoANE adapts this for ANE hardware constraints.
+- **[Manjeet Singh (maderix)](https://github.com/maderix)** — [ANE](https://github.com/maderix/ANE): the original reverse engineering of Apple's Neural Engine private APIs and first-ever training on ANE hardware.
+- **Orion** — [arXiv:2603.06728](https://arxiv.org/abs/2603.06728): first open end-to-end system for ANE LLM training and inference, demonstrating delta compilation and LoRA adapter hot-swap.
+
+## License
+
+MIT — see [LICENSE](LICENSE)

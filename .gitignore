@@ -1,0 +1,31 @@
+# Compiled binaries
+training/train
+bridge/libane_bridge.dylib
+
+# Checkpoints
+*.bin
+!download_data.sh
+
+# Data files
+*.npy
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# macOS
+.DS_Store
+*.dSYM/
+
+# Logs
+*.log
+run.log
+
+# Editor
+.vscode/
+.idea/
+
+# results tracking
+results.tsv
