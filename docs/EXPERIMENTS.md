@@ -87,6 +87,30 @@
 
 ## Planned Experiments
 
+## Experiment 5: Higher Learning Rate for Shallow Models
+
+**Status**: COMPLETE
+
+**Hypothesis**: With only 4 layers, DeepNet scaling (alpha=1/sqrt(8)=0.35) is less aggressive, and gradient flow is better. We should be able to use higher LR.
+
+**Setup**: 4L/dim=1024 config, CPU_ATTN_BWD=True, from scratch, clip=1.0, accum=10, warmup=100.
+
+| LR | Steps/60s | Loss (60s) | x range | Notes |
+|----|-----------|------------|---------|-------|
+| 3e-4 | 545 | 5.69 | [-5, 5] | Original baseline |
+| 5e-4 | 538 | 5.51 | [-9, 10] | Stable |
+| **1e-3** | **535** | **5.44** | **[-36, 34]** | **New default** |
+| 2e-3 | 534 | 5.19 / 4.64@120s | [-860, 700] | Best loss, but x magnitudes dangerous |
+| 3e-3 | 533 | 6.02 | [-623, 682] | Too high — loss increases |
+
+**Key Finding**: 1e-3 is the safe 3.3x LR increase — gives 4.4% better loss than 3e-4 in the same time with moderate activation growth. 2e-3 gives 8.8% better loss but produces very large activations (800+) that may cause instability in longer runs.
+
+**Updated default**: train.py LR changed from 3e-4 → 1e-3.
+
+---
+
+## Planned Experiments
+
 ### Experiment 4: Optimal Architecture at 5-minute Budget
 **Hypothesis**: The optimal depth/width tradeoff may differ at longer training budgets. Search at 5 minutes to find the best config for the autoresearch default.
 
