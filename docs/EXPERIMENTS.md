@@ -103,9 +103,11 @@
 | 2e-3 | 534 | 5.19 / 4.64@120s | [-860, 700] | Best loss, but x magnitudes dangerous |
 | 3e-3 | 533 | 6.02 | [-623, 682] | Too high — loss increases |
 
-**Key Finding**: 1e-3 is the safe 3.3x LR increase — gives 4.4% better loss than 3e-4 in the same time with moderate activation growth. 2e-3 gives 8.8% better loss but produces very large activations (800+) that may cause instability in longer runs.
+**Key Finding**: Higher LR helps for short runs (60s) but **hurts at longer training** (120s+). At LR=1e-3, activations grow to [-126, 102] which degrades ANE fp16 forward precision. At LR=2e-3, activations reach [-860, 700] — severe fp16 precision loss. LR=3e-4 produces x in [-6, 6] and gives the best 120s loss.
 
-**Updated default**: train.py LR changed from 3e-4 → 1e-3.
+**Insight**: The ANE fp16 forward pass imposes a fundamental constraint — activations must stay small for precision. Higher LR → larger weights → larger activations → fp16 degradation. This limits maximum LR more severely than in GPU fp32 training. The optimal LR for ANE training on shallow models is ~3e-4, much lower than typical GPU LR schedules.
+
+**Default unchanged**: train.py stays at LR=3e-4 (safe for all training lengths).
 
 ---
 

@@ -206,6 +206,7 @@ int main(int argc, char *argv[]) {
             else if (strcmp(argv[i], "--warmup") == 0 && i+1<argc) warmup_steps = atoi(argv[++i]);
             else if (strcmp(argv[i], "--clip") == 0 && i+1<argc) grad_clip = atof(argv[++i]);
             else if (strcmp(argv[i], "--data") == 0 && i+1<argc) data_path = argv[++i];
+            else if (strcmp(argv[i], "--wd") == 0 && i+1<argc) wd = atof(argv[++i]);
             else if (strcmp(argv[i], "--scale") == 0 && i+1<argc) loss_scale = atof(argv[++i]);
             else if (strcmp(argv[i], "--time") == 0 && i+1<argc) time_budget_sec = atof(argv[++i]);
         }

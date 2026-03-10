@@ -20,7 +20,7 @@ HEAD_DIM = 64       # attention head dimension
 SEQ = 256           # sequence length
 
 # Training
-LR = 1e-3           # peak learning rate (3x higher than default — safe for shallow models)
+LR = 3e-4           # peak learning rate (higher LR causes fp16 activation overflow at long training)
 WARMUP_STEPS = 100  # linear warmup steps
 ACCUM_STEPS = 10    # gradient accumulation steps (effective batch = ACCUM_STEPS * SEQ tokens)
 GRAD_CLIP = 1.0     # gradient norm clipping threshold
