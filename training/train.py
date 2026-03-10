@@ -11,11 +11,11 @@ import subprocess, os, sys, time, re
 # ===== AGENT-EDITABLE HYPERPARAMETERS =====
 
 # Architecture
-DEPTH = 32          # number of transformer layers
-DIM = 960           # model dimension (embedding size)
-HIDDEN = 2560       # FFN hidden dimension (typically 2-4x DIM)
-HEADS = 15          # number of query attention heads
-KV_HEADS = 5        # number of key/value heads (GQA: HEADS must be divisible by KV_HEADS)
+DEPTH = 4           # number of transformer layers
+DIM = 1024          # model dimension (embedding size)
+HIDDEN = 2816       # FFN hidden dimension (typically 2-4x DIM)
+HEADS = 16          # number of query attention heads
+KV_HEADS = 4        # number of key/value heads (GQA: HEADS must be divisible by KV_HEADS)
 HEAD_DIM = 64       # attention head dimension
 SEQ = 256           # sequence length
 
@@ -32,7 +32,7 @@ ADAM_B2 = 0.95      # Adam beta2
 CPU_ATTN_BWD = True  # use CPU fp32 for attention backward (fixes gradient underflow)
 
 # Budget
-TIME_BUDGET = 300   # wall-clock seconds of training (5 minutes)
+TIME_BUDGET = 120   # wall-clock seconds for quick experiments
 
 # Data (DO NOT MODIFY)
 VOCAB = 49152
