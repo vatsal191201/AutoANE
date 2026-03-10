@@ -17,8 +17,17 @@
 **Results**:
 - Before: `L0 sdpa_bwd: |dq|=0.000000 |dk|=0.000000 |dv|=0.000000`
 - After: `L0 sdpa_bwd: |dq|=0.000017 |dk|=0.000025 |dv|=0.000108`
-- dy magnitudes 100x larger with full CPU backward (0.3 vs 0.003)
+- dy magnitudes 250x larger with CPU backward (2e-2 vs 8e-5)
 - SmolLM2-360M ANE baseline: 200 steps/5min, loss = 5.682
+
+**Clean A/B Comparison** (SmolLM2-360M, 5-minute budget, same binary):
+
+| Mode | Steps | Loss | ms/step | dy magnitude |
+|------|-------|------|---------|-------------|
+| ANE fp16 baseline | 200 | 5.68 | 700-1500 | ~8e-5 |
+| **CPU fp32 attn bwd** | **1651** | **4.69** | **145-185** | **~2e-2** |
+
+CPU attention backward is **8x faster** and gets **1.0 lower loss**. For 32-layer models, ANE kernel launch overhead (320 launches/step) is catastrophic, and fp16 SDPA backward produces gradients 250x smaller than CPU fp32.
 
 ---
 
