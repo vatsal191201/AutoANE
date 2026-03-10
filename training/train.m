@@ -190,10 +190,12 @@ int main(int argc, char *argv[]) {
         double time_budget_sec = 0;  // 0 = unlimited (use --steps instead)
 
         bool do_resume = false, from_scratch = false;
+        bool use_cpu_attn_bwd = false;  // CPU fp32 SDPA backward (fixes attention gradient underflow)
         const char *data_path = DEFAULT_DATA_PATH;
         for (int i=1; i<argc; i++) {
             if (strcmp(argv[i], "--resume") == 0) do_resume = true;
             else if (strcmp(argv[i], "--scratch") == 0) from_scratch = true;
+            else if (strcmp(argv[i], "--cpu-attn-bwd") == 0) use_cpu_attn_bwd = true;
             else if (strcmp(argv[i], "--steps") == 0 && i+1<argc) total_steps = atoi(argv[++i]);
             else if (strcmp(argv[i], "--lr") == 0 && i+1<argc) max_lr = atof(argv[++i]);
             else if (strcmp(argv[i], "--accum") == 0 && i+1<argc) accum_steps = atoi(argv[++i]);
@@ -237,6 +239,8 @@ int main(int argc, char *argv[]) {
             double embed_m = (double)VOCAB*DIM / 1e6;
             printf("Params: %.1fM (transformer %.1fM + embed %.1fM)\n", xformer_m+embed_m, xformer_m, embed_m);
             printf("Kernels: 10 compiled (sdpaFwd+woFwd, ffnFused, ffnBwdW2t+W13t, wotBwd, sdpaBwd1+2, qBwd+kvBwd)\n");
+            if (use_cpu_attn_bwd) printf("SDPA backward: CPU fp32 (accurate attention gradients)\n");
+            else printf("SDPA backward: ANE fp16 (fast, may underflow)\n");
             printf("Accum %d steps, LR=%g\n", accum_steps, max_lr);
             double fwd_flops = 2.0*NLAYERS*((double)WQ_SZ + WK_SZ + WV_SZ + WO_SZ + W1_SZ + W2_SZ + W3_SZ) * SEQ;
             double total_flops = 3.0 * fwd_flops;
@@ -597,18 +601,22 @@ int main(int argc, char *argv[]) {
                 for(int i=0;i<SEQ*DIM;i++) dx2[i] += dy[i];
                 t_rms_bwd += tb_ms(mach_absolute_time() - t0);
 
-                // Wo^T backward (ANE): alpha*dx2 @ Wo → da[Q_DIM]
+                // Wo^T backward: alpha*dx2 @ Wo → da[Q_DIM]
                 float *dx2_scaled = (float*)malloc(SEQ*DIM*4);
                 vDSP_vsmul(dx2, 1, &res_alpha, dx2_scaled, 1, (vDSP_Length)(SEQ*DIM));
                 t0 = mach_absolute_time();
-                write_wot_bwd_acts(pls[L].wotBwd_in, dx2_scaled);
-                t_io_bwd += tb_ms(mach_absolute_time() - t0);
-                t0 = mach_absolute_time();
-                ane_eval_req(dk.wotBwd, plr[L].wotBwd);
+                if (use_cpu_attn_bwd) {
+                    // CPU fp32: da = Wo^T @ dx2_scaled  [Q_DIM,DIM]^T @ [DIM,SEQ] → [Q_DIM,SEQ]
+                    cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                                Q_DIM, SEQ, DIM, 1.0f, lw[L].Wo, Q_DIM, dx2_scaled, SEQ,
+                                0.0f, da_buf, SEQ);
+                } else {
+                    // ANE fp16 path
+                    write_wot_bwd_acts(pls[L].wotBwd_in, dx2_scaled);
+                    ane_eval_req(dk.wotBwd, plr[L].wotBwd);
+                    io_read_dyn(dk.wotBwd->ioOut, da_buf, Q_DIM, SEQ);
+                }
                 t_ane_bwd += tb_ms(mach_absolute_time() - t0);
-                t0 = mach_absolute_time();
-                io_read_dyn(dk.wotBwd->ioOut, da_buf, Q_DIM, SEQ);
-                t_io_bwd += tb_ms(mach_absolute_time() - t0);
 
                 // dWo async: gr->Wo[DIM,Q_DIM] += dx2_scaled[DIM,SEQ] @ attn_out^T[SEQ,Q_DIM]
                 t0 = mach_absolute_time();
@@ -628,7 +636,13 @@ int main(int argc, char *argv[]) {
                 gqa_tile_kv(v_tiled, ac->V, SEQ);
                 t_io_bwd += tb_ms(mach_absolute_time() - t0);
 
-                // Scale da for fp16 safety: da/S into ANE, multiply outputs by S after
+                // SDPA backward: CPU fp32 path (accurate) or ANE fp16 path (fast but underflows)
+                t0 = mach_absolute_time();
+                if (use_cpu_attn_bwd) {
+                    // CPU fp32 SDPA backward — full precision, no underflow
+                    cpu_sdpa_backward(ac->Q, k_tiled, v_tiled, da_buf,
+                                      dq_full, dk_full, dv_full, HEADS, HD, SEQ);
+                } else {
                 float bwd_scale = 64.0f;
                 float inv_bwd_scale = 1.0f / bwd_scale;
                 float *da_scaled = (float*)malloc(SEQ*Q_DIM*4);
@@ -664,7 +678,8 @@ int main(int argc, char *argv[]) {
                 vDSP_vsmul(dq_full, 1, &bwd_scale, dq_full, 1, (vDSP_Length)(SEQ*Q_DIM));
                 vDSP_vsmul(dk_full, 1, &bwd_scale, dk_full, 1, (vDSP_Length)(SEQ*Q_DIM));
                 vDSP_vsmul(dv_full, 1, &bwd_scale, dv_full, 1, (vDSP_Length)(SEQ*Q_DIM));
-                t_io_bwd += tb_ms(mach_absolute_time() - t0);
+                } // end else (ANE path)
+                t_ane_bwd += tb_ms(mach_absolute_time() - t0);
 
                 // GQA: reduce dK, dV from Q_DIM (HEADS) → KV_DIM (KV_HEADS)
                 gqa_reduce_kv(dk_buf, dk_full, SEQ);
@@ -704,28 +719,34 @@ int main(int argc, char *argv[]) {
                     free(capt_dq); free(capt_dk); free(capt_dv); free(capt_xn);
                 });
 
-                // Q backward (ANE): dq[Q_DIM] @ Wq → dx_q[DIM]
-                t0 = mach_absolute_time();
-                write_q_bwd_acts(pls[L].qBwd_in, dq);
-                t_io_bwd += tb_ms(mach_absolute_time() - t0);
-                t0 = mach_absolute_time();
-                ane_eval_req(dk.qBwd, plr[L].qBwd);
-                t_ane_bwd += tb_ms(mach_absolute_time() - t0);
-                t0 = mach_absolute_time();
-                io_read_dyn(dk.qBwd->ioOut, dx_attn, DIM, SEQ);
-                t_io_bwd += tb_ms(mach_absolute_time() - t0);
-
-                // KV backward (ANE): dk[KV_DIM]@Wk + dv[KV_DIM]@Wv → dx_kv[DIM]
+                // Q backward: dq[Q_DIM] @ Wq^T → dx_q[DIM]
+                // KV backward: dk[KV_DIM]@Wk^T + dv[KV_DIM]@Wv^T → dx_kv[DIM]
                 float *dx_kv = (float*)malloc(SEQ*DIM*4);
                 t0 = mach_absolute_time();
-                write_kv_bwd_acts(pls[L].kvBwd_in, dk_buf, dv);
-                t_io_bwd += tb_ms(mach_absolute_time() - t0);
-                t0 = mach_absolute_time();
-                ane_eval_req(dk.kvBwd, plr[L].kvBwd);
+                if (use_cpu_attn_bwd) {
+                    // CPU fp32: dx_q = Wq^T @ dq  [DIM,Q_DIM]^T is [DIM,Q_DIM] transposed
+                    // Wq is [Q_DIM, DIM], so Wq^T is [DIM, Q_DIM]
+                    // dx_attn[DIM,SEQ] = Wq^T[DIM,Q_DIM] @ dq[Q_DIM,SEQ]
+                    cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                                DIM, SEQ, Q_DIM, 1.0f, lw[L].Wq, DIM, dq, SEQ,
+                                0.0f, dx_attn, SEQ);
+                    // dx_kv[DIM,SEQ] = Wk^T @ dk + Wv^T @ dv
+                    cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                                DIM, SEQ, KV_DIM, 1.0f, lw[L].Wk, DIM, dk_buf, SEQ,
+                                0.0f, dx_kv, SEQ);
+                    cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                                DIM, SEQ, KV_DIM, 1.0f, lw[L].Wv, DIM, dv, SEQ,
+                                1.0f, dx_kv, SEQ);  // beta=1 to accumulate
+                } else {
+                    // ANE fp16 path
+                    write_q_bwd_acts(pls[L].qBwd_in, dq);
+                    ane_eval_req(dk.qBwd, plr[L].qBwd);
+                    io_read_dyn(dk.qBwd->ioOut, dx_attn, DIM, SEQ);
+                    write_kv_bwd_acts(pls[L].kvBwd_in, dk_buf, dv);
+                    ane_eval_req(dk.kvBwd, plr[L].kvBwd);
+                    io_read_dyn(dk.kvBwd->ioOut, dx_kv, DIM, SEQ);
+                }
                 t_ane_bwd += tb_ms(mach_absolute_time() - t0);
-                t0 = mach_absolute_time();
-                io_read_dyn(dk.kvBwd->ioOut, dx_kv, DIM, SEQ);
-                t_io_bwd += tb_ms(mach_absolute_time() - t0);
 
                 // dx_attn = dx_q + dx_kv
                 for(int i=0; i<SEQ*DIM; i++) dx_attn[i] += dx_kv[i];

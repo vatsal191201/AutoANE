@@ -163,6 +163,91 @@ static void embed_backward(float *d_embed, const float *dx, const uint16_t *toke
     }
 }
 
+// CPU fp32 SDPA backward — replaces ANE fp16 sdpaBwd1/sdpaBwd2 to avoid underflow
+// Data layout: all tensors are [dim, SEQ] row-major (channel-first)
+// Q, K_tiled, V_tiled, da: [Q_DIM, SEQ] where Q_DIM = HEADS * HD
+// dq_out, dk_out, dv_out: [Q_DIM, SEQ] (caller handles GQA reduce)
+static void cpu_sdpa_backward(
+    const float *Q, const float *K_tiled, const float *V_tiled, const float *da,
+    float *dq_out, float *dk_out, float *dv_out,
+    int heads, int hd, int seq)
+{
+    float scale = 1.0f / sqrtf((float)hd);
+    int q_dim = heads * hd;
+
+    // Temp buffers (per head, processed sequentially)
+    float *scores = (float*)malloc(seq * seq * sizeof(float));
+    float *ds     = (float*)malloc(seq * seq * sizeof(float));
+
+    memset(dq_out, 0, q_dim * seq * sizeof(float));
+    memset(dk_out, 0, q_dim * seq * sizeof(float));
+    memset(dv_out, 0, q_dim * seq * sizeof(float));
+
+    for (int h = 0; h < heads; h++) {
+        const float *Q_h  = Q + h * hd * seq;
+        const float *K_h  = K_tiled + h * hd * seq;
+        const float *V_h  = V_tiled + h * hd * seq;
+        const float *da_h = da + h * hd * seq;
+        float *dq_h = dq_out + h * hd * seq;
+        float *dk_h = dk_out + h * hd * seq;
+        float *dv_h = dv_out + h * hd * seq;
+
+        // Step 1: Recompute attention scores = Q_h^T @ K_h / sqrt(hd) → [SEQ, SEQ]
+        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                    seq, seq, hd, scale, Q_h, seq, K_h, seq, 0.0f, scores, seq);
+
+        // Step 2: Causal mask + softmax (in-place on scores → probs)
+        for (int s = 0; s < seq; s++) {
+            float *row = scores + s * seq;
+            // Mask future positions
+            for (int j = s + 1; j < seq; j++) row[j] = -1e9f;
+            // Stable softmax
+            float maxv = -1e30f;
+            for (int j = 0; j <= s; j++) maxv = fmaxf(maxv, row[j]);
+            float sum = 0;
+            for (int j = 0; j <= s; j++) {
+                row[j] = expf(row[j] - maxv);
+                sum += row[j];
+            }
+            float inv_sum = 1.0f / (sum + 1e-10f);
+            for (int j = 0; j <= s; j++) row[j] *= inv_sum;
+            for (int j = s + 1; j < seq; j++) row[j] = 0.0f;
+        }
+        // scores now contains probs [SEQ, SEQ]
+
+        // Step 3: dV_h = da_h @ probs → [HD, SEQ] @ [SEQ, SEQ] → [HD, SEQ]
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                    hd, seq, seq, 1.0f, da_h, seq, scores, seq, 0.0f, dv_h, seq);
+
+        // Step 4: dp = da_h^T @ V_h → [SEQ, HD] @ [HD, SEQ] → [SEQ, SEQ]
+        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                    seq, seq, hd, 1.0f, da_h, seq, V_h, seq, 0.0f, ds, seq);
+        // ds now contains dp [SEQ, SEQ]
+
+        // Step 5: Softmax backward: ds = (dp - sum(dp * probs, axis=-1)) * probs * scale
+        for (int s = 0; s < seq; s++) {
+            float *dp_row = ds + s * seq;
+            float *p_row  = scores + s * seq;
+            float dot = 0;
+            for (int j = 0; j < seq; j++) dot += dp_row[j] * p_row[j];
+            for (int j = 0; j < seq; j++)
+                dp_row[j] = (dp_row[j] - dot) * p_row[j] * scale;
+        }
+        // ds now contains the softmax backward result
+
+        // Step 6: dQ_h = K_h @ ds^T → [HD, SEQ] @ [SEQ, SEQ]^T → [HD, SEQ]
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                    hd, seq, seq, 1.0f, K_h, seq, ds, seq, 0.0f, dq_h, seq);
+
+        // Step 7: dK_h = Q_h @ ds → [HD, SEQ] @ [SEQ, SEQ] → [HD, SEQ]
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                    hd, seq, seq, 1.0f, Q_h, seq, ds, seq, 0.0f, dk_h, seq);
+    }
+
+    free(scores);
+    free(ds);
+}
+
 // RoPE backward (in-place): inverse rotation on dQ/dK gradients
 // Data layout: [DIM, SEQ] channel-first, DIM = nheads * hd
 static void rope_backward_inplace(float *dx, int seq, int dim, int hd) {

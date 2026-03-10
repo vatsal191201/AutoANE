@@ -2,9 +2,13 @@ CC = xcrun clang
 CFLAGS = -O2 -DACCELERATE_NEW_LAPACK -framework Foundation -framework IOSurface -framework Accelerate \
          -isysroot $(shell xcrun --show-sdk-path) -fobjc-arc
 
-# Model selection: make MODEL=qwen3_06b  (default)
-#   Available: stories110m, qwen3_06b
-MODEL ?= qwen3_06b
+# Model selection: make MODEL=smollm2_360m
+#   Available models:
+#     stories110m     - 109M params, 12 layers, MHA 12/12, fastest
+#     smollm2_135m    - 135M params, 30 layers, GQA 9/3
+#     smollm2_360m    - 362M params, 32 layers, GQA 15/5 (default)
+#     autoresearch    - variable, auto-configured by train.py
+MODEL ?= smollm2_360m
 MODEL_HDR = models/$(MODEL).h
 
 train: train.m config.h io.h cpu_ops.h mil_dynamic.h $(MODEL_HDR)

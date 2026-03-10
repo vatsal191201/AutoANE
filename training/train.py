@@ -28,6 +28,9 @@ WEIGHT_DECAY = 0.1  # AdamW weight decay
 ADAM_B1 = 0.9       # Adam beta1
 ADAM_B2 = 0.95      # Adam beta2
 
+# Mixed precision
+CPU_ATTN_BWD = True  # use CPU fp32 for attention backward (fixes gradient underflow)
+
 # Budget
 TIME_BUDGET = 300   # wall-clock seconds of training (5 minutes)
 
@@ -116,6 +119,8 @@ def main():
         "--steps", "100000",  # large number; --time will stop it
         "--time", str(TIME_BUDGET),
     ]
+    if CPU_ATTN_BWD:
+        cmd.append("--cpu-attn-bwd")
     print(f"\nTraining for {TIME_BUDGET}s...")
     print(f"Command: {' '.join(cmd)}\n")
 
