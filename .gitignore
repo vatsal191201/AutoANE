@@ -1,5 +1,10 @@
 # Compiled binaries
 training/train
+training/train_experiment
+training/benchmark
+training/bench_conv
+training/bench_cpu_matmul
+training/test_aneclient
 bridge/libane_bridge.dylib
 
 # Checkpoints

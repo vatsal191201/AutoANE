@@ -29,7 +29,8 @@ ADAM_B1 = 0.9       # Adam beta1
 ADAM_B2 = 0.95      # Adam beta2
 
 # Mixed precision
-CPU_ATTN_BWD = True  # use CPU fp32 for attention backward (fixes gradient underflow)
+CPU_ATTN_BWD = False  # ANE fp16 backward with loss_scale=256 (default, works correctly)
+LOSS_SCALE = 256.0    # gradient scaling to prevent fp16 underflow in ANE backward
 
 # LoRA fine-tuning
 LORA_ENABLED = False  # enable LoRA (freeze base weights, train adapters only)
@@ -122,6 +123,7 @@ def main():
         "--clip", str(GRAD_CLIP),
         "--steps", "100000",  # large number; --time will stop it
         "--time", str(TIME_BUDGET),
+        "--scale", str(LOSS_SCALE),
     ]
     if CPU_ATTN_BWD:
         cmd.append("--cpu-attn-bwd")

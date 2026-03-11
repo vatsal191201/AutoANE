@@ -63,32 +63,29 @@ static void adam_update(float *w, const float *g, AdamState *s, int t, float lr,
     }
 }
 
-// Cross-entropy loss: operates on logits[V, S] column-major (each column = one token)
-// Avoids transposing by using a per-token temp buffer
+// Cross-entropy loss: operates on logits[S, V] row-major (each row = one token, contiguous)
+// Much faster than column-major: no strided gather/scatter, all ops on contiguous memory
 static float cross_entropy_loss(float *dlogits, const float *logits, const uint16_t *targets, int V, int S) {
-    float *col = (float*)malloc(V * 4);  // single column buffer
     float total_loss = 0;
     float invS = 1.0f / S;
     for (int t = 0; t < S; t++) {
-        // Gather column t: logits[v, t] = logits[v*S + t], stride=S
-        cblas_scopy(V, logits + t, S, col, 1);
-        // Softmax
-        float maxv; vDSP_maxv(col, 1, &maxv, (vDSP_Length)V);
+        const float *row = logits + t * V;   // contiguous V-element row
+        float *drow = dlogits + t * V;
+        // Softmax on contiguous memory
+        float maxv; vDSP_maxv(row, 1, &maxv, (vDSP_Length)V);
         float neg_max = -maxv;
-        vDSP_vsadd(col, 1, &neg_max, col, 1, (vDSP_Length)V);
-        int n = V; vvexpf(col, col, &n);
-        float sum; vDSP_sve(col, 1, &sum, (vDSP_Length)V);
+        // Copy logits to dlogits, subtract max, exp, normalize — all in-place
+        vDSP_vsadd(row, 1, &neg_max, drow, 1, (vDSP_Length)V);
+        int n = V; vvexpf(drow, drow, &n);
+        float sum; vDSP_sve(drow, 1, &sum, (vDSP_Length)V);
         float inv_sum = 1.0f / sum;
-        vDSP_vsmul(col, 1, &inv_sum, col, 1, (vDSP_Length)V);
+        vDSP_vsmul(drow, 1, &inv_sum, drow, 1, (vDSP_Length)V);
         // Loss + gradient
         int tgt = targets[t];
-        total_loss -= logf(col[tgt] + 1e-10f);
-        col[tgt] -= 1.0f;
-        vDSP_vsmul(col, 1, &invS, col, 1, (vDSP_Length)V);
-        // Scatter back: dlogits[v*S + t] = col[v]
-        cblas_scopy(V, col, 1, dlogits + t, S);
+        total_loss -= logf(drow[tgt] + 1e-10f);
+        drow[tgt] -= 1.0f;
+        vDSP_vsmul(drow, 1, &invS, drow, 1, (vDSP_Length)V);
     }
-    free(col);
     return total_loss / S;
 }
 
@@ -246,6 +243,71 @@ static void cpu_sdpa_backward(
 
     free(scores);
     free(ds);
+}
+
+// RoPE forward (in-place): apply rotation to Q/K
+// Data layout: [DIM, SEQ] channel-first, DIM = nheads * hd
+static void rope_forward_inplace(float *x, int seq, int dim, int hd) {
+    int nheads = dim / hd;
+    for (int h = 0; h < nheads; h++) {
+        for (int i = 0; i < hd/2; i++) {
+            float freq = 1.0f / powf(10000.0f, 2.0f * i / (float)hd);
+            for (int p = 0; p < seq; p++) {
+                float theta = p * freq;
+                float cos_t = cosf(theta), sin_t = sinf(theta);
+                int idx0 = (h * hd + 2 * i) * seq + p;
+                int idx1 = (h * hd + 2 * i + 1) * seq + p;
+                float v0 = x[idx0], v1 = x[idx1];
+                x[idx0] = v0 * cos_t - v1 * sin_t;
+                x[idx1] = v0 * sin_t + v1 * cos_t;
+            }
+        }
+    }
+}
+
+// CPU fp32 SDPA forward — causal attention
+// Data layout: all tensors [dim, SEQ] channel-first
+// Q, K_tiled, V_tiled: [Q_DIM, SEQ] where Q_DIM = HEADS * HD
+// attn_out: [Q_DIM, SEQ]
+static void cpu_sdpa_forward(
+    const float *Q, const float *K_tiled, const float *V_tiled, float *attn_out,
+    int heads, int hd, int seq)
+{
+    float scale = 1.0f / sqrtf((float)hd);
+    float *scores = (float*)malloc(seq * seq * sizeof(float));
+
+    for (int h = 0; h < heads; h++) {
+        const float *Q_h = Q + h * hd * seq;
+        const float *K_h = K_tiled + h * hd * seq;
+        const float *V_h = V_tiled + h * hd * seq;
+        float *out_h = attn_out + h * hd * seq;
+
+        // scores = Q_h^T @ K_h / sqrt(hd) → [seq, seq]
+        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                    seq, seq, hd, scale, Q_h, seq, K_h, seq, 0.0f, scores, seq);
+
+        // Causal mask + softmax
+        for (int s = 0; s < seq; s++) {
+            float *row = scores + s * seq;
+            for (int j = s + 1; j < seq; j++) row[j] = -1e9f;
+            float maxv = -1e30f;
+            for (int j = 0; j <= s; j++) maxv = fmaxf(maxv, row[j]);
+            float sum = 0;
+            for (int j = 0; j <= s; j++) {
+                row[j] = expf(row[j] - maxv);
+                sum += row[j];
+            }
+            float inv_sum = 1.0f / (sum + 1e-10f);
+            for (int j = 0; j <= s; j++) row[j] *= inv_sum;
+            for (int j = s + 1; j < seq; j++) row[j] = 0.0f;
+        }
+
+        // out_h[hd, seq] = V_h[hd, seq] @ probs^T[seq, seq]
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                    hd, seq, seq, 1.0f, V_h, seq, scores, seq, 0.0f, out_h, seq);
+    }
+
+    free(scores);
 }
 
 // RoPE backward (in-place): inverse rotation on dQ/dK gradients
