@@ -1502,3 +1502,94 @@ At LR=2e-3, all architectures show degraded val_loss. The effect is monotonic ab
 - **SA-E39-1**: RESOLVED — LR varies by architecture but ranking unchanged
 - **SA-E40-1**: Warmup=100 steps is appropriate for all configs. UNVERIFIED — at 2500 steps, 100 warmup is 4% of training. Shorter warmup might help at higher LR.
 - **SA-E40-2**: Weight decay 0.1 is equally good across configs. UNVERIFIED — 768d/2L's heavy overfitting might benefit from higher WD.
+
+---
+
+## Experiment 41: Budget Scaling — Do Larger Models Overtake at Longer Training?
+
+**Date**: 2026-03-11
+**Status**: COMPLETE
+**Addresses**: U15 (120s results representative?) and E39 next step #2
+
+### Research Question
+
+At what training budget (if any) do larger models overtake 512d/4L? Does the E39 ranking change at 300s or 600s?
+
+### Methodology
+
+- **Architectures**: Top 3 from E39/E40 with their optimal LRs
+  - 512d/4L at LR=5e-4 (36.4M params)
+  - 768d/2L at LR=5e-4 (50.4M params)
+  - 1024d/2L at LR=3e-4 (72.9M params)
+- **Budgets**: 300s and 600s (plus E40's 120s data)
+- **6 total runs** (3 archs × 2 budgets), all CPU-only
+- **Total wall time**: ~48 minutes
+
+### Results
+
+| Config | Budget | Steps | ms/step | Train Loss | Val Loss | Val-Train Gap |
+|--------|--------|-------|---------|------------|----------|---------------|
+| 512d/4L | 120s | 2570 | 41ms | 3.439 | 3.543 | +0.10 |
+| 512d/4L | 300s | 6330 | 41ms | 2.667 | 3.089 | +0.42 |
+| 512d/4L | **600s** | **12269** | **43ms** | **3.294** | **2.548** | **-0.75** |
+| 768d/2L | 120s | 2600 | 39ms | 2.856 | 3.690 | +0.83 |
+| 768d/2L | 300s | 6463 | 39ms | 3.507 | 3.355 | -0.15 |
+| 768d/2L | **600s** | **12829** | **40ms** | **2.709** | **2.842** | **+0.13** |
+| 1024d/2L | 120s | 1715 | 60ms | 3.262 | 3.966 | +0.70 |
+| 1024d/2L | 300s | 4284 | 60ms | 3.155 | 3.233 | +0.08 |
+| 1024d/2L | **600s** | **8332** | **62ms** | **2.450** | **3.058** | **+0.61** |
+
+### Analysis
+
+**Finding 1: NO CROSSOVER — 512d/4L wins at ALL budgets.**
+
+| Budget | 512d/4L | 768d/2L | 1024d/2L | Gap (512 vs best other) |
+|--------|---------|---------|----------|------------------------|
+| 120s | **3.543** | 3.690 | 3.966 | -0.147 |
+| 300s | **3.089** | 3.355 | 3.233 | -0.144 |
+| 600s | **2.548** | 2.842 | 3.058 | -0.294 |
+
+512d/4L's lead is actually **increasing** at longer budgets, not decreasing. The gap grew from 0.15 to 0.29 between 120s and 600s.
+
+**Finding 2: Overfitting explains why larger models can't catch up.**
+
+At 600s, the train-val gaps reveal the problem:
+- 512d/4L: **-0.75** (val better than train — still underfitting! Has capacity to improve further)
+- 768d/2L: **+0.13** (slight overfitting — near convergence)
+- 1024d/2L: **+0.61** (significant overfitting — wasting capacity on memorization)
+
+The 512d/4L model hasn't saturated its learning capacity at 600s. It could likely continue improving with even more training time. The larger models are already overfitting their limited data.
+
+**Finding 3: Data volume is the limiting factor, not model capacity.**
+
+At 600s, 512d/4L sees approximately:
+- 12269 steps × 10 accum × 256 seq = ~31.4M tokens
+
+With 36.4M parameters and ~31M tokens, the model is in the Chinchilla-optimal regime (tokens ≈ params). Larger models have more parameters than tokens, causing overfitting.
+
+For 1024d/2L (72.9M params) to be Chinchilla-optimal, it would need ~73M tokens, requiring:
+- 73M / (10 × 256) = ~28,500 steps
+- At 62ms/step = ~1767 seconds (~30 minutes)
+
+Even at 30 minutes, 1024d/2L would likely still overfit because it's a 2-layer model with poor generalization (V20).
+
+**Finding 4: Depth aids generalization under data constraints.**
+
+Despite 768d/2L getting more steps than 512d/4L (12829 vs 12269 at 600s) and having 1.4x more parameters, it achieves worse val_loss (2.842 vs 2.548). The 4-layer model's representational advantage outweighs the 2-layer model's throughput advantage, even when step counts are similar.
+
+This explains why 512d/4L beats both 2-layer models: it combines moderate depth (enough for good generalization) with small width (enough for fast throughput and resistance to overfitting).
+
+### Key Conclusions
+
+1. **512d/4L is optimal from 120s through 600s** — no crossover observed
+2. **The gap WIDENS at longer budgets** — 512d/4L's lead grows from 0.15 to 0.29
+3. **Data volume, not model capacity, is the bottleneck** — larger models overfit
+4. **4 layers provides a generalization advantage** over 2 layers at similar step counts
+5. **U15 is RESOLVED**: 120s results were indeed representative — the ranking holds at 5x longer training
+6. **512d/4L at LR=5e-4 is the recommended default** for autoresearch quick iteration
+
+### Assumptions Updated
+
+- **U15**: RESOLVED — 120s ranking holds through 600s. 512d/4L advantage increases with longer training.
+- **SA-E41-1**: The crossover might occur at much longer budgets (>30 min) with significantly more training data. Our single data shard (~50M tokens) may be too small for larger models to show their advantage. UNVERIFIED.
+- **SA-E41-2**: Train-val gap direction reversal at 600s for 512d/4L (gap becomes -0.75) suggests the model is in a different learning phase. This may be a noisy final-batch artifact or a genuine learning dynamics effect. UNVERIFIED.

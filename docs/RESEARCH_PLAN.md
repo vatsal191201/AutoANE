@@ -388,6 +388,13 @@ Result: **GAP WIDENS**: 12% at 120s → 37% at 600s. ANE loss diverges (4.69→4
 
 ### Revised next steps (post-E39):
 
-1. **LR sweep per architecture** — Test whether optimal LR varies across top configs (512d/4L, 768d/2L, 1024d/2L). Could change rankings. (Addresses U14)
-2. **Longer budget runs** — Test top 3 configs at 300s and 600s to find where larger models overtake. (Addresses U15)
-3. **Update train.py defaults** — Change from 1024d/4L to 512d/4L for quick experiments.
+1. ✓ **LR sweep per architecture** (E40) — 5e-4 optimal for 512d/4L, 3e-4 for 1024d. Ranking robust. (U14 resolved)
+2. ✓ **Longer budget runs** (E41) — 512d/4L wins at ALL budgets (120-600s). No crossover. Gap widens. (U15 resolved)
+3. ✓ **Update train.py defaults** — Changed to 512d/4L with LR=5e-4.
+
+### Remaining research directions (post-E41):
+
+1. **Data scaling** — Current bottleneck is data volume (~31M tokens at 600s), not model capacity. Test with multiple data shards or larger dataset to see if larger models catch up.
+2. **Sequence length sweep** — SEQ=256 limits context. Test SEQ=512/1024 to see effect on val_loss and throughput.
+3. **Weight decay sweep** — 768d/2L overfits heavily. Higher WD (0.2-0.5) might help shallow models.
+4. **Longer training (10-30 min)** — 512d/4L is still underfitting at 600s (val < train). How far can it go?
