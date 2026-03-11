@@ -126,6 +126,58 @@ def load_ane_checkpoint(path):
     return c, layers, rms_final, embed
 
 
+def load_tokenizer_metadata(vocab_size):
+    """Load SmolLM2 tokenizer and return GGUF metadata entries for it."""
+    try:
+        import json, glob
+        from transformers import AutoTokenizer
+        tok = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-360M",
+                                            trust_remote_code=True)
+        tokens = []
+        scores = []
+        token_types = []
+        for i in range(vocab_size):
+            try:
+                t = tok.convert_ids_to_tokens(i)
+                if t is None:
+                    t = f"[UNK{i}]"
+            except Exception:
+                t = f"[UNK{i}]"
+            tokens.append(t)
+            scores.append(0.0)
+            token_types.append(1)  # normal token
+
+        # Load BPE merges from tokenizer.json
+        merges = []
+        cache_pattern = os.path.expanduser(
+            "~/.cache/huggingface/hub/models--HuggingFaceTB--SmolLM2-360M/snapshots/*/tokenizer.json")
+        for tf in glob.glob(cache_pattern):
+            with open(tf) as fh:
+                data = json.load(fh)
+            if 'model' in data and 'merges' in data['model']:
+                merges = data['model']['merges']
+            break
+
+        bos_id = tok.bos_token_id if tok.bos_token_id is not None else 1
+        eos_id = tok.eos_token_id if tok.eos_token_id is not None else 2
+
+        print(f"  Tokenizer: {len(tokens)} tokens, {len(merges)} merges, bos={bos_id}, eos={eos_id}")
+        result = [
+            ('tokenizer.ggml.model', GV_STRING, 'gpt2'),
+            ('tokenizer.ggml.tokens', GV_ARRAY, (GV_STRING, tokens)),
+            ('tokenizer.ggml.scores', GV_ARRAY, (GV_FLOAT32, scores)),
+            ('tokenizer.ggml.token_type', GV_ARRAY, (GV_INT32, token_types)),
+            ('tokenizer.ggml.bos_token_id', GV_UINT32, bos_id),
+            ('tokenizer.ggml.eos_token_id', GV_UINT32, eos_id),
+        ]
+        if merges:
+            result.append(('tokenizer.ggml.merges', GV_ARRAY, (GV_STRING, merges)))
+        return result
+    except ImportError:
+        print("  WARNING: transformers not installed, skipping tokenizer metadata")
+        return []
+
+
 def export_gguf(ane_path, gguf_path):
     print(f"Loading ANE checkpoint: {ane_path}")
     c, layers, rms_final, embed = load_ane_checkpoint(ane_path)
@@ -161,7 +213,10 @@ def export_gguf(ane_path, gguf_path):
     # Final norm
     tensors.append(('output_norm.weight', rms_final))
 
-    # Count metadata KV pairs
+    # Load tokenizer metadata for llama.cpp compatibility
+    tokenizer_meta = load_tokenizer_metadata(c['vocab'])
+
+    # Metadata KV pairs
     metadata = [
         ('general.architecture', GV_STRING, 'llama'),
         ('general.name', GV_STRING, f'AutoANE-{c["n_layers"]}L-{c["dim"]}d'),
@@ -176,7 +231,7 @@ def export_gguf(ane_path, gguf_path):
         ('llama.vocab_size', GV_UINT32, c['vocab']),
         ('llama.rope.dimension_count', GV_UINT32, c['hd']),
         ('llama.rope.freq_base', GV_FLOAT32, 10000.0),
-    ]
+    ] + tokenizer_meta
 
     alignment = 32
 

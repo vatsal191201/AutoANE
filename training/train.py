@@ -20,13 +20,13 @@ HEAD_DIM = 64       # attention head dimension
 SEQ = 128           # sequence length (shorter = faster steps, less context)
 
 # Training
-LR = 4e-4           # peak learning rate (lower for SEQ=128 smaller batch)
-WARMUP_STEPS = 71  # linear warmup steps
-ACCUM_STEPS = 10    # gradient accumulation steps (effective batch = ACCUM_STEPS * SEQ tokens)
+LR = 6.34e-4        # peak learning rate (autosearch: 4e-4→6.34e-4)
+WARMUP_STEPS = 71   # linear warmup steps
+ACCUM_STEPS = 7     # gradient accumulation steps (autosearch: 10→7)
 GRAD_CLIP = 1.0     # gradient norm clipping threshold
-WEIGHT_DECAY = 0.1  # AdamW weight decay
+WEIGHT_DECAY = 0.076104  # AdamW weight decay (autosearch: 0.1→0.076)
 ADAM_B1 = 0.9       # Adam beta1
-ADAM_B2 = 0.95      # Adam beta2
+ADAM_B2 = 0.958587  # Adam beta2 (autosearch: 0.95→0.959)
 
 # Training mode (E38: CPU-only is correct default for all model sizes)
 CPU_ONLY = True       # Pure CPU fp32 training (no ANE, no IOSurface overhead)

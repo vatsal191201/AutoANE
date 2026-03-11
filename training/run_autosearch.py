@@ -186,7 +186,7 @@ def run_experiment(description):
 
 
 def git_commit(msg):
-    subprocess.run(['git', 'add', 'train.py'], capture_output=True)
+    subprocess.run(['git', 'add', 'train.py', 'results.tsv'], capture_output=True)
     subprocess.run(['git', 'commit', '-m', msg], capture_output=True)
     result = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'],
                            capture_output=True, text=True)
