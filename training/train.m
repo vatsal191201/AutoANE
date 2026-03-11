@@ -41,9 +41,16 @@ static int validate_weights(float *buf, size_t n) {
 
 // Dynamic kernel set per layer
 typedef struct {
+    // Fused forward kernels (legacy — fp16 RoPE+attention+SiLU+residual)
     Kern *sdpaFwd;     // QKV matmul + RoPE + GQA tile + SDPA (no Wo)
     Kern *woFwd;       // attn_out @ Wo^T → o_out (Q_DIM → DIM)
     Kern *ffnFused;    // W1,W3 + SiLU + W2 + residual (fused)
+    // Unfused forward kernels (matmul-only — RoPE+attention+SiLU+residual on CPU fp32)
+    Kern *wqFwd;       // xnorm @ Wq → Q (DIM → Q_DIM)
+    Kern *wkvFwd;      // xnorm @ Wk/Wv → K or V (DIM → KV_DIM) — shared kernel, separate surfaces
+    Kern *w13Fwd;      // x2norm @ W1/W3 → h1 or h3 (DIM → HIDDEN) — shared kernel, separate surfaces
+    Kern *w2Fwd;       // silu_out @ W2 → ffn_out (HIDDEN → DIM)
+    // Backward kernels (dx chain-rule matmuls)
     Kern *ffnBwdW2t;   // dffn @ W2^T → dsilu_raw (DIM → HIDDEN)
     Kern *ffnBwdW13t;  // dh1@W1^T + dh3@W3^T → dx_ffn (HIDDEN → DIM)
     Kern *wotBwd;      // dx2 @ Wo → da (DIM → Q_DIM)
@@ -60,73 +67,105 @@ static void transpose_weight(float *dst, const float *src, int rows, int cols) {
             dst[c * rows + r] = src[r * cols + c];
 }
 
+// Spatial (last dim) sizes for unfused matmul kernels: input is [1, IC, 1, SEQ+OC]
+#define WQ_FWD_SP  (SEQ + Q_DIM)
+#define WKV_FWD_SP (SEQ + KV_DIM)
+#define W13_FWD_SP (SEQ + HIDDEN)
+#define W2_FWD_SP  (SEQ + DIM)
+
 // ===== Compile all dynamic kernels (ONCE) =====
-static bool compile_dynamic_kernels(DynLayerKernels *dk, float res_alpha) {
+static bool compile_dynamic_kernels(DynLayerKernels *dk, float res_alpha, bool unfused_fwd, bool compile_bwd) {
     NSDictionary *mask_w = @{@"@model_path/weights/mask.bin": @{@"offset":@0, @"data":get_mask_blob()}};
-    NSDictionary *sdpa_fwd_w = @{
-        @"@model_path/weights/mask.bin": @{@"offset":@0, @"data":get_mask_blob()},
-        @"@model_path/weights/rope_cos.bin": @{@"offset":@0, @"data":get_rope_cos_blob()},
-        @"@model_path/weights/rope_sin.bin": @{@"offset":@0, @"data":get_rope_sin_blob()}
-    };
 
-    int sdpa_out_ch = Q_DIM + Q_DIM + KV_DIM + KV_DIM + DIM;
+    if (unfused_fwd) {
+        // --- Unfused forward: individual matmul kernels ---
+        // Wq: [DIM] → [Q_DIM]
+        printf("  Compiling wqFwd (DIM→Q_DIM)...\n");
+        dk->wqFwd = compile_kern_mil_w(gen_dyn_matmul_mil(DIM, Q_DIM, SEQ), @{},
+            DIM*WQ_FWD_SP*2, Q_DIM*SEQ*2);
+        if (!dk->wqFwd) return false;
 
-    // SDPA forward (no Wo): [1, DIM, 1, SDPA_FWD_SP] → [1, sdpa_out_ch, 1, SEQ]
-    printf("  Compiling sdpaFwd (GQA)...\n");
-    dk->sdpaFwd = compile_kern_mil_w(gen_sdpa_fwd_dynamic(), sdpa_fwd_w,
-        DIM*SDPA_FWD_SP*2, sdpa_out_ch*SEQ*2);
-    if (!dk->sdpaFwd) return false;
+        // Wk/Wv: [DIM] → [KV_DIM] (shared kernel shape, separate per-layer surfaces)
+        printf("  Compiling wkvFwd (DIM→KV_DIM)...\n");
+        dk->wkvFwd = compile_kern_mil_w(gen_dyn_matmul_mil(DIM, KV_DIM, SEQ), @{},
+            DIM*WKV_FWD_SP*2, KV_DIM*SEQ*2);
+        if (!dk->wkvFwd) return false;
 
-    // Wo forward: [1, Q_DIM, 1, SEQ+DIM] → [1, DIM, 1, SEQ]
-    printf("  Compiling woFwd...\n");
-    dk->woFwd = compile_kern_mil_w(gen_wo_fwd_dynamic(), @{},
-        Q_DIM*WO_FWD_SP*2, DIM*SEQ*2);
-    if (!dk->woFwd) return false;
+        // Wo: [Q_DIM] → [DIM] (reuse existing woFwd shape)
+        printf("  Compiling woFwd (Q_DIM→DIM)...\n");
+        dk->woFwd = compile_kern_mil_w(gen_wo_fwd_dynamic(), @{},
+            Q_DIM*WO_FWD_SP*2, DIM*SEQ*2);
+        if (!dk->woFwd) return false;
 
-    // Fused FFN: [1, DIM, 1, FFN_FUSED_SP] → [1, DIM+3*HIDDEN, 1, SEQ]
-    printf("  Compiling ffnFused...\n");
-    int ffn_fused_och = DIM + 3*HIDDEN;
-    dk->ffnFused = compile_kern_mil_w(gen_ffn_fused_dynamic_alpha(res_alpha), @{},
-        DIM*FFN_FUSED_SP*2, ffn_fused_och*SEQ*2);
-    if (!dk->ffnFused) return false;
+        // W1/W3: [DIM] → [HIDDEN] (shared kernel shape)
+        printf("  Compiling w13Fwd (DIM→HIDDEN)...\n");
+        dk->w13Fwd = compile_kern_mil_w(gen_dyn_matmul_mil(DIM, HIDDEN, SEQ), @{},
+            DIM*W13_FWD_SP*2, HIDDEN*SEQ*2);
+        if (!dk->w13Fwd) return false;
 
-    // FFN backward W2^T: [1, DIM, 1, SEQ+HIDDEN] → [1, HIDDEN, 1, SEQ]
+        // W2: [HIDDEN] → [DIM]
+        printf("  Compiling w2Fwd (HIDDEN→DIM)...\n");
+        dk->w2Fwd = compile_kern_mil_w(gen_dyn_matmul_mil(HIDDEN, DIM, SEQ), @{},
+            HIDDEN*W2_FWD_SP*2, DIM*SEQ*2);
+        if (!dk->w2Fwd) return false;
+    } else {
+        // --- Fused forward (legacy): sdpaFwd + woFwd + ffnFused ---
+        NSDictionary *sdpa_fwd_w = @{
+            @"@model_path/weights/mask.bin": @{@"offset":@0, @"data":get_mask_blob()},
+            @"@model_path/weights/rope_cos.bin": @{@"offset":@0, @"data":get_rope_cos_blob()},
+            @"@model_path/weights/rope_sin.bin": @{@"offset":@0, @"data":get_rope_sin_blob()}
+        };
+        int sdpa_out_ch = Q_DIM + Q_DIM + KV_DIM + KV_DIM + DIM;
+        printf("  Compiling sdpaFwd (GQA, fused)...\n");
+        dk->sdpaFwd = compile_kern_mil_w(gen_sdpa_fwd_dynamic(), sdpa_fwd_w,
+            DIM*SDPA_FWD_SP*2, sdpa_out_ch*SEQ*2);
+        if (!dk->sdpaFwd) return false;
+
+        printf("  Compiling woFwd...\n");
+        dk->woFwd = compile_kern_mil_w(gen_wo_fwd_dynamic(), @{},
+            Q_DIM*WO_FWD_SP*2, DIM*SEQ*2);
+        if (!dk->woFwd) return false;
+
+        printf("  Compiling ffnFused...\n");
+        int ffn_fused_och = DIM + 3*HIDDEN;
+        dk->ffnFused = compile_kern_mil_w(gen_ffn_fused_dynamic_alpha(res_alpha), @{},
+            DIM*FFN_FUSED_SP*2, ffn_fused_och*SEQ*2);
+        if (!dk->ffnFused) return false;
+    }
+
+    if (!compile_bwd) return true;  // CPU backward — no ANE backward kernels needed
+
+    // --- Backward kernels (used by both fused and unfused forward) ---
     printf("  Compiling ffnBwdW2t...\n");
     dk->ffnBwdW2t = compile_kern_mil_w(gen_ffn_bwd_w2t_dynamic(), @{},
         DIM*FFN_BWD_W2T_SP*2, HIDDEN*SEQ*2);
     if (!dk->ffnBwdW2t) return false;
 
-    // FFN backward W1^T+W3^T: [1, HIDDEN, 1, 2*SEQ+2*DIM] → [1, DIM, 1, SEQ]
     printf("  Compiling ffnBwdW13t...\n");
     dk->ffnBwdW13t = compile_kern_mil_w(gen_ffn_bwd_w13t_dynamic(), @{},
         HIDDEN*FFN_BWD_W13T_SP*2, DIM*SEQ*2);
     if (!dk->ffnBwdW13t) return false;
 
-    // Wo^T backward: [1, DIM, 1, SEQ+Q_DIM] → [1, Q_DIM, 1, SEQ]
     printf("  Compiling wotBwd...\n");
     dk->wotBwd = compile_kern_mil_w(gen_wot_dynamic(), @{},
         DIM*WOT_BWD_SP*2, Q_DIM*SEQ*2);
     if (!dk->wotBwd) return false;
 
-    // SDPA bwd1 (weight-free, has mask): [1, 4*Q_DIM, 1, SEQ] → [1, Q_DIM+2*SCORE_CH, 1, SEQ]
     printf("  Compiling sdpaBwd1 (GQA)...\n");
     dk->sdpaBwd1 = compile_kern_mil_w(gen_sdpa_bwd1_noweight(), mask_w,
         4*Q_DIM*SEQ*2, (Q_DIM+2*SCORE_CH)*SEQ*2);
     if (!dk->sdpaBwd1) return false;
 
-    // SDPA bwd2 (weight-free): [1, 2*SCORE_CH+2*Q_DIM, 1, SEQ] → [1, 2*Q_DIM, 1, SEQ]
     printf("  Compiling sdpaBwd2 (GQA)...\n");
     dk->sdpaBwd2 = compile_kern_mil_w(gen_sdpa_bwd2(), @{},
         (2*SCORE_CH+2*Q_DIM)*SEQ*2, 2*Q_DIM*SEQ*2);
     if (!dk->sdpaBwd2) return false;
 
-    // Q backward: [1, Q_DIM, 1, SEQ+DIM] → [1, DIM, 1, SEQ]
     printf("  Compiling qBwd...\n");
     dk->qBwd = compile_kern_mil_w(gen_q_bwd_dynamic(), @{},
         Q_DIM*Q_BWD_SP*2, DIM*SEQ*2);
     if (!dk->qBwd) return false;
 
-    // KV backward: [1, KV_DIM, 1, 2*SEQ+2*DIM] → [1, DIM, 1, SEQ]
     printf("  Compiling kvBwd...\n");
     dk->kvBwd = compile_kern_mil_w(gen_kv_bwd_dynamic(), @{},
         KV_DIM*KV_BWD_SP*2, DIM*SEQ*2);
@@ -225,6 +264,8 @@ int main(int argc, char *argv[]) {
 
         bool do_resume = false, from_scratch = false;
         bool use_cpu_attn_bwd = false;  // CPU fp32 SDPA backward (fixes attention gradient underflow)
+        bool use_cpu_bwd = false;       // CPU fp32 for ALL backward dx ops (ANE forward only)
+        bool ane_matmul_only = false;   // ANE for linear projections only, CPU for RoPE/attn/SiLU/residual
         bool cpu_only = false;  // Pure CPU training (no ANE, all cblas_sgemm)
         bool use_lora = false;
         int lora_rank = 8;
@@ -240,6 +281,8 @@ int main(int argc, char *argv[]) {
             if (strcmp(argv[i], "--resume") == 0) do_resume = true;
             else if (strcmp(argv[i], "--scratch") == 0) from_scratch = true;
             else if (strcmp(argv[i], "--cpu-attn-bwd") == 0) use_cpu_attn_bwd = true;
+            else if (strcmp(argv[i], "--cpu-bwd") == 0) use_cpu_bwd = true;
+            else if (strcmp(argv[i], "--ane-matmul-only") == 0) ane_matmul_only = true;
             else if (strcmp(argv[i], "--cpu-only") == 0) cpu_only = true;
             else if (strcmp(argv[i], "--lora") == 0) use_lora = true;
             else if (strcmp(argv[i], "--lora-rank") == 0 && i+1<argc) lora_rank = atoi(argv[++i]);
@@ -257,7 +300,9 @@ int main(int argc, char *argv[]) {
             else if (strcmp(argv[i], "--adaptive") == 0 && i+1<argc) adaptive_thresh = atof(argv[++i]);
             else if (strcmp(argv[i], "--adaptive-window") == 0 && i+1<argc) adaptive_window = atoi(argv[++i]);
         }
-        if (cpu_only) use_cpu_attn_bwd = true;  // CPU-only implies CPU attention backward
+        if (cpu_only) use_cpu_bwd = true;            // CPU-only implies CPU backward
+        if (ane_matmul_only) use_cpu_bwd = true;   // ANE matmul-only implies CPU backward
+        if (use_cpu_bwd) use_cpu_attn_bwd = true;  // CPU backward implies CPU attention backward
         if (!cpu_only) ane_init();
         float lr = max_lr;
 
@@ -293,6 +338,8 @@ int main(int argc, char *argv[]) {
             double embed_m = (double)VOCAB*DIM / 1e6;
             printf("Params: %.1fM (transformer %.1fM + embed %.1fM)\n", xformer_m+embed_m, xformer_m, embed_m);
             if (cpu_only) printf("Mode: CPU-only (all matmuls via cblas_sgemm fp32)\n");
+            else if (ane_matmul_only) printf("Mode: ANE matmul-only (linear projections on ANE fp16, everything else CPU fp32)\n");
+            else if (use_cpu_bwd) printf("Mode: ANE fp16 fused forward + CPU fp32 backward\n");
             else {
                 printf("Kernels: 10 compiled (sdpaFwd+woFwd, ffnFused, ffnBwdW2t+W13t, wotBwd, sdpaBwd1+2, qBwd+kvBwd)\n");
                 if (use_cpu_attn_bwd) printf("SDPA backward: CPU fp32 (accurate attention gradients)\n");
@@ -389,7 +436,11 @@ int main(int argc, char *argv[]) {
         uint16_t *token_data = (uint16_t*)mmap(NULL, data_len, PROT_READ, MAP_PRIVATE, data_fd, 0);
         if (token_data == MAP_FAILED) { printf("mmap failed\n"); return 1; }
         size_t n_tokens = data_len / 2;
-        printf("Token data: %zu tokens (%.1f MB)\n", n_tokens, data_len/1e6);
+        size_t val_start = (size_t)(n_tokens * 0.9);  // 90/10 train/val split
+        size_t train_tokens = val_start;
+        size_t val_tokens = n_tokens - val_start;
+        printf("Token data: %zu tokens (%.1f MB) — train: %zu, val: %zu\n",
+               n_tokens, data_len/1e6, train_tokens, val_tokens);
 
         // Vocab compaction
         VocabMap vm = vocab_map_build(token_data, n_tokens, VOCAB);
@@ -405,53 +456,142 @@ int main(int argc, char *argv[]) {
         PerLayerSurfaces pls[NLAYERS];
         PerLayerRequests plr[NLAYERS];
         double compile_ms = 0;
+        memset(&dk, 0, sizeof(dk));
+        memset(pls, 0, sizeof(pls));
+        memset(plr, 0, sizeof(plr));
+
         if (!cpu_only) {
-            printf("Compiling 10 dynamic kernels (one-time)...\n");
+            bool compile_bwd = !use_cpu_bwd;  // Skip ANE backward kernels if CPU backward
+            int n_kernels = ane_matmul_only ? 5 : 3;
+            if (compile_bwd) n_kernels += 7;
+            printf("Compiling %d dynamic kernels (one-time)...\n", n_kernels);
             uint64_t tc = mach_absolute_time();
-            if (!compile_dynamic_kernels(&dk, res_alpha)) {
+            if (!compile_dynamic_kernels(&dk, res_alpha, ane_matmul_only, compile_bwd)) {
                 printf("Compilation failed!\n"); return 1;
             }
             compile_ms = tb_ms(mach_absolute_time() - tc);
-            printf("Compiled 10 kernels in %.0fms (shared across all %d layers)\n", compile_ms, NLAYERS);
+            printf("Compiled %d kernels in %.0fms (shared across all %d layers)\n", n_kernels, compile_ms, NLAYERS);
 
             // Allocate per-layer IOSurfaces + requests
             printf("Allocating per-layer IOSurfaces...\n");
             for (int L = 0; L < NLAYERS; L++) {
-                pls[L].sdpaFwd_in    = make_surface(DIM*SDPA_FWD_SP*2);
-                pls[L].woFwd_in      = make_surface(Q_DIM*WO_FWD_SP*2);
-                pls[L].ffnFused_in   = make_surface(DIM*FFN_FUSED_SP*2);
-                pls[L].ffnBwdW2t_in  = make_surface(DIM*FFN_BWD_W2T_SP*2);
-                pls[L].ffnBwdW13t_in = make_surface(HIDDEN*FFN_BWD_W13T_SP*2);
-                pls[L].wotBwd_in     = make_surface(DIM*WOT_BWD_SP*2);
-                pls[L].qBwd_in       = make_surface(Q_DIM*Q_BWD_SP*2);
-                pls[L].kvBwd_in      = make_surface(KV_DIM*KV_BWD_SP*2);
+                if (ane_matmul_only) {
+                    // Unfused forward: individual matmul surfaces
+                    pls[L].wqFwd_in  = make_surface(DIM*WQ_FWD_SP*2);
+                    pls[L].wkFwd_in  = make_surface(DIM*WKV_FWD_SP*2);
+                    pls[L].wvFwd_in  = make_surface(DIM*WKV_FWD_SP*2);
+                    pls[L].woFwd_in  = make_surface(Q_DIM*WO_FWD_SP*2);
+                    pls[L].w1Fwd_in  = make_surface(DIM*W13_FWD_SP*2);
+                    pls[L].w3Fwd_in  = make_surface(DIM*W13_FWD_SP*2);
+                    pls[L].w2Fwd_in  = make_surface(HIDDEN*W2_FWD_SP*2);
 
-                plr[L].sdpaFwd   = make_request(dk.sdpaFwd,   pls[L].sdpaFwd_in);
-                plr[L].woFwd     = make_request(dk.woFwd,     pls[L].woFwd_in);
-                plr[L].ffnFused  = make_request(dk.ffnFused,  pls[L].ffnFused_in);
-                plr[L].ffnBwdW2t = make_request(dk.ffnBwdW2t, pls[L].ffnBwdW2t_in);
-                plr[L].ffnBwdW13t= make_request(dk.ffnBwdW13t,pls[L].ffnBwdW13t_in);
-                plr[L].wotBwd    = make_request(dk.wotBwd,    pls[L].wotBwd_in);
-                plr[L].qBwd      = make_request(dk.qBwd,      pls[L].qBwd_in);
-                plr[L].kvBwd     = make_request(dk.kvBwd,     pls[L].kvBwd_in);
+                    plr[L].wqFwd  = make_request(dk.wqFwd,  pls[L].wqFwd_in);
+                    plr[L].wkFwd  = make_request(dk.wkvFwd, pls[L].wkFwd_in);
+                    plr[L].wvFwd  = make_request(dk.wkvFwd, pls[L].wvFwd_in);
+                    plr[L].woFwd  = make_request(dk.woFwd,  pls[L].woFwd_in);
+                    plr[L].w1Fwd  = make_request(dk.w13Fwd, pls[L].w1Fwd_in);
+                    plr[L].w3Fwd  = make_request(dk.w13Fwd, pls[L].w3Fwd_in);
+                    plr[L].w2Fwd  = make_request(dk.w2Fwd,  pls[L].w2Fwd_in);
+                } else {
+                    // Fused forward: sdpaFwd + woFwd + ffnFused
+                    pls[L].sdpaFwd_in  = make_surface(DIM*SDPA_FWD_SP*2);
+                    pls[L].woFwd_in    = make_surface(Q_DIM*WO_FWD_SP*2);
+                    pls[L].ffnFused_in = make_surface(DIM*FFN_FUSED_SP*2);
+
+                    plr[L].sdpaFwd  = make_request(dk.sdpaFwd,  pls[L].sdpaFwd_in);
+                    plr[L].woFwd    = make_request(dk.woFwd,    pls[L].woFwd_in);
+                    plr[L].ffnFused = make_request(dk.ffnFused, pls[L].ffnFused_in);
+                }
+
+                if (compile_bwd) {
+                    pls[L].ffnBwdW2t_in  = make_surface(DIM*FFN_BWD_W2T_SP*2);
+                    pls[L].ffnBwdW13t_in = make_surface(HIDDEN*FFN_BWD_W13T_SP*2);
+                    pls[L].wotBwd_in     = make_surface(DIM*WOT_BWD_SP*2);
+                    pls[L].qBwd_in       = make_surface(Q_DIM*Q_BWD_SP*2);
+                    pls[L].kvBwd_in      = make_surface(KV_DIM*KV_BWD_SP*2);
+
+                    plr[L].ffnBwdW2t  = make_request(dk.ffnBwdW2t,  pls[L].ffnBwdW2t_in);
+                    plr[L].ffnBwdW13t = make_request(dk.ffnBwdW13t, pls[L].ffnBwdW13t_in);
+                    plr[L].wotBwd     = make_request(dk.wotBwd,     pls[L].wotBwd_in);
+                    plr[L].qBwd       = make_request(dk.qBwd,       pls[L].qBwd_in);
+                    plr[L].kvBwd      = make_request(dk.kvBwd,      pls[L].kvBwd_in);
+                }
             }
 
             // Stage weights into per-layer surfaces
             for (int L = 0; L < NLAYERS; L++) {
-                stage_sdpa_fwd_weights(pls[L].sdpaFwd_in, Wqt_buf[L], Wkt_buf[L], Wvt_buf[L]);
-                stage_wo_fwd_weights(pls[L].woFwd_in, Wot_buf[L]);
-                stage_ffn_fused_weights(pls[L].ffnFused_in, W1t_buf[L], W3t_buf[L], lw[L].W2);
-                stage_ffn_bwd_w2t_weights(pls[L].ffnBwdW2t_in, lw[L].W2);
-                stage_ffn_bwd_w13t_weights(pls[L].ffnBwdW13t_in, lw[L].W1, lw[L].W3);
-                stage_wot_bwd_weights(pls[L].wotBwd_in, lw[L].Wo);
-                stage_q_bwd_weights(pls[L].qBwd_in, lw[L].Wq);
-                stage_kv_bwd_weights(pls[L].kvBwd_in, lw[L].Wk, lw[L].Wv);
+                if (ane_matmul_only) {
+                    // Unfused: stage transposed weights into individual matmul surfaces
+                    io_write_dyn(pls[L].wqFwd_in, (float*)NULL, DIM, 0, NULL, 0);  // placeholder
+                    // Use io_write_dyn to stage weights; act portion written at runtime
+                    // Weight staging: write Wt into the weight portion of the surface
+                    // io_write_dyn writes [act|weight] but we only need weight now
+                    // We'll stage weights by writing directly to the weight region
+                    {
+                        // Wq: surface [DIM, SEQ+Q_DIM], weight at columns [SEQ:SEQ+Q_DIM]
+                        IOSurfaceLock(pls[L].wqFwd_in, 0, NULL);
+                        _Float16 *buf = (_Float16*)IOSurfaceGetBaseAddress(pls[L].wqFwd_in);
+                        for (int d = 0; d < DIM; d++)
+                            cvt_f32_f16(buf + d*WQ_FWD_SP + SEQ, Wqt_buf[L] + d*Q_DIM, Q_DIM);
+                        IOSurfaceUnlock(pls[L].wqFwd_in, 0, NULL);
+                    }
+                    {
+                        IOSurfaceLock(pls[L].wkFwd_in, 0, NULL);
+                        _Float16 *buf = (_Float16*)IOSurfaceGetBaseAddress(pls[L].wkFwd_in);
+                        for (int d = 0; d < DIM; d++)
+                            cvt_f32_f16(buf + d*WKV_FWD_SP + SEQ, Wkt_buf[L] + d*KV_DIM, KV_DIM);
+                        IOSurfaceUnlock(pls[L].wkFwd_in, 0, NULL);
+                    }
+                    {
+                        IOSurfaceLock(pls[L].wvFwd_in, 0, NULL);
+                        _Float16 *buf = (_Float16*)IOSurfaceGetBaseAddress(pls[L].wvFwd_in);
+                        for (int d = 0; d < DIM; d++)
+                            cvt_f32_f16(buf + d*WKV_FWD_SP + SEQ, Wvt_buf[L] + d*KV_DIM, KV_DIM);
+                        IOSurfaceUnlock(pls[L].wvFwd_in, 0, NULL);
+                    }
+                    stage_wo_fwd_weights(pls[L].woFwd_in, Wot_buf[L]);
+                    {
+                        IOSurfaceLock(pls[L].w1Fwd_in, 0, NULL);
+                        _Float16 *buf = (_Float16*)IOSurfaceGetBaseAddress(pls[L].w1Fwd_in);
+                        for (int d = 0; d < DIM; d++)
+                            cvt_f32_f16(buf + d*W13_FWD_SP + SEQ, W1t_buf[L] + d*HIDDEN, HIDDEN);
+                        IOSurfaceUnlock(pls[L].w1Fwd_in, 0, NULL);
+                    }
+                    {
+                        IOSurfaceLock(pls[L].w3Fwd_in, 0, NULL);
+                        _Float16 *buf = (_Float16*)IOSurfaceGetBaseAddress(pls[L].w3Fwd_in);
+                        for (int d = 0; d < DIM; d++)
+                            cvt_f32_f16(buf + d*W13_FWD_SP + SEQ, W3t_buf[L] + d*HIDDEN, HIDDEN);
+                        IOSurfaceUnlock(pls[L].w3Fwd_in, 0, NULL);
+                    }
+                    {
+                        // W2: surface [HIDDEN, SEQ+DIM], weight W2 is [DIM,HIDDEN], transposed=[HIDDEN,DIM]
+                        // W2 original layout: W2[row][col] = W2[d][h], d=0..DIM-1, h=0..HIDDEN-1
+                        // W2t[h][d] = W2[d][h] — transpose to [HIDDEN,DIM] for the matmul kernel
+                        IOSurfaceLock(pls[L].w2Fwd_in, 0, NULL);
+                        _Float16 *buf = (_Float16*)IOSurfaceGetBaseAddress(pls[L].w2Fwd_in);
+                        // W2 is stored as [DIM rows, HIDDEN cols], we need W2t[HIDDEN,DIM]
+                        for (int h = 0; h < HIDDEN; h++)
+                            for (int d = 0; d < DIM; d++)
+                                buf[h*W2_FWD_SP + SEQ + d] = (_Float16)lw[L].W2[d*HIDDEN + h];
+                        IOSurfaceUnlock(pls[L].w2Fwd_in, 0, NULL);
+                    }
+                } else {
+                    stage_sdpa_fwd_weights(pls[L].sdpaFwd_in, Wqt_buf[L], Wkt_buf[L], Wvt_buf[L]);
+                    stage_wo_fwd_weights(pls[L].woFwd_in, Wot_buf[L]);
+                    stage_ffn_fused_weights(pls[L].ffnFused_in, W1t_buf[L], W3t_buf[L], lw[L].W2);
+                }
+
+                if (compile_bwd) {
+                    stage_ffn_bwd_w2t_weights(pls[L].ffnBwdW2t_in, lw[L].W2);
+                    stage_ffn_bwd_w13t_weights(pls[L].ffnBwdW13t_in, lw[L].W1, lw[L].W3);
+                    stage_wot_bwd_weights(pls[L].wotBwd_in, lw[L].Wo);
+                    stage_q_bwd_weights(pls[L].qBwd_in, lw[L].Wq);
+                    stage_kv_bwd_weights(pls[L].kvBwd_in, lw[L].Wk, lw[L].Wv);
+                }
             }
             printf("Per-layer weight staging complete\n\n");
         } else {
-            memset(&dk, 0, sizeof(dk));
-            memset(pls, 0, sizeof(pls));
-            memset(plr, 0, sizeof(plr));
             printf("CPU-only mode: skipping ANE kernel compilation\n\n");
         }
 
@@ -487,6 +627,7 @@ int main(int argc, char *argv[]) {
         dispatch_group_t dw_grp = dispatch_group_create();
 
         float last_loss = 999.0f;
+        float last_val_loss = 999.0f;
         float best_loss = resume_loss > 0 ? resume_loss : 999.0f;
         double total_train_ms = 0;
         int total_steps_done = 0;
@@ -505,8 +646,8 @@ int main(int argc, char *argv[]) {
             }
             uint64_t t0, t1, t_step = mach_absolute_time();
 
-            // Sample data
-            size_t max_pos = n_tokens - SEQ - 1;
+            // Sample data (from training split only)
+            size_t max_pos = train_tokens - SEQ - 1;
             size_t pos = (size_t)(drand48() * max_pos);
             uint16_t *input_tokens = token_data + pos;
             uint16_t *target_tokens_raw = token_data + pos + 1;
@@ -538,30 +679,76 @@ int main(int argc, char *argv[]) {
                 if (cpu_only) {
                     // === CPU SDPA forward: QKV proj + RoPE + GQA tile + attention ===
                     t0 = mach_absolute_time();
-                    // Q = Wq @ xnorm: [Q_DIM,DIM] @ [DIM,SEQ] → [Q_DIM,SEQ]
                     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                                 Q_DIM, SEQ, DIM, 1.0f, lw[L].Wq, DIM, xnorm_buf, SEQ, 0.0f, ac->Q, SEQ);
-                    // K = Wk @ xnorm: [KV_DIM,DIM] @ [DIM,SEQ] → [KV_DIM,SEQ]
                     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                                 KV_DIM, SEQ, DIM, 1.0f, lw[L].Wk, DIM, xnorm_buf, SEQ, 0.0f, ac->K, SEQ);
-                    // V = Wv @ xnorm: [KV_DIM,DIM] @ [DIM,SEQ] → [KV_DIM,SEQ]
                     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                                 KV_DIM, SEQ, DIM, 1.0f, lw[L].Wv, DIM, xnorm_buf, SEQ, 0.0f, ac->V, SEQ);
-                    // RoPE on Q and K
                     rope_forward_inplace(ac->Q, SEQ, Q_DIM, HD);
                     rope_forward_inplace(ac->K, SEQ, KV_DIM, HD);
-                    // GQA tile K,V from KV_DIM → Q_DIM
                     gqa_tile_kv(k_tiled, ac->K, SEQ);
                     gqa_tile_kv(v_tiled, ac->V, SEQ);
-                    // SDPA: causal attention
                     cpu_sdpa_forward(ac->Q, k_tiled, v_tiled, ac->attn_out, HEADS, HD, SEQ);
                     t_ane_fwd += tb_ms(mach_absolute_time() - t0);
-
-                    // === CPU Wo forward: o_out = Wo @ attn_out ===
                     t0 = mach_absolute_time();
                     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                                 DIM, SEQ, Q_DIM, 1.0f, lw[L].Wo, Q_DIM, ac->attn_out, SEQ, 0.0f, ac->o_out, SEQ);
                     t_ane_fwd += tb_ms(mach_absolute_time() - t0);
+                } else if (ane_matmul_only) {
+                    // === ANE matmul-only: Wq,Wk,Wv on ANE + RoPE+attention+softmax on CPU ===
+                    // Wq: xnorm → Q
+                    t0 = mach_absolute_time();
+                    io_write_dyn_acts(pls[L].wqFwd_in, xnorm_buf, DIM, SEQ, WQ_FWD_SP);
+                    t_io_fwd += tb_ms(mach_absolute_time() - t0);
+                    t0 = mach_absolute_time();
+                    ane_eval_req(dk.wqFwd, plr[L].wqFwd);
+                    t_ane_fwd += tb_ms(mach_absolute_time() - t0);
+                    t0 = mach_absolute_time();
+                    io_read_dyn(dk.wqFwd->ioOut, ac->Q, Q_DIM, SEQ);
+                    t_io_fwd += tb_ms(mach_absolute_time() - t0);
+
+                    // Wk: xnorm → K
+                    t0 = mach_absolute_time();
+                    io_write_dyn_acts(pls[L].wkFwd_in, xnorm_buf, DIM, SEQ, WKV_FWD_SP);
+                    t_io_fwd += tb_ms(mach_absolute_time() - t0);
+                    t0 = mach_absolute_time();
+                    ane_eval_req(dk.wkvFwd, plr[L].wkFwd);
+                    t_ane_fwd += tb_ms(mach_absolute_time() - t0);
+                    t0 = mach_absolute_time();
+                    io_read_dyn(dk.wkvFwd->ioOut, ac->K, KV_DIM, SEQ);
+                    t_io_fwd += tb_ms(mach_absolute_time() - t0);
+
+                    // Wv: xnorm → V
+                    t0 = mach_absolute_time();
+                    io_write_dyn_acts(pls[L].wvFwd_in, xnorm_buf, DIM, SEQ, WKV_FWD_SP);
+                    t_io_fwd += tb_ms(mach_absolute_time() - t0);
+                    t0 = mach_absolute_time();
+                    ane_eval_req(dk.wkvFwd, plr[L].wvFwd);
+                    t_ane_fwd += tb_ms(mach_absolute_time() - t0);
+                    t0 = mach_absolute_time();
+                    io_read_dyn(dk.wkvFwd->ioOut, ac->V, KV_DIM, SEQ);
+                    t_io_fwd += tb_ms(mach_absolute_time() - t0);
+
+                    // RoPE + attention on CPU fp32
+                    t0 = mach_absolute_time();
+                    rope_forward_inplace(ac->Q, SEQ, Q_DIM, HD);
+                    rope_forward_inplace(ac->K, SEQ, KV_DIM, HD);
+                    gqa_tile_kv(k_tiled, ac->K, SEQ);
+                    gqa_tile_kv(v_tiled, ac->V, SEQ);
+                    cpu_sdpa_forward(ac->Q, k_tiled, v_tiled, ac->attn_out, HEADS, HD, SEQ);
+                    t_ane_fwd += tb_ms(mach_absolute_time() - t0);
+
+                    // Wo: attn_out → o_out (ANE)
+                    t0 = mach_absolute_time();
+                    write_wo_fwd_acts(pls[L].woFwd_in, ac->attn_out);
+                    t_io_fwd += tb_ms(mach_absolute_time() - t0);
+                    t0 = mach_absolute_time();
+                    ane_eval_req(dk.woFwd, plr[L].woFwd);
+                    t_ane_fwd += tb_ms(mach_absolute_time() - t0);
+                    t0 = mach_absolute_time();
+                    io_read_dyn(dk.woFwd->ioOut, ac->o_out, DIM, SEQ);
+                    t_io_fwd += tb_ms(mach_absolute_time() - t0);
                 } else {
                 // SDPA forward (ANE): xnorm + Wq,Wk,Wv → attn_out[Q_DIM], Q_rope[Q_DIM], K_rope[KV_DIM], V[KV_DIM], xnorm[DIM]
                 t0 = mach_absolute_time();
@@ -609,35 +796,71 @@ int main(int argc, char *argv[]) {
                 if (cpu_only) {
                     // === CPU FFN forward: W1/W3 + SiLU + W2 + residual ===
                     t0 = mach_absolute_time();
-                    // h1 = W1 @ x2norm: [HIDDEN,DIM] @ [DIM,SEQ] → [HIDDEN,SEQ]
                     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                                 HIDDEN, SEQ, DIM, 1.0f, lw[L].W1, DIM, ac->x2norm, SEQ, 0.0f, ac->h1, SEQ);
-                    // h3 = W3 @ x2norm: [HIDDEN,DIM] @ [DIM,SEQ] → [HIDDEN,SEQ]
                     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                                 HIDDEN, SEQ, DIM, 1.0f, lw[L].W3, DIM, ac->x2norm, SEQ, 0.0f, ac->h3, SEQ);
-                    // SiLU(h1) * h3 → silu_out
-                    {
-                        int n = HIDDEN*SEQ;
-                        float minus1 = -1.0f, one = 1.0f;
-                        // sig = 1/(1+exp(-h1))
-                        vDSP_vsmul(ac->h1, 1, &minus1, silu_tmp, 1, (vDSP_Length)n);
-                        vvexpf(silu_tmp, silu_tmp, &n);
-                        vDSP_vsadd(silu_tmp, 1, &one, silu_tmp, 1, (vDSP_Length)n);
-                        vvrecf(silu_tmp, silu_tmp, &n);  // sig
-                        // silu_out = h1 * sig * h3
-                        vDSP_vmul(ac->h1, 1, silu_tmp, 1, ac->silu_out, 1, (vDSP_Length)n);
-                        vDSP_vmul(ac->silu_out, 1, ac->h3, 1, ac->silu_out, 1, (vDSP_Length)n);
-                    }
-                    // ffn_out = W2 @ silu_out: [DIM,HIDDEN] @ [HIDDEN,SEQ] → [DIM,SEQ]
+                    { int n = HIDDEN*SEQ; float minus1 = -1.0f, one = 1.0f;
+                      vDSP_vsmul(ac->h1, 1, &minus1, silu_tmp, 1, (vDSP_Length)n);
+                      vvexpf(silu_tmp, silu_tmp, &n); vDSP_vsadd(silu_tmp, 1, &one, silu_tmp, 1, (vDSP_Length)n);
+                      vvrecf(silu_tmp, silu_tmp, &n);
+                      vDSP_vmul(ac->h1, 1, silu_tmp, 1, ac->silu_out, 1, (vDSP_Length)n);
+                      vDSP_vmul(ac->silu_out, 1, ac->h3, 1, ac->silu_out, 1, (vDSP_Length)n); }
                     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                                 DIM, SEQ, HIDDEN, 1.0f, lw[L].W2, HIDDEN, ac->silu_out, SEQ, 0.0f, ac->ffn_out, SEQ);
-                    // x_cur = res_alpha * ffn_out + x2
                     vDSP_vsma(ac->ffn_out, 1, &res_alpha, ac->x2, 1, x_cur, 1, (vDSP_Length)(SEQ*DIM));
-                    if (act_clamp > 0) {
-                        float lo = -act_clamp, hi = act_clamp;
-                        vDSP_vclip(x_cur, 1, &lo, &hi, x_cur, 1, (vDSP_Length)(SEQ*DIM));
-                    }
+                    if (act_clamp > 0) { float lo=-act_clamp, hi=act_clamp;
+                        vDSP_vclip(x_cur, 1, &lo, &hi, x_cur, 1, (vDSP_Length)(SEQ*DIM)); }
                     t_ane_fwd += tb_ms(mach_absolute_time() - t0);
+                } else if (ane_matmul_only) {
+                    // === ANE matmul-only FFN: W1,W3 on ANE + SiLU on CPU + W2 on ANE + residual on CPU ===
+                    // W1: x2norm → h1
+                    t0 = mach_absolute_time();
+                    io_write_dyn_acts(pls[L].w1Fwd_in, ac->x2norm, DIM, SEQ, W13_FWD_SP);
+                    t_io_fwd += tb_ms(mach_absolute_time() - t0);
+                    t0 = mach_absolute_time();
+                    ane_eval_req(dk.w13Fwd, plr[L].w1Fwd);
+                    t_ane_fwd += tb_ms(mach_absolute_time() - t0);
+                    t0 = mach_absolute_time();
+                    io_read_dyn(dk.w13Fwd->ioOut, ac->h1, HIDDEN, SEQ);
+                    t_io_fwd += tb_ms(mach_absolute_time() - t0);
+
+                    // W3: x2norm → h3
+                    t0 = mach_absolute_time();
+                    io_write_dyn_acts(pls[L].w3Fwd_in, ac->x2norm, DIM, SEQ, W13_FWD_SP);
+                    t_io_fwd += tb_ms(mach_absolute_time() - t0);
+                    t0 = mach_absolute_time();
+                    ane_eval_req(dk.w13Fwd, plr[L].w3Fwd);
+                    t_ane_fwd += tb_ms(mach_absolute_time() - t0);
+                    t0 = mach_absolute_time();
+                    io_read_dyn(dk.w13Fwd->ioOut, ac->h3, HIDDEN, SEQ);
+                    t_io_fwd += tb_ms(mach_absolute_time() - t0);
+
+                    // SiLU on CPU fp32
+                    t0 = mach_absolute_time();
+                    { int n = HIDDEN*SEQ; float minus1 = -1.0f, one = 1.0f;
+                      vDSP_vsmul(ac->h1, 1, &minus1, silu_tmp, 1, (vDSP_Length)n);
+                      vvexpf(silu_tmp, silu_tmp, &n); vDSP_vsadd(silu_tmp, 1, &one, silu_tmp, 1, (vDSP_Length)n);
+                      vvrecf(silu_tmp, silu_tmp, &n);
+                      vDSP_vmul(ac->h1, 1, silu_tmp, 1, ac->silu_out, 1, (vDSP_Length)n);
+                      vDSP_vmul(ac->silu_out, 1, ac->h3, 1, ac->silu_out, 1, (vDSP_Length)n); }
+                    t_silu += tb_ms(mach_absolute_time() - t0);
+
+                    // W2: silu_out → ffn_out (ANE)
+                    t0 = mach_absolute_time();
+                    io_write_dyn_acts(pls[L].w2Fwd_in, ac->silu_out, HIDDEN, SEQ, W2_FWD_SP);
+                    t_io_fwd += tb_ms(mach_absolute_time() - t0);
+                    t0 = mach_absolute_time();
+                    ane_eval_req(dk.w2Fwd, plr[L].w2Fwd);
+                    t_ane_fwd += tb_ms(mach_absolute_time() - t0);
+                    t0 = mach_absolute_time();
+                    io_read_dyn(dk.w2Fwd->ioOut, ac->ffn_out, DIM, SEQ);
+                    t_io_fwd += tb_ms(mach_absolute_time() - t0);
+
+                    // Residual on CPU fp32
+                    vDSP_vsma(ac->ffn_out, 1, &res_alpha, ac->x2, 1, x_cur, 1, (vDSP_Length)(SEQ*DIM));
+                    if (act_clamp > 0) { float lo=-act_clamp, hi=act_clamp;
+                        vDSP_vclip(x_cur, 1, &lo, &hi, x_cur, 1, (vDSP_Length)(SEQ*DIM)); }
                 } else {
                 // Fused FFN (ANE)
                 t0 = mach_absolute_time();
@@ -709,8 +932,8 @@ int main(int argc, char *argv[]) {
 
                 // FFN backward: dffn @ W2^T → dsilu_raw
                 t0 = mach_absolute_time();
-                if (cpu_only) {
-                    // CPU: dsilu = W2^T @ dffn: W2 is [DIM,HIDDEN], W2^T is [HIDDEN,DIM]
+                if (cpu_only || use_cpu_bwd) {
+                    // CPU fp32: dsilu = W2^T @ dffn: W2 is [DIM,HIDDEN], W2^T is [HIDDEN,DIM]
                     cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
                                 HIDDEN, SEQ, DIM, 1.0f, lw[L].W2, HIDDEN, dffn, SEQ, 0.0f, dsilu, SEQ);
                 } else {
@@ -749,8 +972,8 @@ int main(int argc, char *argv[]) {
 
                 // dh1@W1^T + dh3@W3^T → dx_ffn
                 t0 = mach_absolute_time();
-                if (cpu_only) {
-                    // CPU: dx_ffn = W1^T @ dh1 + W3^T @ dh3
+                if (cpu_only || use_cpu_bwd) {
+                    // CPU fp32: dx_ffn = W1^T @ dh1 + W3^T @ dh3
                     // W1 is [HIDDEN,DIM], W1^T is [DIM,HIDDEN]
                     cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
                                 DIM, SEQ, HIDDEN, 1.0f, lw[L].W1, DIM, dh1, SEQ, 0.0f, dx_ffn, SEQ);
@@ -986,6 +1209,75 @@ int main(int argc, char *argv[]) {
                        step, loss, lr, step_ms, xmn, xmx, dmn, dmx);
             }
 
+            // Validation evaluation every 100 steps (CPU forward-only on val split)
+            if (step % 100 == 0 && step > start_step && val_tokens > SEQ + 1) {
+                float val_loss_sum = 0;
+                int val_samples = 10;
+                float *val_x = (float*)malloc(SEQ*DIM*4);
+                float *val_xn = (float*)malloc(SEQ*DIM*4);
+                float *val_xf = (float*)malloc(SEQ*DIM*4);
+                float *val_q = (float*)malloc(SEQ*Q_DIM*4);
+                float *val_k = (float*)malloc(SEQ*KV_DIM*4);
+                float *val_v = (float*)malloc(SEQ*KV_DIM*4);
+                float *val_kt = (float*)malloc(SEQ*Q_DIM*4);
+                float *val_vt = (float*)malloc(SEQ*Q_DIM*4);
+                float *val_ao = (float*)malloc(SEQ*Q_DIM*4);
+                float *val_oo = (float*)malloc(SEQ*DIM*4);
+                float *val_x2 = (float*)malloc(SEQ*DIM*4);
+                float *val_x2n = (float*)malloc(SEQ*DIM*4);
+                float *val_h1 = (float*)malloc(SEQ*HIDDEN*4);
+                float *val_h3 = (float*)malloc(SEQ*HIDDEN*4);
+                float *val_silu = (float*)malloc(SEQ*HIDDEN*4);
+                float *val_fo = (float*)malloc(SEQ*DIM*4);
+                float *val_logits = (float*)malloc(SEQ*CV*4);
+                float *val_dlogits = (float*)malloc(SEQ*CV*4);  // unused but cross_entropy_loss writes it
+                float *val_stmp = (float*)malloc(SEQ*HIDDEN*4);
+
+                unsigned short xsubi[3] = {(unsigned short)(step*7+1), (unsigned short)(step*13+3), (unsigned short)(step*17+5)};
+                for (int vs = 0; vs < val_samples; vs++) {
+                    size_t val_max = val_tokens - SEQ - 1;
+                    size_t vpos = val_start + (size_t)(erand48(xsubi) * val_max);
+                    uint16_t *vinp = token_data + vpos;
+                    uint16_t *vtgt_raw = token_data + vpos + 1;
+                    uint16_t vctargets[SEQ];
+                    for (int t = 0; t < SEQ; t++) vctargets[t] = (uint16_t)vm.full_to_compact[vtgt_raw[t]];
+                    embed_lookup(val_x, embed, vinp, DIM, SEQ);
+                    for (int L = 0; L < NLAYERS; L++) {
+                        rmsnorm(val_xn, val_x, lw[L].rms_att, DIM, SEQ);
+                        cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,Q_DIM,SEQ,DIM,1.0f,lw[L].Wq,DIM,val_xn,SEQ,0.0f,val_q,SEQ);
+                        cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,KV_DIM,SEQ,DIM,1.0f,lw[L].Wk,DIM,val_xn,SEQ,0.0f,val_k,SEQ);
+                        cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,KV_DIM,SEQ,DIM,1.0f,lw[L].Wv,DIM,val_xn,SEQ,0.0f,val_v,SEQ);
+                        rope_forward_inplace(val_q, SEQ, Q_DIM, HD);
+                        rope_forward_inplace(val_k, SEQ, KV_DIM, HD);
+                        gqa_tile_kv(val_kt, val_k, SEQ);
+                        gqa_tile_kv(val_vt, val_v, SEQ);
+                        cpu_sdpa_forward(val_q, val_kt, val_vt, val_ao, HEADS, HD, SEQ);
+                        cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,DIM,SEQ,Q_DIM,1.0f,lw[L].Wo,Q_DIM,val_ao,SEQ,0.0f,val_oo,SEQ);
+                        vDSP_vsma(val_oo, 1, &res_alpha, val_x, 1, val_x2, 1, (vDSP_Length)(SEQ*DIM));
+                        rmsnorm(val_x2n, val_x2, lw[L].rms_ffn, DIM, SEQ);
+                        cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,HIDDEN,SEQ,DIM,1.0f,lw[L].W1,DIM,val_x2n,SEQ,0.0f,val_h1,SEQ);
+                        cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,HIDDEN,SEQ,DIM,1.0f,lw[L].W3,DIM,val_x2n,SEQ,0.0f,val_h3,SEQ);
+                        { int n = HIDDEN*SEQ; float m1=-1.0f, one=1.0f;
+                          vDSP_vsmul(val_h1,1,&m1,val_stmp,1,(vDSP_Length)n);
+                          vvexpf(val_stmp,val_stmp,&n); vDSP_vsadd(val_stmp,1,&one,val_stmp,1,(vDSP_Length)n);
+                          vvrecf(val_stmp,val_stmp,&n);
+                          vDSP_vmul(val_h1,1,val_stmp,1,val_silu,1,(vDSP_Length)n);
+                          vDSP_vmul(val_silu,1,val_h3,1,val_silu,1,(vDSP_Length)n); }
+                        cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,DIM,SEQ,HIDDEN,1.0f,lw[L].W2,HIDDEN,val_silu,SEQ,0.0f,val_fo,SEQ);
+                        vDSP_vsma(val_fo, 1, &res_alpha, val_x2, 1, val_x, 1, (vDSP_Length)(SEQ*DIM));
+                    }
+                    rmsnorm(val_xf, val_x, rms_final, DIM, SEQ);
+                    cblas_sgemm(CblasRowMajor,CblasTrans,CblasTrans,SEQ,CV,DIM,1.0f,val_xf,SEQ,cembed,DIM,0.0f,val_logits,CV);
+                    float vl = cross_entropy_loss(val_dlogits, val_logits, vctargets, CV, SEQ);
+                    val_loss_sum += vl;
+                }
+                last_val_loss = val_loss_sum / val_samples;
+                printf("  [val] loss=%.4f (avg of %d samples from val split)\n", last_val_loss, val_samples);
+                free(val_x); free(val_xn); free(val_xf); free(val_q); free(val_k); free(val_v);
+                free(val_kt); free(val_vt); free(val_ao); free(val_oo); free(val_x2); free(val_x2n);
+                free(val_h1); free(val_h3); free(val_silu); free(val_fo); free(val_logits); free(val_dlogits); free(val_stmp);
+            }
+
             // Adam update every accum_steps
             if ((step+1) % accum_steps == 0 || step == total_steps-1) {
                 dispatch_group_wait(dw_grp, DISPATCH_TIME_FOREVER);
@@ -1140,15 +1432,54 @@ int main(int argc, char *argv[]) {
                     transpose_weight(W2t_buf[L], lw[L].W2, DIM, HIDDEN);
                     transpose_weight(W3t_buf[L], lw[L].W3, HIDDEN, DIM);
 
-                    // Re-stage weights
-                    stage_sdpa_fwd_weights(pls[L].sdpaFwd_in, Wqt_buf[L], Wkt_buf[L], Wvt_buf[L]);
-                    stage_wo_fwd_weights(pls[L].woFwd_in, Wot_buf[L]);
-                    stage_ffn_fused_weights(pls[L].ffnFused_in, W1t_buf[L], W3t_buf[L], lw[L].W2);
-                    stage_ffn_bwd_w2t_weights(pls[L].ffnBwdW2t_in, lw[L].W2);
-                    stage_ffn_bwd_w13t_weights(pls[L].ffnBwdW13t_in, lw[L].W1, lw[L].W3);
-                    stage_wot_bwd_weights(pls[L].wotBwd_in, lw[L].Wo);
-                    stage_q_bwd_weights(pls[L].qBwd_in, lw[L].Wq);
-                    stage_kv_bwd_weights(pls[L].kvBwd_in, lw[L].Wk, lw[L].Wv);
+                    // Re-stage weights into IOSurfaces
+                    if (ane_matmul_only) {
+                        // Unfused: stage into individual matmul surfaces
+                        { IOSurfaceLock(pls[L].wqFwd_in, 0, NULL);
+                          _Float16 *buf = (_Float16*)IOSurfaceGetBaseAddress(pls[L].wqFwd_in);
+                          for (int d = 0; d < DIM; d++)
+                              cvt_f32_f16(buf + d*WQ_FWD_SP + SEQ, Wqt_buf[L] + d*Q_DIM, Q_DIM);
+                          IOSurfaceUnlock(pls[L].wqFwd_in, 0, NULL); }
+                        { IOSurfaceLock(pls[L].wkFwd_in, 0, NULL);
+                          _Float16 *buf = (_Float16*)IOSurfaceGetBaseAddress(pls[L].wkFwd_in);
+                          for (int d = 0; d < DIM; d++)
+                              cvt_f32_f16(buf + d*WKV_FWD_SP + SEQ, Wkt_buf[L] + d*KV_DIM, KV_DIM);
+                          IOSurfaceUnlock(pls[L].wkFwd_in, 0, NULL); }
+                        { IOSurfaceLock(pls[L].wvFwd_in, 0, NULL);
+                          _Float16 *buf = (_Float16*)IOSurfaceGetBaseAddress(pls[L].wvFwd_in);
+                          for (int d = 0; d < DIM; d++)
+                              cvt_f32_f16(buf + d*WKV_FWD_SP + SEQ, Wvt_buf[L] + d*KV_DIM, KV_DIM);
+                          IOSurfaceUnlock(pls[L].wvFwd_in, 0, NULL); }
+                        stage_wo_fwd_weights(pls[L].woFwd_in, Wot_buf[L]);
+                        { IOSurfaceLock(pls[L].w1Fwd_in, 0, NULL);
+                          _Float16 *buf = (_Float16*)IOSurfaceGetBaseAddress(pls[L].w1Fwd_in);
+                          for (int d = 0; d < DIM; d++)
+                              cvt_f32_f16(buf + d*W13_FWD_SP + SEQ, W1t_buf[L] + d*HIDDEN, HIDDEN);
+                          IOSurfaceUnlock(pls[L].w1Fwd_in, 0, NULL); }
+                        { IOSurfaceLock(pls[L].w3Fwd_in, 0, NULL);
+                          _Float16 *buf = (_Float16*)IOSurfaceGetBaseAddress(pls[L].w3Fwd_in);
+                          for (int d = 0; d < DIM; d++)
+                              cvt_f32_f16(buf + d*W13_FWD_SP + SEQ, W3t_buf[L] + d*HIDDEN, HIDDEN);
+                          IOSurfaceUnlock(pls[L].w3Fwd_in, 0, NULL); }
+                        { IOSurfaceLock(pls[L].w2Fwd_in, 0, NULL);
+                          _Float16 *buf = (_Float16*)IOSurfaceGetBaseAddress(pls[L].w2Fwd_in);
+                          for (int h = 0; h < HIDDEN; h++)
+                              for (int d = 0; d < DIM; d++)
+                                  buf[h*W2_FWD_SP + SEQ + d] = (_Float16)lw[L].W2[d*HIDDEN + h];
+                          IOSurfaceUnlock(pls[L].w2Fwd_in, 0, NULL); }
+                    } else {
+                        // Fused: stage into fused kernel surfaces
+                        stage_sdpa_fwd_weights(pls[L].sdpaFwd_in, Wqt_buf[L], Wkt_buf[L], Wvt_buf[L]);
+                        stage_wo_fwd_weights(pls[L].woFwd_in, Wot_buf[L]);
+                        stage_ffn_fused_weights(pls[L].ffnFused_in, W1t_buf[L], W3t_buf[L], lw[L].W2);
+                    }
+                    if (!use_cpu_bwd) {
+                        stage_ffn_bwd_w2t_weights(pls[L].ffnBwdW2t_in, lw[L].W2);
+                        stage_ffn_bwd_w13t_weights(pls[L].ffnBwdW13t_in, lw[L].W1, lw[L].W3);
+                        stage_wot_bwd_weights(pls[L].wotBwd_in, lw[L].Wo);
+                        stage_q_bwd_weights(pls[L].qBwd_in, lw[L].Wq);
+                        stage_kv_bwd_weights(pls[L].kvBwd_in, lw[L].Wk, lw[L].Wv);
+                    }
                     }
                 }
                 adam_update(rms_final, grms_final, &arms_final, adam_t, lr, adam_b1, adam_b2, adam_eps, 0.0f);
@@ -1196,6 +1527,7 @@ int main(int argc, char *argv[]) {
         // Machine-parseable output for autoresearch
         printf("\n---\n");
         printf("final_loss:       %.6f\n", last_loss);
+        if (last_val_loss < 900) printf("val_loss:         %.6f\n", last_val_loss);
         printf("training_seconds: %.1f\n", train_sec);
         printf("total_seconds:    %.1f\n", wall_sec);
         printf("total_tokens_M:   %.1f\n", (double)total_steps_done * SEQ / 1e6);
@@ -1204,6 +1536,9 @@ int main(int argc, char *argv[]) {
         printf("depth:            %d\n", NLAYERS);
         if (use_lora) printf("lora_rank:        %d\n", lora_rank);
         if (cpu_only) printf("mode:             cpu-only\n");
+        else if (ane_matmul_only) printf("mode:             ane-matmul-only\n");
+        else if (use_cpu_bwd) printf("mode:             ane-fwd-cpu-bwd\n");
+        else printf("mode:             ane-full\n");
         if (act_clamp > 0) printf("act_clamp:        %.1f\n", act_clamp);
         if (grad_sanitize) printf("grad_sanitized:   %d\n", total_sanitized);
         if (adaptive_switch_step >= 0) printf("adaptive_switch:  %d\n", adaptive_switch_step);

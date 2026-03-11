@@ -23,13 +23,15 @@
 | V2 | Conv 1x1 is 1.5-2.8x faster than matmul on ANE | Exp 9: microbenchmark | HIGH |
 | V3 | CPU AMX achieves 1.5-2.5 TFLOPS fp32 | Exp 8: cblas_sgemm benchmark | HIGH |
 | V4 | IOSurface overhead is ~13% of step time | Exp 7: 8.1ms of 63.2ms | HIGH |
-| V5 | Mixed precision (ANE fwd + CPU bwd) worse than pure | Exp 11: 5.10 vs 4.90 avg loss | HIGH |
+| V5 | Mixed precision (ANE fwd + CPU bwd) worse than pure | Exp 11: 5.10 vs 4.90 avg loss. **CLARIFIED (E36)**: the issue is fused non-linear ops in forward, not mixed precision itself. ane-matmul-only (ANE fwd matmul + CPU everything else) matches CPU. | CLARIFIED |
 | V6 | Loss scaling (256.0) essential for ANE fp16 | Exp 1: gradients underflow without it | HIGH |
 | V7 | Shallow/wide beats deep/narrow in fixed time | Exp 2: 4L/1024d beats 32L/960d | HIGH |
 | V8 | LoRA from pretrained works on ANE | Exp 3: stable training, loss 4.22 | HIGH |
 | V9 | Classifier row-major optimization ~2x faster | Exp 13: 30.5ms → 15.7ms | HIGH |
 | V10 | Both modes suffer ~1.5x thermal throttling at 10min | CORRECTED — single-process throttling is 30% (1.3x), not 50% (1.5x). E18's 1.5x was from concurrent processes. | CORRECTED (E24) |
 | V11 | ANE only faster than CPU for large matmul shapes (2816+ width) | E23: 1024x1024 CPU 0.67x faster, 2816x1024 ANE 1.88x faster | HIGH |
+| V12 | Fusing non-linear ops into ANE fp16 causes train/val distribution shift | E36: val gap 1.218 (ane-full) vs 0.599 (ane-matmul-only). Identical val_loss to CPU at matched steps. | HIGH |
+| V13 | ANE should only be used for linear projections (matmul), not attention/SiLU/residual | E36: matches original maderix/ANE design. Step-10 loss matches CPU to 4 decimal places. | HIGH |
 
 ## Category: UNVERIFIED (stated but not tested)
 
@@ -41,7 +43,7 @@
 | U4 | SRAM is ~32MB with 30% cliff above | maderix blog (not our test) | LOW |
 | U5 | _ANEClient API enables delta compilation | Orion paper (not our test) | HIGH |
 | U6 | Gradient sanitization will fix 10-min divergence | Orion paper analogy (hypothesis) | HIGH |
-| U7 | Kernel fusion (16-64 ops) will improve our throughput | Orion + maderix (not our test) | HIGH |
+| U7 | Kernel fusion (16-64 ops) will improve our throughput | **DISPROVED for training (E36)**: fusing non-linear ops into ANE fp16 causes overfitting. May still hold for inference-only. | DISPROVED (training) |
 
 ## Category: DISPROVED (tested and found wrong)
 

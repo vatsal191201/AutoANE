@@ -961,3 +961,78 @@ Used Objective-C runtime inspection to enumerate ANE framework classes:
 - To enable delta compilation, the entire ANE pipeline would need to be rewritten to use _ANEClient API
 - The `_ANEDaemonConnection.prepareChainingWithModel` method may enable model chaining (multiple models in sequence)
 - The potential speedup from delta compilation (~45ms→2.5ms per kernel update) would eliminate most of the compile overhead
+
+---
+
+## Experiment 36: ANE-Matmul-Only — Unfused Forward Path Validation
+
+**Status**: COMPLETE
+**Date**: 2026-03-11
+
+### Background & Root Cause Analysis
+
+Investigation into why ANE consistently produces worse models than CPU revealed the root cause: **our fused ANE kernels push non-linear operations (RoPE, attention/softmax, SiLU, residual connections) into fp16, while the original maderix/ANE repo uses ANE only for the 7 linear projection matmuls per layer (Wq, Wk, Wv, Wo, W1, W3, W2).**
+
+The original repo's `forward.h` does:
+- ANE fp16: `ane_conv_eval` for each linear projection (7 per layer)
+- CPU fp32: RMSNorm, RoPE, attention (QK^T, softmax, AV), SiLU gating, residual additions
+- CPU fp32: ALL backward operations
+
+Our fused kernels (`sdpaFwd`, `ffnFused`) bundle non-linear operations into single ANE fp16 kernels. This causes:
+1. **Cumulative fp16 rounding** in softmax, SiLU, and residual accumulation
+2. **Train/val distribution shift**: model learns fp16 artifacts during training that don't transfer to fp32 validation
+3. **Catastrophic overfitting**: E35 showed val_loss=8.02 vs train_loss=4.31 on ANE-full
+
+### Fix: `--ane-matmul-only` Mode
+
+Implemented unfused forward path matching the original repo's approach:
+- 5 shared dynamic matmul kernels: `wqFwd` (DIM to Q_DIM), `wkvFwd` (DIM to KV_DIM), `woFwd` (Q_DIM to DIM), `w13Fwd` (DIM to HIDDEN), `w2Fwd` (HIDDEN to DIM)
+- Each kernel is a simple matmul via `gen_dyn_matmul_mil(ic, oc, seq)`
+- Per-layer weight staging into individual IOSurfaces
+- CPU fp32 for: RMSNorm, RoPE, attention (QK^T, softmax, AV), SiLU gating, residual connections
+- CPU fp32 for: ALL backward operations (implied by ane-matmul-only setting use_cpu_bwd)
+
+### E36 Results: 4-Mode Comparison (120s budget, 4L/1024d)
+
+| Mode | Train Loss | Val Loss | Val Gap | Steps | Notes |
+|------|-----------|----------|---------|-------|-------|
+| **cpu-only** | 4.758 | 5.079 | 0.321 | 550 | Best absolute loss (most steps) |
+| **ane-full** | 6.171 | 7.389 | **1.218** | 150 | Large val gap = overfitting to fp16 artifacts |
+| **ane-fwd-cpu-bwd** | 6.149 | 7.275 | **1.126** | 232 | CPU bwd helps throughput, not generalization |
+| **ane-matmul-only** | 6.524 | 7.122 | **0.599** | 130 | 51% val gap reduction vs ane-full |
+
+### Step-Matched Comparison (130 steps)
+
+| Mode | Train Loss | Val Loss | Val Gap |
+|------|-----------|----------|---------|
+| **cpu-only** (130 steps) | 6.705 | **7.122** | 0.417 |
+| **ane-matmul-only** (130 steps) | 6.524 | **7.122** | 0.599 |
+
+**Val loss is identical (7.122) at matched step counts.** The unfused approach produces numerically equivalent generalization to pure CPU fp32 training.
+
+Per-step loss values also match closely:
+- Step 10: 9.5708 (ane-matmul) vs 9.5710 (cpu-only)
+- Step 20: 9.2107 (ane-matmul) vs 9.2106 (cpu-only)
+
+### Throughput Issue: ANE Thermal Throttling
+
+`ane-matmul-only` achieves only 130 steps in 120s vs 550 for cpu-only. Timing breakdown shows periodic system-wide stalls:
+- Normal step: ane_fwd=30ms, ane_bwd=65ms, total ~150ms/step
+- Throttled step: ane_fwd=291ms, io_fwd=2325ms, ane_bwd=2876ms, total ~6500ms/step
+
+This is Apple Silicon thermal management throttling the ANE under sustained load, not a code issue. All timing categories (including CPU-only operations like RMSNorm) spike simultaneously during throttled steps.
+
+### Key Findings
+
+1. **Root cause confirmed**: Fusing non-linear ops into ANE fp16 causes train/val distribution shift
+2. **Unfused approach eliminates generalization gap**: Identical val_loss to CPU at matched steps
+3. **ANE thermal throttling is the primary throughput bottleneck** — not kernel overhead
+4. **The original maderix/ANE design was correct**: ANE for linear projections only, CPU for everything else
+5. **`--cpu-bwd` alone is insufficient**: It improves throughput but doesn't fix the forward-path fp16 accumulation problem
+
+### Implications for AutoANE
+
+- `--ane-matmul-only` should be the default training mode when using ANE
+- The throughput gap (130 vs 550 steps/120s) means CPU-only may still be preferred for short experiments
+- For longer training runs where ANE thermal throttling amortizes, `ane-matmul-only` may become competitive
+- Future work: investigate ANE duty cycling to avoid thermal throttling

@@ -88,6 +88,15 @@ static void io_write_dyn(IOSurfaceRef s, const float *act, int ic, int seq,
     IOSurfaceUnlock(s, 0, NULL);
 }
 
+// Write only activations to dynamic matmul surface (weights already staged)
+static void io_write_dyn_acts(IOSurfaceRef s, const float *act, int ic, int seq, int sp) {
+    IOSurfaceLock(s, 0, NULL);
+    _Float16 *buf = (_Float16*)IOSurfaceGetBaseAddress(s);
+    for (int d = 0; d < ic; d++)
+        cvt_f32_f16(buf + d*sp, act + d*seq, seq);
+    IOSurfaceUnlock(s, 0, NULL);
+}
+
 // Read output from dynamic matmul kernel: [1, OC, 1, SEQ]
 static void io_read_dyn(IOSurfaceRef s, float *out, int oc, int seq) {
     IOSurfaceLock(s, kIOSurfaceLockReadOnly, NULL);

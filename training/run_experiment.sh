@@ -88,6 +88,9 @@ cpu_attn_bwd="$(json_get cpu_attn_bwd)"
 sanitize="$(json_get sanitize)"
 [ "$sanitize" = "true" ] && RUN_FLAGS="$RUN_FLAGS --sanitize"
 
+cpu_bwd="$(json_get cpu_bwd)"
+[ "$cpu_bwd" = "true" ] && RUN_FLAGS="$RUN_FLAGS --cpu-bwd"
+
 cpu_only="$(json_get cpu_only)"
 [ "$cpu_only" = "true" ] && RUN_FLAGS="$RUN_FLAGS --cpu-only"
 
@@ -102,6 +105,9 @@ adaptive="$(json_get adaptive)"
 
 adaptive_window="$(json_get adaptive_window)"
 [ -n "$adaptive_window" ] && RUN_FLAGS="$RUN_FLAGS --adaptive-window $adaptive_window"
+
+ane_matmul_only="$(json_get ane_matmul_only)"
+[ "$ane_matmul_only" = "true" ] && RUN_FLAGS="$RUN_FLAGS --ane-matmul-only"
 
 # ===== Compile =====
 CC="xcrun clang"
@@ -188,6 +194,8 @@ TOTAL_TOKENS_M="$(parse_field total_tokens_M)"
 NUM_STEPS="$(parse_field num_steps)"
 NUM_PARAMS_M="$(parse_field num_params_M)"
 DEPTH="$(parse_field depth)"
+VAL_LOSS="$(parse_field val_loss)"
+MODE="$(parse_field mode)"
 
 # Fallbacks for missing fields
 [ -z "$FINAL_LOSS" ] && FINAL_LOSS="null"
@@ -197,6 +205,8 @@ DEPTH="$(parse_field depth)"
 [ -z "$NUM_STEPS" ] && NUM_STEPS="null"
 [ -z "$NUM_PARAMS_M" ] && NUM_PARAMS_M="null"
 [ -z "$DEPTH" ] && DEPTH="null"
+[ -z "$VAL_LOSS" ] && VAL_LOSS="null"
+[ -z "$MODE" ] && MODE="unknown"
 
 # ===== Build result JSON =====
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -204,7 +214,7 @@ STATUS="ok"
 [ "$FINAL_LOSS" = "null" ] && STATUS="no_output"
 
 RESULT=$(cat <<ENDJSON
-{"timestamp": "$TIMESTAMP", "config": $CONFIG_JSON, "status": "$STATUS", "final_loss": $FINAL_LOSS, "training_seconds": $TRAINING_SEC, "total_seconds": $TOTAL_SEC, "total_tokens_M": $TOTAL_TOKENS_M, "num_steps": $NUM_STEPS, "num_params_M": $NUM_PARAMS_M, "depth": $DEPTH, "compile_seconds": $COMPILE_SEC, "time_budget": $TIME_BUDGET}
+{"timestamp": "$TIMESTAMP", "config": $CONFIG_JSON, "status": "$STATUS", "mode": "$MODE", "final_loss": $FINAL_LOSS, "val_loss": $VAL_LOSS, "training_seconds": $TRAINING_SEC, "total_seconds": $TOTAL_SEC, "total_tokens_M": $TOTAL_TOKENS_M, "num_steps": $NUM_STEPS, "num_params_M": $NUM_PARAMS_M, "depth": $DEPTH, "compile_seconds": $COMPILE_SEC, "time_budget": $TIME_BUDGET}
 ENDJSON
 )
 

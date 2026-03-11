@@ -64,13 +64,23 @@ typedef struct { void *model; IOSurfaceRef ioIn, ioOut; void *request; void *tmp
 
 // Per-layer IOSurfaces for pre-staged weights
 typedef struct {
+    // Fused kernels (legacy)
     IOSurfaceRef sdpaFwd_in, woFwd_in, ffnFused_in;
+    // Unfused forward kernels (ANE matmul-only mode)
+    IOSurfaceRef wqFwd_in, wkFwd_in, wvFwd_in;  // Wo uses woFwd_in
+    IOSurfaceRef w1Fwd_in, w3Fwd_in, w2Fwd_in;
+    // Backward kernels
     IOSurfaceRef ffnBwdW2t_in, ffnBwdW13t_in, wotBwd_in, qBwd_in, kvBwd_in;
 } PerLayerSurfaces;
 
 // Per-layer ANE requests (bound to per-layer IOSurfaces)
 typedef struct {
+    // Fused kernels (legacy)
     void *sdpaFwd, *woFwd, *ffnFused;
+    // Unfused forward kernels (ANE matmul-only mode)
+    void *wqFwd, *wkFwd, *wvFwd;  // Wo uses woFwd
+    void *w1Fwd, *w3Fwd, *w2Fwd;
+    // Backward kernels
     void *ffnBwdW2t, *ffnBwdW13t, *wotBwd, *qBwd, *kvBwd;
 } PerLayerRequests;
 
