@@ -21,7 +21,7 @@ SEQ = 128           # sequence length (shorter = faster steps, less context)
 
 # Training
 LR = 4e-4           # peak learning rate (lower for SEQ=128 smaller batch)
-WARMUP_STEPS = 100  # linear warmup steps
+WARMUP_STEPS = 71  # linear warmup steps
 ACCUM_STEPS = 10    # gradient accumulation steps (effective batch = ACCUM_STEPS * SEQ tokens)
 GRAD_CLIP = 1.0     # gradient norm clipping threshold
 WEIGHT_DECAY = 0.1  # AdamW weight decay
