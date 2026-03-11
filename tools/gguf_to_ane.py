@@ -27,6 +27,25 @@ def read_value(f, vtype):
 
 GGML_TYPES = {0: ('F32', 4), 1: ('F16', 2), 29: ('BF16', 2)}
 
+
+def interleave_weights(W, n_heads, head_dim):
+    """Convert Q/K from HF/GGUF (non-interleaved) to ANE (interleaved) RoPE ordering.
+    HF/GGUF:  [re0, re1, ..., re31, im0, im1, ..., im31] per head
+    ANE:      [re0, im0, re1, im1, ..., re31, im31] per head
+    W shape: [n_heads * head_dim, dim]
+    """
+    W_out = np.zeros_like(W)
+    half = head_dim // 2
+    for h in range(n_heads):
+        for i in range(half):
+            src_re = h * head_dim + i
+            src_im = h * head_dim + half + i
+            dst_re = h * head_dim + 2 * i
+            dst_im = h * head_dim + 2 * i + 1
+            W_out[dst_re] = W[src_re]
+            W_out[dst_im] = W[src_im]
+    return W_out
+
 def load_gguf(path):
     with open(path, 'rb') as f:
         magic = f.read(4)
@@ -155,6 +174,12 @@ def convert_to_ane_ckpt(gguf_path, output_path):
             w3 = get_tensor(f'blk.{L}.ffn_up.weight')
             rms_att = get_tensor(f'blk.{L}.attn_norm.weight')
             rms_ffn = get_tensor(f'blk.{L}.ffn_norm.weight')
+
+            # Interleave Q/K for ANE's RoPE convention
+            # GGUF stores [re0..re31, im0..im31] per head (HF convention)
+            # ANE needs [re0, im0, re1, im1, ...] per head (interleaved)
+            wq = interleave_weights(wq, n_heads, hd)
+            wk = interleave_weights(wk, n_kv_heads, hd)
 
             f.write(wq.flatten().astype(np.float32).tobytes())   # Wq [q_dim, dim]
             f.write(wk.flatten().astype(np.float32).tobytes())   # Wk [kv_dim, dim]
