@@ -1153,12 +1153,31 @@ The `total_train_ms` accumulates all 1262 step times, giving 200.2ms average. Th
 
 CPU wall time breakdown: 252.6s training + ~25s val evals + ~20s Adam/transpose = ~298s. Remaining ~302s is pure idle/scheduling overhead. 50% of CPU's wall time was wasted on stalls.
 
-### Open Question: Reproducibility
+### Reproducibility Check (E37-C/D, reversed order, 300s each)
 
-The CPU stalls may be machine-specific or run-specific. A repeat experiment swapping run order (ANE first, CPU second) would validate. The core finding (ANE steady-state is 103ms, CPU steady-state is ~105ms, with ANE immune to stalls) should hold regardless.
+Ran ANE first, then CPU second (reversed from E37-A/B) with 60s cooldown:
 
-### Corrected Assumptions
+| Run | Mode | Order | Steps | ms/step (median) | ms/step (max) | Val Loss |
+|-----|------|-------|-------|------------------|---------------|----------|
+| E37-A | CPU | 1st | 1,262 | 163.0 | **16,273** | 3.910 |
+| E37-B | ANE | 2nd | 4,690 | 103.2 | 165.5 | 3.148 |
+| E37-C | ANE | 1st | 2,288 | 104.4 | 174.4 | 3.497 |
+| E37-D | CPU | 2nd | 2,489 | 104.8 | 180.9 | 3.455 |
 
-- **U8 RESOLVED**: ANE thermal throttling was NOT the cause of E36 stalls. CPU scheduling jitter was.
-- **V12 STRENGTHENED**: ane-matmul-only is not just equivalent to CPU — it's faster due to avoiding CPU scheduling jitter
-- **V11 CONFIRMED**: ANE is faster for HIDDEN=2816 matmuls (the FFN projections)
+**Finding: E37-A's CPU stalls were from a transient background process, not inherent to CPU training.** When the system is clean (E37-C/D), both modes perform identically at ~105ms/step. The 3.7x throughput advantage claimed from E37-A/B was an artifact.
+
+### Corrected Conclusions
+
+1. **ANE-matmul-only and CPU-only have identical steady-state throughput** (~105ms/step for 4L/1024d model)
+2. **ANE provides no throughput advantage at this model size** — the forward matmul speedup is offset by IOSurface overhead
+3. **ANE-matmul-only does provide correct generalization** — val loss matches CPU at matched steps (V12, V13 confirmed)
+4. **CPU tail latency can be extreme but is NOT systematic** — background processes cause sporadic multi-second stalls
+5. **Neither mode causes thermal throttling** — both stay nominal for 10+ minutes
+6. **E36's results were contaminated by background interference** — not by ANE thermal throttling as originally hypothesized
+
+### Implications
+
+- For this model size (95M, DIM=1024, HIDDEN=2816), there is no throughput reason to prefer ANE over CPU
+- ANE becomes advantageous for larger models where matmul dimensions exceed the SRAM-resident threshold (U9: 30% utilization for single ops, need larger matrices or deeper graphs)
+- The ane-matmul-only mode is validated as numerically correct and can be used safely
+- For the autoresearch loop, CPU-only is simpler and equally fast — use it as the default
