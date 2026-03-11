@@ -1613,3 +1613,20 @@ To test the convergence limit, 512d/4L was run for 1800s:
 
 - **SA-E41-1**: The crossover might occur with significantly more training data. Our single data shard (~19M tokens) limits larger models. At 5 epochs, even the smallest model is starting to cycle through data. UNVERIFIED — needs multi-shard data.
 - **SA-E41-2**: Data volume is the key constraint. The 38MB data shard contains ~19M tokens. At current throughput, 512d/4L exhausts the data in ~6.6 minutes (1 epoch). Multi-epoch training is effective up to ~5 epochs but diminishing returns set in. CONFIRMED by 1800s run.
+
+### Scaling Law Cross-Reference (E41)
+
+Our results align with established scaling law literature:
+
+**Chinchilla (Hoffmann et al., 2022)**: Compute-optimal ratio is ~20 tokens/parameter. Our regime:
+- 512d/4L (36.4M) at 600s: 0.85 tokens/param — **23× below Chinchilla optimum**
+- 512d/4L (36.4M) at 1800s: 2.7 tokens/param — **7× below Chinchilla optimum**
+- 1024d/2L (72.9M) at 600s: 0.29 tokens/param — **69× below Chinchilla optimum**
+
+We're in an extremely data-constrained regime. Chinchilla predicts that in this regime, smaller models should win — which is exactly what we observe. The 72.9M model would need ~1.46B tokens (Chinchilla-optimal), but only sees 21M.
+
+**Data repetition research (Muennighoff et al., 2023)**: Up to ~4 epochs over repeated data approximates training on fresh data; beyond that, improvement plateaus. Our 1800s run was at 5.1 epochs, consistent with the decelerating improvement we measured (-0.332 at 600→1800s vs -0.541 at 300→600s).
+
+**Kaplan power law**: Loss follows L(N,D) = A/N^α + B/D^β + E, where α≈0.076 for parameters and β≈0.095 for data. Since β > α, data has more impact than parameters on loss reduction — consistent with our finding that data volume is the bottleneck.
+
+**Implication**: To benefit from larger models, we need proportionally more data. For 1024d/2L (72.9M) to reach its potential, we'd need ~1.46B tokens. At our throughput (60ms/step, 2560 tokens/step), that's 34,219 seconds ≈ **9.5 hours**. This is feasible but requires multiple data shards.
