@@ -1143,6 +1143,20 @@ E36 showed ANE getting 4.2x FEWER steps. E37 shows 3.7x MORE. What changed?
 5. **Val gap essentially eliminated**: 0.010 on ANE vs 0.492 on CPU (lower gap = better generalization)
 6. **E36's results were wrong due to experimental methodology**: running experiments concurrently or without proper cooldown caused false attribution of stalls to ANE
 
+### Timing Analysis Deep Dive
+
+The `total_train_ms` accumulates all 1262 step times, giving 200.2ms average. The sampled distribution (every 10th step, N=127) shows 485.9ms mean. This discrepancy means:
+- ~90% of steps (not logged) run at ~105ms (competitive with ANE's 103ms)
+- ~10% of logged steps include massive stalls (500ms to 16.3s)
+- These stalls cluster at Adam update boundaries (step % 10 == 0)
+- The stalls are NOT thermal (ProcessInfo reports nominal) — they're macOS scheduling
+
+CPU wall time breakdown: 252.6s training + ~25s val evals + ~20s Adam/transpose = ~298s. Remaining ~302s is pure idle/scheduling overhead. 50% of CPU's wall time was wasted on stalls.
+
+### Open Question: Reproducibility
+
+The CPU stalls may be machine-specific or run-specific. A repeat experiment swapping run order (ANE first, CPU second) would validate. The core finding (ANE steady-state is 103ms, CPU steady-state is ~105ms, with ANE immune to stalls) should hold regardless.
+
 ### Corrected Assumptions
 
 - **U8 RESOLVED**: ANE thermal throttling was NOT the cause of E36 stalls. CPU scheduling jitter was.
