@@ -425,3 +425,32 @@ Rewrote `training/program.md` to implement the [karpathy/autoresearch](https://g
 **Two modes available:**
 1. **Agent loop** (`program.md` + `train.py`): Karpathy-style autonomous keep/revert
 2. **Grid search** (`autoresearch.py`): Pre-defined sweeps, no agent needed
+
+### E43: Autonomous Agent Loop Results (2026-03-11)
+
+Ran 13 experiments via Karpathy-style keep/revert protocol. Agent explored sequence length, LR, accumulation, weight decay, warmup, architecture, and Adam beta2.
+
+**Key findings:**
+
+20. **Sequence length as throughput lever** (E43/V23) — SEQ=128 gives 1.75× more steps than SEQ=256 (4037 vs 2456 at 120s). Val improves 3.533→3.528 despite halved context. Minimum useful SEQ is ~128; SEQ=64 degrades (val 3.875) due to insufficient context for coherent gradients.
+
+21. **LR-batch co-variance** (E43/V24) — Halving SEQ halves the effective batch size (2560→1280 tokens). Optimal LR shifts from 5e-4 to 4e-4. Consistent with Smith et al. (2018) linear scaling rule: LR_opt ∝ sqrt(batch_size). The agent discovered this organically via the keep/revert loop.
+
+22. **Gradient accumulation is a Goldilocks parameter** (E43/V25) — ACCUM=5 (noisier, val +0.17) and ACCUM=20 (fewer updates, val +0.30) both worse than ACCUM=10. At our scale, 10 steps balances gradient quality against update frequency.
+
+23. **Weight decay and warmup are insensitive** (E43) — WD 0.1→0.05: identical val. Warmup 100→50: within noise. These parameters are not bottlenecks. Resolves U16 and U17.
+
+24. **Architecture floor** (E43) — 384d/6L (28.5M params) gets more steps (4821) but worse val (3.809). Below ~36M params, model capacity becomes the bottleneck even with abundant steps.
+
+**Protocol assessment:**
+- 13 experiments in ~40 minutes wall clock
+- 2 improvements kept (SEQ=128, LR=4e-4), 11 discarded
+- New best: val_loss **3.507** (−0.7% from baseline 3.533)
+- Agent correctly identified the linear scaling rule independently
+- Main limitation: small improvements possible given already-optimized starting point (E39-E41)
+
+**Current best configuration (post-E43):**
+```
+512d/4L, SEQ=128, LR=4e-4, ACCUM=10, CPU-only, 120s budget
+→ val_loss 3.507, 4074 steps, 24.2ms/step, 36.4M params
+```

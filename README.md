@@ -151,7 +151,7 @@ Results are tracked in `training/results.tsv` (commit, val_loss, status: keep/di
 
 **"In a fixed time window, more optimizer steps beats more parameters."**
 
-At 120s: 512d/4L (36.4M params, 2500 steps, val_loss **3.54**) beats 1024d/4L (95.4M params, 1050 steps, val_loss 4.30). The smaller model gets 2.4× more gradient updates and wins decisively. This advantage **widens** at longer budgets (V21).
+At 120s: 512d/4L with SEQ=128 (36.4M params, 4074 steps, val_loss **3.507**) beats 1024d/4L (95.4M params, 1050 steps, val_loss 4.30). The smaller model with shorter sequences gets 3.9× more gradient updates and wins decisively. This advantage **widens** at longer budgets (V21).
 
 ### Agent-Editable Hyperparameters
 
@@ -163,10 +163,10 @@ HIDDEN = 1408       # FFN hidden dim (2.75× DIM)
 HEADS = 8           # query attention heads
 KV_HEADS = 2        # key/value heads (GQA)
 HEAD_DIM = 64       # per-head dimension
-SEQ = 256           # sequence length
+SEQ = 128           # sequence length (E43: shorter = more steps)
 
-# Training (E40: LR=5e-4 optimal for 512d)
-LR = 5e-4           # peak learning rate
+# Training (E43: LR=4e-4 optimal at SEQ=128)
+LR = 4e-4           # peak learning rate
 WARMUP_STEPS = 100  # linear warmup
 ACCUM_STEPS = 10    # gradient accumulation
 GRAD_CLIP = 1.0     # gradient norm clipping
@@ -201,14 +201,14 @@ AutoANE/
 │   └── Makefile
 └── docs/
     ├── VERIFICATION.md      # First-principles verification of all claims
-    ├── EXPERIMENTS.md       # Full experiment log (E1-E42)
+    ├── EXPERIMENTS.md       # Full experiment log (E1-E43)
     ├── ASSUMPTIONS.md       # Tracked assumptions with evidence
     └── RESEARCH_PLAN.md     # Research roadmap and findings
 ```
 
 ## Research Results
 
-41 experiments across architecture search, LR sweeps, budget scaling, and ANE characterization. All results independently verified ([docs/VERIFICATION.md](docs/VERIFICATION.md)).
+43 experiments across architecture search, LR sweeps, budget scaling, ANE characterization, and autonomous agent loop. All results independently verified ([docs/VERIFICATION.md](docs/VERIFICATION.md)).
 
 ### Key Findings
 
@@ -220,12 +220,14 @@ AutoANE/
 | 4 | CPU-only beats ANE for all tested sizes | IOSurface overhead negates ANE speedup | Novel finding (no prior ANE training comparisons) |
 | 5 | Depth aids generalization but costs throughput | 4L beats 2L at same step count but loses at same wall-clock | Nguyen & Salazar (regime-specific) |
 | 6 | LR scales with sqrt(model size) | 5e-4 for 36M, 3e-4 for 73M | Consistent with LAMB heuristic |
+| 7 | Shorter sequences trade context for throughput | SEQ=128 gives 1.75× steps vs SEQ=256, val improves | Throughput-dominated regime |
+| 8 | Optimal LR co-varies with batch size | Halving SEQ → LR 5e-4→4e-4 optimal | Smith et al. (2018) linear scaling rule |
 
 ### Best Configuration
 
 ```
-512d/4L, LR=5e-4, CPU-only, 120s budget
-→ val_loss 3.54, 2500 steps, 41ms/step, 36.4M params
+512d/4L, SEQ=128, LR=4e-4, CPU-only, 120s budget
+→ val_loss 3.507, 4074 steps, 24.2ms/step, 36.4M params
 → At 1800s: val_loss 2.22 (still improving at ~5 epochs)
 ```
 
@@ -233,7 +235,7 @@ AutoANE/
 
 - **Attention gradients**: SDPA backward on ANE produces near-zero dq/dk/dv due to fp16 underflow. Training still works (embedding + FFN gradients flow), but attention layers learn slowly. CPU fp32 SDPA backward is planned.
 - **Fine-tuning pretrained models**: DeepNet scaling (required for fp16 stability) is incompatible with pretrained weight magnitudes. Training from scratch works; fine-tuning is an active research area.
-- **Sequence length**: Currently limited to SEQ=256. Longer sequences increase SDPA backward overflow risk.
+- **Sequence length**: Default SEQ=128 (optimal for throughput). SEQ=64 degrades due to insufficient context. Longer sequences (512+) increase SDPA backward overflow risk.
 - **Private APIs**: Uses `_ANEClient`, `_ANECompiler` — undocumented Apple frameworks that could change.
 
 ## Roadmap

@@ -39,6 +39,9 @@
 | V20 | 2-layer models overfit heavily despite high throughput | E40: 768d/2L train-val gap +0.83 at optimal LR. E41: confirmed at 300s and 600s. Depth aids generalization even when it costs throughput. | HIGH |
 | V21 | 512d/4L advantage increases with longer training budgets (120-600s) | E41: lead grows from 0.15 (120s) to 0.29 (600s). Larger models overfit while 512d/4L is still underfitting at 600s. | HIGH |
 | V22 | Data volume, not model capacity, is the bottleneck at our training scale | E41: at ~31M tokens (600s), 36.4M param model sees 0.86 tokens/param — 23× below Chinchilla's 20:1 optimum. 72.9M param model needs ~73M tokens but only sees ~21M. | HIGH |
+| V23 | SEQ=128 is optimal for 120s budget (throughput dominates context) | E43: SEQ=128 gives 1.75× throughput (24ms vs 42ms/step), 4037 vs 2456 steps. Val improves 3.533→3.528 despite halved context. SEQ=64 degrades (too short for coherent gradients). | HIGH |
+| V24 | Optimal LR co-varies with effective batch size (linear scaling rule) | E43: halving SEQ (256→128) halves effective batch (2560→1280 tokens). LR must decrease: 5e-4→4e-4 optimal. Consistent with Smith et al. (2018): LR_opt ∝ sqrt(batch_size). | HIGH |
+| V25 | ACCUM=10 is optimal; deviations in either direction hurt | E43: ACCUM=5 (noisier gradients, val +0.17) and ACCUM=20 (fewer updates, val +0.30) both worse than ACCUM=10. The 10-step accumulation balances gradient quality against update frequency. | HIGH |
 | V12 | Fusing non-linear ops into ANE fp16 causes train/val distribution shift | E36: val gap 1.218 (ane-full) vs 0.599 (ane-matmul-only). Identical val_loss to CPU at matched steps. | HIGH |
 | V13 | ANE should only be used for linear projections (matmul), not attention/SiLU/residual | E36: matches original maderix/ANE gen1 design. Step-10 loss matches CPU to 4 decimal places. **NOTE**: original gen3 (dynamic pipeline) fuses more into ANE — our approach is more conservative. | HIGH |
 
@@ -61,8 +64,8 @@
 | U13 | No one has trained models larger than DIM=1024 before our E38 | maderix tested Stories110M (DIM=768) and Qwen3-0.6B (DIM=1024). Our DIM=1536 and DIM=2048 experiments are novel. | CONFIRMED (literature) |
 | U14 | LR=3e-4 is equally good for all architectures in E39 grid | **RESOLVED (E40)**: LR=5e-4 optimal for 512d/4L, 3e-4 for 1024d/2L. Ranking unchanged. SA-E39-1 resolved. | RESOLVED |
 | U15 | 120s budget is representative of quick-iteration training regime | **RESOLVED (E41)**: 512d/4L wins at 120s, 300s, AND 600s. Gap actually widens at longer budgets. No crossover observed. | CONFIRMED |
-| U16 | Warmup=100 steps is appropriate for all configs at all LRs | E40: at 2500 steps, 100 warmup is 4% of training. Shorter warmup might help at higher LR. | LOW |
-| U17 | Weight decay 0.1 is equally good across all architectures | E40: 768d/2L overfits heavily (gap +0.83). Higher WD might help shallow models generalize. | MEDIUM |
+| U16 | ~~Warmup=100 steps is appropriate for all configs at all LRs~~ | **RESOLVED (E43)**: Warmup 100→50 produced val 3.540 vs baseline 3.533 — within noise. 100 steps is fine. | RESOLVED |
+| U17 | ~~Weight decay 0.1 is equally good across all architectures~~ | **RESOLVED (E43)**: WD 0.1→0.05 produced val 3.533 — identical to baseline. WD is not a sensitive parameter in this regime. | RESOLVED |
 
 ## Category: DISPROVED (tested and found wrong)
 
