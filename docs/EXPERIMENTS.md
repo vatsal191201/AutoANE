@@ -1591,5 +1591,25 @@ This explains why 512d/4L beats both 2-layer models: it combines moderate depth 
 ### Assumptions Updated
 
 - **U15**: RESOLVED — 120s ranking holds through 600s. 512d/4L advantage increases with longer training.
-- **SA-E41-1**: The crossover might occur at much longer budgets (>30 min) with significantly more training data. Our single data shard (~50M tokens) may be too small for larger models to show their advantage. UNVERIFIED.
-- **SA-E41-2**: Train-val gap direction reversal at 600s for 512d/4L (gap becomes -0.75) suggests the model is in a different learning phase. This may be a noisy final-batch artifact or a genuine learning dynamics effect. UNVERIFIED.
+### Extended Run: 512d/4L at 1800s (30 minutes)
+
+To test the convergence limit, 512d/4L was run for 1800s:
+
+| Budget | Steps | Tokens | Epochs | Val Loss | ms/step |
+|--------|-------|--------|--------|----------|---------|
+| 120s | 2570 | 6.6M | 0.35 | 3.543 | 41ms |
+| 300s | 6330 | 16.2M | 0.85 | 3.089 | 41ms |
+| 600s | 12269 | 31.4M | 1.65 | 2.548 | 43ms |
+| **1800s** | **38192** | **97.8M** | **5.1** | **2.216** | **41ms** |
+
+**Key observations:**
+- Training data is ~19M tokens (38MB binary, 2 bytes/token). At 1800s, the model has seen the data 5.1 times.
+- Val_loss 2.216 with train_loss 2.621 shows the model is still generalizing well at 5 epochs, not memorizing.
+- Improvement is decelerating: -0.454 (120→300s), -0.541 (300→600s), -0.332 (600→1800s, 3× budget).
+- Throughput is rock-steady at 41ms/step even at 30 minutes — no thermal degradation.
+- TinyStories models typically converge to val_loss ~1.5-2.0, so we're not yet at convergence.
+
+### Assumptions Updated
+
+- **SA-E41-1**: The crossover might occur with significantly more training data. Our single data shard (~19M tokens) limits larger models. At 5 epochs, even the smallest model is starting to cycle through data. UNVERIFIED — needs multi-shard data.
+- **SA-E41-2**: Data volume is the key constraint. The 38MB data shard contains ~19M tokens. At current throughput, 512d/4L exhausts the data in ~6.6 minutes (1 epoch). Multi-epoch training is effective up to ~5 epochs but diminishing returns set in. CONFIRMED by 1800s run.
