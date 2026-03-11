@@ -321,15 +321,25 @@ static void write_kv_bwd_acts(IOSurfaceRef s, const float *dk, const float *dv) 
     IOSurfaceUnlock(s, 0, NULL);
 }
 
+// Safe CFRelease that handles NULL (CFRelease(NULL) is undefined behavior)
+static inline void safe_cfrelease(CFTypeRef ref) { if (ref) CFRelease(ref); }
+
 // Free per-layer surfaces and requests
 static void free_per_layer(PerLayerSurfaces *pls, PerLayerRequests *plr) {
     for (int L = 0; L < NLAYERS; L++) {
-        CFRelease(pls[L].sdpaFwd_in); CFRelease(pls[L].woFwd_in); CFRelease(pls[L].ffnFused_in);
-        CFRelease(pls[L].ffnBwdW2t_in); CFRelease(pls[L].ffnBwdW13t_in);
-        CFRelease(pls[L].wotBwd_in); CFRelease(pls[L].qBwd_in); CFRelease(pls[L].kvBwd_in);
-        CFRelease(plr[L].sdpaFwd); CFRelease(plr[L].woFwd); CFRelease(plr[L].ffnFused);
-        CFRelease(plr[L].ffnBwdW2t); CFRelease(plr[L].ffnBwdW13t);
-        CFRelease(plr[L].wotBwd); CFRelease(plr[L].qBwd); CFRelease(plr[L].kvBwd);
+        // Fused forward surfaces/requests
+        safe_cfrelease(pls[L].sdpaFwd_in); safe_cfrelease(pls[L].woFwd_in); safe_cfrelease(pls[L].ffnFused_in);
+        safe_cfrelease(plr[L].sdpaFwd); safe_cfrelease(plr[L].woFwd); safe_cfrelease(plr[L].ffnFused);
+        // Unfused forward surfaces/requests
+        safe_cfrelease(pls[L].wqFwd_in); safe_cfrelease(pls[L].wkFwd_in); safe_cfrelease(pls[L].wvFwd_in);
+        safe_cfrelease(pls[L].w1Fwd_in); safe_cfrelease(pls[L].w3Fwd_in); safe_cfrelease(pls[L].w2Fwd_in);
+        safe_cfrelease(plr[L].wqFwd); safe_cfrelease(plr[L].wkFwd); safe_cfrelease(plr[L].wvFwd);
+        safe_cfrelease(plr[L].w1Fwd); safe_cfrelease(plr[L].w3Fwd); safe_cfrelease(plr[L].w2Fwd);
+        // Backward surfaces/requests
+        safe_cfrelease(pls[L].ffnBwdW2t_in); safe_cfrelease(pls[L].ffnBwdW13t_in);
+        safe_cfrelease(pls[L].wotBwd_in); safe_cfrelease(pls[L].qBwd_in); safe_cfrelease(pls[L].kvBwd_in);
+        safe_cfrelease(plr[L].ffnBwdW2t); safe_cfrelease(plr[L].ffnBwdW13t);
+        safe_cfrelease(plr[L].wotBwd); safe_cfrelease(plr[L].qBwd); safe_cfrelease(plr[L].kvBwd);
     }
 }
 

@@ -522,8 +522,6 @@ int main(int argc, char *argv[]) {
             for (int L = 0; L < NLAYERS; L++) {
                 if (ane_matmul_only) {
                     // Unfused: stage transposed weights into individual matmul surfaces
-                    io_write_dyn(pls[L].wqFwd_in, (float*)NULL, DIM, 0, NULL, 0);  // placeholder
-                    // Use io_write_dyn to stage weights; act portion written at runtime
                     // Weight staging: write Wt into the weight portion of the surface
                     // io_write_dyn writes [act|weight] but we only need weight now
                     // We'll stage weights by writing directly to the weight region
@@ -1205,8 +1203,12 @@ int main(int argc, char *argv[]) {
                 float dmx, dmn;
                 vDSP_maxv(dy,1,&dmx,(vDSP_Length)(SEQ*DIM));
                 vDSP_minv(dy,1,&dmn,(vDSP_Length)(SEQ*DIM));
-                printf("step %-4d loss=%.4f  lr=%.2e  %.1fms/step  x[%.2f,%.2f] dy[%.3e,%.3e]\n",
-                       step, loss, lr, step_ms, xmn, xmx, dmn, dmx);
+                NSProcessInfoThermalState ts = [[NSProcessInfo processInfo] thermalState];
+                const char *ts_str = ts == NSProcessInfoThermalStateNominal ? "nominal" :
+                                     ts == NSProcessInfoThermalStateFair ? "fair" :
+                                     ts == NSProcessInfoThermalStateSerious ? "serious" : "critical";
+                printf("step %-4d loss=%.4f  lr=%.2e  %.1fms/step  x[%.2f,%.2f] dy[%.3e,%.3e] thermal=%s\n",
+                       step, loss, lr, step_ms, xmn, xmx, dmn, dmx, ts_str);
             }
 
             // Validation evaluation every 100 steps (CPU forward-only on val split)
@@ -1553,7 +1555,9 @@ int main(int argc, char *argv[]) {
         }
         if (!cpu_only) {
             free_per_layer(pls, plr);
+            // Free all kernel handles (free_kern handles NULL safely)
             free_kern(dk.sdpaFwd); free_kern(dk.woFwd); free_kern(dk.ffnFused);
+            free_kern(dk.wqFwd); free_kern(dk.wkvFwd); free_kern(dk.w13Fwd); free_kern(dk.w2Fwd);
             free_kern(dk.ffnBwdW2t); free_kern(dk.ffnBwdW13t); free_kern(dk.wotBwd);
             free_kern(dk.sdpaBwd1); free_kern(dk.sdpaBwd2);
             free_kern(dk.qBwd); free_kern(dk.kvBwd);

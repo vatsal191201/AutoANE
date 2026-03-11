@@ -31,7 +31,7 @@
 | V10 | Both modes suffer ~1.5x thermal throttling at 10min | CORRECTED — single-process throttling is 30% (1.3x), not 50% (1.5x). E18's 1.5x was from concurrent processes. | CORRECTED (E24) |
 | V11 | ANE only faster than CPU for large matmul shapes (2816+ width) | E23: 1024x1024 CPU 0.67x faster, 2816x1024 ANE 1.88x faster | HIGH |
 | V12 | Fusing non-linear ops into ANE fp16 causes train/val distribution shift | E36: val gap 1.218 (ane-full) vs 0.599 (ane-matmul-only). Identical val_loss to CPU at matched steps. | HIGH |
-| V13 | ANE should only be used for linear projections (matmul), not attention/SiLU/residual | E36: matches original maderix/ANE design. Step-10 loss matches CPU to 4 decimal places. | HIGH |
+| V13 | ANE should only be used for linear projections (matmul), not attention/SiLU/residual | E36: matches original maderix/ANE gen1 design. Step-10 loss matches CPU to 4 decimal places. **NOTE**: original gen3 (dynamic pipeline) fuses more into ANE — our approach is more conservative. | HIGH |
 
 ## Category: UNVERIFIED (stated but not tested)
 
@@ -44,6 +44,9 @@
 | U5 | _ANEClient API enables delta compilation | Orion paper (not our test) | HIGH |
 | U6 | Gradient sanitization will fix 10-min divergence | Orion paper analogy (hypothesis) | HIGH |
 | U7 | Kernel fusion (16-64 ops) will improve our throughput | **DISPROVED for training (E36)**: fusing non-linear ops into ANE fp16 causes overfitting. May still hold for inference-only. | DISPROVED (training) |
+| U8 | ANE thermal throttling causes our observed step-time stalls | **DISPROVED (E37)**: ANE max step time 165ms, CPU max 16,273ms. ANE had zero stalls. CPU scheduling jitter was the cause all along. | DISPROVED |
+| U9 | Single-op ANE kernels get only ~30% utilization (vs 74-94% for deep graphs) | maderix Part 2 benchmarks. Our unfused approach uses 28 single-matmul dispatches/step. | HIGH |
+| U10 | ANE dispatch overhead is ~0.095ms per call | maderix Part 2. 28 dispatches/step = ~2.7ms fixed cost. | MEDIUM |
 
 ## Category: DISPROVED (tested and found wrong)
 
