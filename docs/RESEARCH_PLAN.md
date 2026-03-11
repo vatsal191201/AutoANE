@@ -357,12 +357,24 @@ Result: **GAP WIDENS**: 12% at 120s → 37% at 600s. ANE loss diverges (4.69→4
 9. **Delta compilation is DEFINITIVELY not viable** — tested 5 approaches including tmpDir/data patching, e5bundlecache investigation, recompile on same model. Only fresh compilation works (~60ms/kernel with cached topology), still too expensive.
 10. **ANE compiled cache structure**: tmpDir contains model.mil + weights/w.bin + compiler-generated `data` (BLOBFILE format) + `net.plist`. e5bundlecache at ~/Library/Caches/ has only small metadata entries (~96 bytes). The actual compiled binary is in an inaccessible memory-mapped region.
 
-### Recommended next steps:
-1. **Power measurement**: Run `sudo powermetrics` to quantify the power efficiency argument
-2. ~~Activation magnitude control~~: DISPROVED — clamping doesn't help, the issue is fp16 accumulation precision
-3. ~~Longer training scaling~~: COMPLETE — precision gap **widens** (12%→37%), ANE diverges after ~2000 steps
-4. **On-device evaluation**: Test on iPhone/iPad where ANE's power advantage matters most (short fine-tuning bursts)
-5. ~~Hybrid approach~~: INVALIDATED — mixed precision (ANE fwd + CPU bwd) makes things worse, not better
-6. **Algorithmic precision fixes**: Stochastic rounding in MIL, Kahan summation, or chunk-wise accumulation could mitigate fp16 error
-7. **Kernel fusion**: Deep graph compilation (16-64 ops) achieves 94% ANE utilization vs our 30% with single-op kernels
-8. **ANE for short fine-tuning only**: Pivot ANE training to LoRA/short adaptation tasks (1-2 min) where the precision gap is tolerable
+### Experiments 36-38 Updates (added 2026-03-11):
+
+12. **Unfused forward (ane-matmul-only) eliminates generalization gap** (E36) — ANE used only for 7 linear projections per layer, CPU fp32 for RoPE/attention/SiLU/residual. Val loss matches CPU to 4 decimal places at matched steps.
+13. **Neither mode causes thermal throttling at 10min** (E37) — both stay nominal. E18's "divergence" was from concurrent processes, not ANE. When system is clean, both ANE and CPU are ~105ms/step at DIM=1024.
+14. **IOSurface memory pressure ceiling** (E38) — first known ANE training scaling study across model dimensions. DIM=1536 (220MB IOSurfaces): parity. DIM=2048 (379MB): ANE 2x SLOWER due to memory pressure. No ANE throughput advantage at any tested dimension.
+15. **CPU-only is the correct default for ALL model sizes** (E38/V15) — updated train.py to default to --cpu-only.
+
+### Recommended next steps (revised 2026-03-11):
+
+**ANE research (diminishing returns):**
+1. ~~Power measurement~~: Still pending (sudo). Informative but doesn't change the throughput conclusion.
+2. ~~Kernel fusion~~: Would improve ANE utilization (30%→94%) but fusion hurts generalization (V12). Dead end for training.
+3. ~~Larger model scaling~~: **DISPROVED by E38** — IOSurface memory pressure degrades ANE at DIM≥2048.
+4. **Dual-input IOSurface** (imperatormk approach): Might avoid spatial packing overhead. Requires significant code changes. Medium-term research.
+5. **_ANEChainingRequest** (U12): Firmware-level chained execution could eliminate CPU round-trips. Unexplored API. High-risk, high-reward research.
+6. **INT8 for bandwidth savings**: Reduces IOSurface size by 2x, potentially moving the memory pressure cliff higher.
+
+**Autoresearch (high value):**
+7. **Build the autoresearch loop** — The core "Auto" in AutoANE. CPU-only backend is now validated. Automated experiment design, execution, analysis, and iteration.
+8. **Architecture search at scale** — Systematically explore depth/width/GQA tradeoffs using the autoresearch loop.
+9. **Training recipe optimization** — Automated hyperparameter search (LR, WD, warmup, accumulation).

@@ -28,9 +28,10 @@ WEIGHT_DECAY = 0.1  # AdamW weight decay
 ADAM_B1 = 0.9       # Adam beta1
 ADAM_B2 = 0.95      # Adam beta2
 
-# Mixed precision
-CPU_ATTN_BWD = False  # ANE fp16 backward with loss_scale=256 (default, works correctly)
-LOSS_SCALE = 256.0    # gradient scaling to prevent fp16 underflow in ANE backward
+# Training mode (E38: CPU-only is correct default for all model sizes)
+CPU_ONLY = True       # Pure CPU fp32 training (no ANE, no IOSurface overhead)
+ANE_MATMUL_ONLY = False  # ANE for linear projections only (viable up to DIM=1536)
+LOSS_SCALE = 256.0    # gradient scaling (only relevant for ANE modes)
 
 # LoRA fine-tuning
 LORA_ENABLED = False  # enable LoRA (freeze base weights, train adapters only)
@@ -125,8 +126,10 @@ def main():
         "--time", str(TIME_BUDGET),
         "--scale", str(LOSS_SCALE),
     ]
-    if CPU_ATTN_BWD:
-        cmd.append("--cpu-attn-bwd")
+    if CPU_ONLY:
+        cmd.append("--cpu-only")
+    elif ANE_MATMUL_ONLY:
+        cmd.append("--ane-matmul-only")
     if LORA_ENABLED:
         cmd.extend(["--lora", "--lora-rank", str(LORA_RANK)])
     print(f"\nTraining for {TIME_BUDGET}s...")
