@@ -177,28 +177,56 @@ GRAD_CLIP = 1.0     # gradient norm clipping
 ```
 AutoANE/
 ├── training/
-│   ├── train.m              # Main training binary (Objective-C)
+│   ├── train.m              # Main training binary (Obj-C, 1571 lines)
+│   ├── train.py             # Agent-editable config (the ONLY mutable file)
+│   ├── program.md           # Karpathy-style agent protocol
+│   ├── autoresearch.py      # Grid search orchestrator
+│   ├── run_experiment.sh    # Experiment runner (compile + run + log)
+│   ├── train_config.h       # Default hyperparameters (#ifndef guards)
 │   ├── mil_dynamic.h        # MIL kernel generator (10 kernels/layer)
 │   ├── io.h                 # IOSurface I/O, weight staging
 │   ├── config.h             # Derived sizes, memory allocation
 │   ├── cpu_ops.h            # RMSNorm, residual, loss, AdamW
 │   ├── Makefile             # Build system
-│   ├── train.py             # Autoresearch agent wrapper
-│   ├── program.md           # Agent protocol
+│   ├── experiments.jsonl    # Grid search results (JSON lines)
+│   ├── results.tsv          # Agent loop results (keep/discard/crash)
 │   └── models/              # Model configurations
-│       ├── smollm2_360m.h
-│       ├── smollm2_135m.h
-│       ├── stories110m.h
-│       └── autoresearch.h   # Auto-generated
 ├── tools/
 │   ├── hf_to_ane.py         # HuggingFace -> ANE weight converter
-│   └── gguf_to_ane.py       # GGUF -> ANE weight converter
+│   ├── gguf_to_ane.py       # GGUF -> ANE weight converter
+│   └── download_data.sh     # Training data download
 ├── bridge/
 │   ├── ane_bridge.h         # C-callable ANE API
 │   ├── ane_bridge.m         # Bridge implementation
 │   └── Makefile
 └── docs/
-    └── ...
+    ├── VERIFICATION.md      # First-principles verification of all claims
+    ├── EXPERIMENTS.md       # Full experiment log (E1-E42)
+    ├── ASSUMPTIONS.md       # Tracked assumptions with evidence
+    └── RESEARCH_PLAN.md     # Research roadmap and findings
+```
+
+## Research Results
+
+41 experiments across architecture search, LR sweeps, budget scaling, and ANE characterization. All results independently verified ([docs/VERIFICATION.md](docs/VERIFICATION.md)).
+
+### Key Findings
+
+| # | Finding | Evidence | Literature |
+|---|---------|----------|-----------|
+| 1 | Smaller models win at fixed time budgets | 512d/4L (val 3.54) beats 1024d/4L (val 4.30) at 120s | Consistent with Chinchilla in data-constrained regime |
+| 2 | Step count dominates model capacity | 2500 steps × 36M > 1050 steps × 95M | Kaplan: data β > param α |
+| 3 | Advantage widens at longer training | Gap grows 0.15→0.29 from 120s→600s | Muennighoff: repeated data effective to ~4 epochs |
+| 4 | CPU-only beats ANE for all tested sizes | IOSurface overhead negates ANE speedup | Novel finding (no prior ANE training comparisons) |
+| 5 | Depth aids generalization but costs throughput | 4L beats 2L at same step count but loses at same wall-clock | Nguyen & Salazar (regime-specific) |
+| 6 | LR scales with sqrt(model size) | 5e-4 for 36M, 3e-4 for 73M | Consistent with LAMB heuristic |
+
+### Best Configuration
+
+```
+512d/4L, LR=5e-4, CPU-only, 120s budget
+→ val_loss 3.54, 2500 steps, 41ms/step, 36.4M params
+→ At 1800s: val_loss 2.22 (still improving at ~5 epochs)
 ```
 
 ## Known Limitations
