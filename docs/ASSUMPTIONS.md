@@ -59,7 +59,7 @@
 | U11 | M2 Pro only supports ch=512 for conv 1x1 operations | maderix Issue #3: M1/M2/M3 Pro only compile ch=512. M4+ supports flexible channels. Does not affect our matmul-based approach. | MEDIUM |
 | U12 | _ANEChainingRequest could eliminate CPU round-trips between layers | M5 benchmark report: supports loopback, firmware-level enqueue, shared memory pools. Untested for training. | HIGH |
 | U13 | No one has trained models larger than DIM=1024 before our E38 | maderix tested Stories110M (DIM=768) and Qwen3-0.6B (DIM=1024). Our DIM=1536 and DIM=2048 experiments are novel. | CONFIRMED (literature) |
-| U14 | LR=3e-4 is equally good for all architectures in E39 grid | E39 used constant LR. Smaller models may benefit from higher LR, larger from lower. Unverified — could change E39 ranking. | HIGH |
+| U14 | LR=3e-4 is equally good for all architectures in E39 grid | **RESOLVED (E40)**: LR=5e-4 optimal for 512d/4L, 3e-4 for 1024d/2L. Ranking unchanged. SA-E39-1 resolved. | RESOLVED |
 | U15 | 120s budget is representative of quick-iteration training regime | **RESOLVED (E41)**: 512d/4L wins at 120s, 300s, AND 600s. Gap actually widens at longer budgets. No crossover observed. | CONFIRMED |
 | U16 | Warmup=100 steps is appropriate for all configs at all LRs | E40: at 2500 steps, 100 warmup is 4% of training. Shorter warmup might help at higher LR. | LOW |
 | U17 | Weight decay 0.1 is equally good across all architectures | E40: 768d/2L overfits heavily (gap +0.83). Higher WD might help shallow models generalize. | MEDIUM |

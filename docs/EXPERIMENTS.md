@@ -1350,7 +1350,7 @@ The top 3 configs all achieved >1600 steps. The correlation between step count a
 
 At every width, adding layers increases val_loss:
 - **512d**: 4L (3.61) → 8L (4.22) — doubling depth costs +0.61
-- **768d**: 2L (3.73) → 4L (4.03) → 6L (4.15) — each +2L costs ~+0.2
+- **768d**: 2L (3.73) → 4L (4.03) → 6L (4.15) — +0.30 then +0.12 per 2 layers
 - **1024d**: 2L (3.86) → 4L (4.30) → 6L (4.60) → 8L (5.05) — accelerating degradation
 
 Mechanism: deeper models are slower per step (more sequential compute) and reach fewer total steps. At 120s, 512d/4L gets 2471 steps vs 1024d/8L's 577 — a 4.3x throughput difference.
@@ -1535,7 +1535,7 @@ At what training budget (if any) do larger models overtake 512d/4L? Does the E39
 | 768d/2L | 120s | 2600 | 39ms | 2.856 | 3.690 | +0.83 |
 | 768d/2L | 300s | 6463 | 39ms | 3.507 | 3.355 | -0.15 |
 | 768d/2L | **600s** | **12829** | **40ms** | **2.709** | **2.842** | **+0.13** |
-| 1024d/2L | 120s | 1715 | 60ms | 3.262 | 3.966 | +0.70 |
+| 1024d/2L | 120s | 1730 | 59ms | 3.476 | 3.953 | +0.48 |
 | 1024d/2L | 300s | 4284 | 60ms | 3.155 | 3.233 | +0.08 |
 | 1024d/2L | **600s** | **8332** | **62ms** | **2.450** | **3.058** | **+0.61** |
 
@@ -1545,7 +1545,7 @@ At what training budget (if any) do larger models overtake 512d/4L? Does the E39
 
 | Budget | 512d/4L | 768d/2L | 1024d/2L | Gap (512 vs best other) |
 |--------|---------|---------|----------|------------------------|
-| 120s | **3.543** | 3.690 | 3.966 | -0.147 |
+| 120s | **3.543** | 3.690 | 3.953 | -0.147 |
 | 300s | **3.089** | 3.355 | 3.233 | -0.144 |
 | 600s | **2.548** | 2.842 | 3.058 | -0.294 |
 
@@ -1565,9 +1565,9 @@ The 512d/4L model hasn't saturated its learning capacity at 600s. It could likel
 At 600s, 512d/4L sees approximately:
 - 12269 steps × 10 accum × 256 seq = ~31.4M tokens
 
-With 36.4M parameters and ~31M tokens, the model is in the Chinchilla-optimal regime (tokens ≈ params). Larger models have more parameters than tokens, causing overfitting.
+With 36.4M parameters and ~31M tokens, the token-to-parameter ratio is ~0.85:1 — far below Chinchilla's compute-optimal ratio of ~20:1. Even the smallest model is severely data-starved. Larger models are even more data-starved (1024d/2L sees only 0.29 tokens/param), exacerbating overfitting.
 
-For 1024d/2L (72.9M params) to be Chinchilla-optimal, it would need ~73M tokens, requiring:
+For 1024d/2L (72.9M params) to reach even a 1:1 token-to-parameter ratio, it would need ~73M tokens, requiring:
 - 73M / (10 × 256) = ~28,500 steps
 - At 62ms/step = ~1767 seconds (~30 minutes)
 
