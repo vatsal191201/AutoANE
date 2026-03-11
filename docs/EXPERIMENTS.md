@@ -1399,6 +1399,106 @@ Doubling parameter count roughly halves throughput. This is expected for CPU tra
 
 ### Next Steps
 
-1. **LR sweep per architecture**: Test whether optimal LR varies with model size (SA-E39-1)
+1. ✓ **LR sweep per architecture**: Completed as E40. Optimal LR varies but ranking unchanged.
 2. **Longer budget runs**: Test 512d/4L and 1024d/2L at 300s and 600s to find crossover
-3. **Update default config**: Consider changing train.py default from 1024d/4L to 512d/4L for quick experiments
+3. ✓ **Update default config**: train.py updated to 512d/4L
+
+---
+
+## Experiment 40: Learning Rate Sweep Across Top Architectures
+
+**Date**: 2026-03-11
+**Status**: COMPLETE
+**Automated via**: `autoresearch.py --search lr --budget 120`
+**Addresses**: SA-E39-1 (LR=3e-4 equally good for all configs?)
+
+### Research Question
+
+Does the optimal learning rate vary across the top E39 architectures, and if so, does per-architecture LR tuning change the architecture ranking?
+
+### Methodology
+
+- **Architectures**: Top 3 from E39 — 512d/4L, 768d/2L, 1024d/2L
+- **Learning rates**: 1e-4, 3e-4, 5e-4, 1e-3, 2e-3
+- **15 total configs** (3 archs × 5 LRs), each 120s CPU-only, 30s cooldown
+- **All other hyperparameters held constant** (warmup=100, accum=10, clip=1.0, wd=0.1)
+- **Total wall time**: ~38 minutes
+
+### Results
+
+**512d/4L (36.4M params)**:
+
+| LR | Steps | Train Loss | Val Loss | Val-Train Gap |
+|------|-------|-----------|----------|---------------|
+| 1e-4 | 2559 | 3.866 | 4.189 | +0.32 |
+| 3e-4 | 2561 | 3.200 | 3.673 | +0.47 |
+| **5e-4** | **2570** | **3.439** | **3.543** | **+0.10** |
+| 1e-3 | 2453 | 3.993 | 3.780 | -0.21 |
+| 2e-3 | 2569 | 3.750 | 4.032 | +0.28 |
+
+**768d/2L (50.4M params)**:
+
+| LR | Steps | Train Loss | Val Loss | Val-Train Gap |
+|------|-------|-----------|----------|---------------|
+| 1e-4 | 2589 | 4.244 | 4.020 | -0.22 |
+| 3e-4 | 2600 | 2.924 | 3.744 | +0.82 |
+| **5e-4** | **2600** | **2.856** | **3.690** | **+0.83** |
+| 1e-3 | 2593 | 3.667 | 3.840 | +0.17 |
+| 2e-3 | 2548 | 3.582 | 4.260 | +0.68 |
+
+**1024d/2L (72.9M params)**:
+
+| LR | Steps | Train Loss | Val Loss | Val-Train Gap |
+|------|-------|-----------|----------|---------------|
+| 1e-4 | 1699 | 3.871 | 4.056 | +0.19 |
+| **3e-4** | **1730** | **3.476** | **3.953** | **+0.48** |
+| 5e-4 | 1715 | 3.262 | 3.966 | +0.70 |
+| 1e-3 | 1707 | 3.960 | 4.206 | +0.25 |
+| 2e-3 | 1687 | 4.536 | 4.281 | -0.25 |
+
+### Analysis
+
+**Finding 1: Optimal LR is 5e-4 for smaller models, 3e-4 for larger.**
+
+| Architecture | Best LR | Best Val Loss | Improvement over 3e-4 |
+|-------------|---------|---------------|----------------------|
+| 512d/4L | 5e-4 | 3.543 | -0.130 (3.5% better) |
+| 768d/2L | 5e-4 | 3.690 | -0.054 (1.4% better) |
+| 1024d/2L | 3e-4 | 3.953 | 0.000 (already optimal) |
+
+Smaller models benefit from higher LR — classic scaling law behavior. Each parameter update matters more when there are fewer parameters.
+
+**Finding 2: E39 architecture ranking is ROBUST across LR.**
+
+Even with per-architecture optimal LR:
+1. 512d/4L: val_loss **3.543** (LR=5e-4)
+2. 768d/2L: val_loss **3.690** (LR=5e-4)
+3. 1024d/2L: val_loss **3.953** (LR=3e-4)
+
+The ranking is unchanged. SA-E39-1 is now **RESOLVED**: LR tuning improves individual configs but does not change the relative ordering.
+
+**Finding 3: 512d/4L at LR=5e-4 has the healthiest generalization.**
+
+Train-val gaps at optimal LR:
+- 512d/4L: +0.10 (minimal overfitting)
+- 768d/2L: +0.83 (significant overfitting — train loss 2.86 vs val 3.69)
+- 1024d/2L: +0.48 (moderate overfitting)
+
+The 768d/2L model overfits heavily despite being the fastest (39ms/step, 2600 steps). Its train loss of 2.86 is very low but doesn't transfer to validation. This suggests 2-layer models have a generalization disadvantage — they memorize training patterns without learning transferable representations.
+
+**Finding 4: LR too high causes instability, visible in loss curve.**
+
+At LR=2e-3, all architectures show degraded val_loss. The effect is monotonic above the peak: 512d at 2e-3 (4.03) is worse than 3e-4 (3.67). At 1e-3, 512d shows val < train (-0.21), suggesting training instability where final loss doesn't reflect average quality.
+
+### Key Conclusions
+
+1. **Optimal config for 120s: 512d/4L at LR=5e-4** — val_loss 3.543, the best result across all E39+E40 experiments
+2. **Architecture ranking is robust to LR tuning** — SA-E39-1 resolved
+3. **2-layer models overfit heavily** despite high step counts — depth aids generalization
+4. **Default LR should be 5e-4 for 512d/4L** (not 3e-4)
+
+### Assumptions Updated
+
+- **SA-E39-1**: RESOLVED — LR varies by architecture but ranking unchanged
+- **SA-E40-1**: Warmup=100 steps is appropriate for all configs. UNVERIFIED — at 2500 steps, 100 warmup is 4% of training. Shorter warmup might help at higher LR.
+- **SA-E40-2**: Weight decay 0.1 is equally good across configs. UNVERIFIED — 768d/2L's heavy overfitting might benefit from higher WD.

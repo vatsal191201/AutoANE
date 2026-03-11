@@ -34,6 +34,9 @@
 | V15 | CPU-only is correct default for ALL model sizes with dynamic weight approach | E38: tested 95M-281M params. ANE never faster, and dramatically slower at DIM=2048. | HIGH |
 | V16 | At 120s CPU-only budget, smaller/shallower models achieve lower val_loss | E39: 512d/4L (36.4M) val_loss 3.61 beats all 11 configs tested. Step count (2471 vs 577 for 1024d/8L) is the dominant factor. Depth strictly hurts at every width. | HIGH |
 | V17 | Depth is strictly harmful at fixed short time budgets (120s) | E39: at every width tested, adding layers increases val_loss. 512d: 4L→8L costs +0.61. 768d: 2L→4L→6L costs +0.30/+0.12. 1024d: 2L→4L→6L→8L costs +0.44/+0.31/+0.45. | HIGH |
+| V18 | Optimal LR is 5e-4 for small models (512d), 3e-4 for larger (1024d) | E40: 512d/4L improves from val 3.67→3.54 at LR 5e-4. 1024d/2L unchanged at 3e-4. Classic scaling law behavior. | HIGH |
+| V19 | Architecture ranking (E39) is robust to per-architecture LR tuning | E40: 512d/4L > 768d/2L > 1024d/2L with optimal LRs. Order unchanged. Resolves SA-E39-1. | HIGH |
+| V20 | 2-layer models overfit heavily despite high throughput | E40: 768d/2L train-val gap +0.83 at optimal LR. Depth aids generalization even when it costs throughput. | HIGH |
 | V12 | Fusing non-linear ops into ANE fp16 causes train/val distribution shift | E36: val gap 1.218 (ane-full) vs 0.599 (ane-matmul-only). Identical val_loss to CPU at matched steps. | HIGH |
 | V13 | ANE should only be used for linear projections (matmul), not attention/SiLU/residual | E36: matches original maderix/ANE gen1 design. Step-10 loss matches CPU to 4 decimal places. **NOTE**: original gen3 (dynamic pipeline) fuses more into ANE — our approach is more conservative. | HIGH |
 
@@ -56,6 +59,8 @@
 | U13 | No one has trained models larger than DIM=1024 before our E38 | maderix tested Stories110M (DIM=768) and Qwen3-0.6B (DIM=1024). Our DIM=1536 and DIM=2048 experiments are novel. | CONFIRMED (literature) |
 | U14 | LR=3e-4 is equally good for all architectures in E39 grid | E39 used constant LR. Smaller models may benefit from higher LR, larger from lower. Unverified — could change E39 ranking. | HIGH |
 | U15 | 120s budget is representative of quick-iteration training regime | E39 results are specific to this budget. Optimal architecture shifts with longer training. Crossover point untested. | MEDIUM |
+| U16 | Warmup=100 steps is appropriate for all configs at all LRs | E40: at 2500 steps, 100 warmup is 4% of training. Shorter warmup might help at higher LR. | LOW |
+| U17 | Weight decay 0.1 is equally good across all architectures | E40: 768d/2L overfits heavily (gap +0.83). Higher WD might help shallow models generalize. | MEDIUM |
 
 ## Category: DISPROVED (tested and found wrong)
 
