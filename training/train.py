@@ -17,10 +17,10 @@ HIDDEN = 1408       # FFN hidden dimension (2.75x DIM, rounded to 64)
 HEADS = 8           # number of query attention heads
 KV_HEADS = 2        # number of key/value heads (GQA: HEADS must be divisible by KV_HEADS)
 HEAD_DIM = 64       # attention head dimension
-SEQ = 256           # sequence length
+SEQ = 128           # sequence length (shorter = faster steps, less context)
 
 # Training
-LR = 5e-4           # peak learning rate (E40: 5e-4 optimal for 512d/4L, 3e-4 for larger models)
+LR = 4e-4           # peak learning rate (lower for SEQ=128 smaller batch)
 WARMUP_STEPS = 100  # linear warmup steps
 ACCUM_STEPS = 10    # gradient accumulation steps (effective batch = ACCUM_STEPS * SEQ tokens)
 GRAD_CLIP = 1.0     # gradient norm clipping threshold
