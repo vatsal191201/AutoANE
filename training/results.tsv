@@ -1,1 +1,15 @@
 commit	val_loss	steps	params_M	ms_step	status	description
+afc035c	3.533	2456	36.4	42.6	keep	baseline: 512d/4L LR=5e-4 SEQ=256 CPU-only 120s
+38cc3b4	3.706	2301	36.4	42.4	discard	ACCUM 10→5: noisier gradients hurt
+218e9e0	3.831	2580	36.4	42.3	discard	ACCUM 10→20: fewer updates hurt more than cleaner grads help
+bf21bf0	3.540	2452	36.4	42.7	discard	WARMUP 100→50: no improvement (within noise)
+39adfbb	3.574	2418	36.4	43.1	discard	LR 5e-4→7e-4: overshoots, hurts convergence
+9373fea	3.533	2479	36.4	42.2	discard	WD 0.1→0.05: no change (val identical to baseline)
+02740aa	3.528	4037	36.4	24.2	keep	SEQ 256→128: 1.6x more steps, slight val improvement
+b719753	3.875	5650	36.4	16.3	discard	SEQ 128→64: too short, val degrades despite 5650 steps
+44624c2	3.643	3040	36.4	33.7	discard	SEQ 128→192: worse than SEQ=128
+0943e1b	3.757	4112	36.4	23.9	discard	ADAM_B2 0.95→0.99: variance too slow for short training
+6bad1bf	3.809	4821	28.5	20.6	discard	384d/6L: too small despite 4821 steps
+38d2976	3.838	4131	36.4	23.8	discard	LR 5e-4→6e-4: overshoots at SEQ=128
+0ad63f8	3.507	4074	36.4	24.2	keep	LR 5e-4→4e-4 at SEQ=128: new best!
+e08eb65	3.512	4061	36.4	24.2	discard	LR 4e-4→3.5e-4: marginally worse, 4e-4 is sweet spot
