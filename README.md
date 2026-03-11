@@ -17,16 +17,20 @@ AutoANE is two things:
 git clone https://github.com/vatsal191201/AutoANE.git
 cd AutoANE
 
-# Download training data (~40MB TinyStories, pre-tokenized)
-bash tools/download_data.sh
+# One-command demo: download data, train 2 min, generate text
+bash demo.sh
 
-# Build and train from scratch (2 minutes, CPU-only)
+# Or step by step:
+bash tools/download_data.sh
 cd training
 make MODEL=autoresearch
 ./train --scratch --time 120 --cpu-only --lr 4e-4
 
-# Or use the autoresearch agent (requires Claude Code)
-python3 train.py
+# Generate text from trained model
+cd .. && python3 generate.py --prompt "Once upon a time" --tokens 200
+
+# Or run autonomous hyperparameter search (100 experiments, ~3 hours)
+cd training && python3 run_autosearch.py --experiments 100
 ```
 
 ### What Happens
@@ -217,10 +221,15 @@ AutoANE/
 │   ├── Makefile             # Build system (xcrun clang + Accelerate + IOSurface)
 │   ├── experiments.jsonl    # Grid search results (JSON lines)
 │   ├── results.tsv          # Agent loop results (keep/discard/crash)
+│   ├── run_autosearch.py    # Autonomous search (no AI agent needed)
 │   └── models/              # Model header configs (8 architectures)
+├── generate.py              # Text generation from trained checkpoint (numpy)
+├── demo.sh                  # One-command demo: train + generate
 ├── tools/
 │   ├── hf_to_ane.py         # HuggingFace to ANE checkpoint converter
 │   ├── gguf_to_ane.py       # GGUF to ANE checkpoint converter
+│   ├── export_to_gguf.py    # ANE checkpoint to GGUF exporter
+│   ├── power_benchmark.sh   # Power measurement (requires sudo)
 │   └── download_data.sh     # Training data download (TinyStories)
 ├── bridge/
 │   ├── ane_bridge.h         # C-callable ANE API (compile, eval, I/O)
@@ -232,6 +241,24 @@ AutoANE/
     ├── ASSUMPTIONS.md       # Tracked assumptions: 25 verified, 7 disproved
     └── RESEARCH_PLAN.md     # Research roadmap and findings
 ```
+
+## AutoANE vs MLX vs PyTorch
+
+| | AutoANE (CPU-only) | MLX | PyTorch (MPS) |
+|--|---------------------|-----|---------------|
+| **Compute unit** | CPU (AMX/Accelerate) | GPU | GPU |
+| **Mac usable during training?** | Yes | No (GPU shared with UI) | No |
+| **Memory leaks** | None | [Known issues](https://github.com/ml-explore/mlx/issues/1406) at long runs | Unknown |
+| **Precision** | fp32 | fp32/fp16 | fp32/fp16 |
+| **Setup** | `make && ./train` (zero dependencies) | `pip install mlx` | `pip install torch` |
+| **Autonomous research** | Built-in (autoresearch protocol) | Manual | Manual |
+| **Custom architectures** | C header file | Python | Python |
+| **Export formats** | GGUF, ANE checkpoint | Safetensors | PyTorch, ONNX |
+| **On-device (iOS)** | Possible (ANE mode) | No | No (CoreML only) |
+
+**AutoANE's advantage**: Zero-dependency compiled C binary with built-in autonomous hyperparameter search. Your Mac stays fully usable because training runs on CPU, not GPU. ANE mode enables a future path to on-device training on iPhones/iPads.
+
+**MLX's advantage**: Faster raw throughput on GPU for large models, broader ecosystem, Python flexibility.
 
 ## Known Limitations
 
