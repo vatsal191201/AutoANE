@@ -484,14 +484,19 @@ Independent Python reimplementation of the C training binary's forward pass, tes
 
 ### 14.1 demo.sh End-to-End
 
+**Full run (120s)**:
+
 | Step | Result | Status |
 |------|--------|--------|
 | Data download | Symlink found (40MB) | **PASS** |
 | Build (`make MODEL=autoresearch`) | Compiled successfully | **PASS** |
-| Train (`--scratch --time 30`) | 547 steps, val_loss=5.656, 36.4M params | **PASS** |
-| Generate (`generate.py`) | 200 tokens at 58.1 tok/s | **PASS** |
+| Train (`--scratch --time 120`) | 4314 steps, val_loss=3.561, 36.4M params | **PASS** |
+| Generate (`generate.py`) | 200 tokens at 96.2 tok/s | **PASS** |
+| Text quality | Coherent children's story with characters, dialogue | **PASS** |
 
-**Note**: 30s training (--quick) produces incoherent text. Full 120s training at step 4074 produces coherent TinyStories output.
+Sample output: *"Once upon a time, there was a little girl named Timmy. Timmy had a big boat..."*
+
+**Quick run (30s)**: Also passes (547 steps, val_loss=5.656) but produces incoherent text due to insufficient training.
 
 ### 14.2 run_autosearch.py Loop
 
@@ -504,7 +509,7 @@ Independent Python reimplementation of the C training binary's forward pass, tes
 | Git revert on discard | Both reverted to baseline state | **PASS** |
 | results.tsv logging | All 3 entries logged correctly | **PASS** |
 
-### 14.3 GGUF Export
+### 14.3 GGUF Export/Import Round-Trip
 
 | Check | Result | Status |
 |-------|--------|--------|
@@ -512,16 +517,40 @@ Independent Python reimplementation of the C training binary's forward pass, tes
 | Output file size | 145.8 MB | **PASS** |
 | Tensor count | 38 (4 layers × 9 + rms_final + embed) | **PASS** |
 | Metadata KV pairs | 13 (architecture, vocab, dims, etc.) | **PASS** |
-| Round-trip weight diff | max=0.0 on non-RoPE tensors | **PASS** |
-| Q/K de-interleaving | RoPE convention correctly reversed | **PASS** |
+| Q/K de-interleaving (export) | RoPE convention correctly reversed | **PASS** |
+| Q/K re-interleaving (import) | RoPE convention correctly restored | **PASS** |
+| Full round-trip (ANE→GGUF→ANE) | All 38 tensors bit-perfect (max_diff=0.0) | **PASS** |
 
-### 14.4 Untested (Requires External Dependencies)
+**Bug found and fixed**: `gguf_to_ane.py` was not interleaving Q/K weights from HF/GGUF convention (split halves: [re0..re31, im0..im31]) to ANE convention (paired: [re0, im0, re1, im1, ...]). Before the fix, Q/K had max_diff ~0.11 on round-trip. After fix: bit-perfect.
+
+### 14.4 run_experiment.sh (Grid Search)
+
+| Check | Result | Status |
+|-------|--------|--------|
+| JSON config parsing | Correctly extracts all fields | **PASS** |
+| -D flag generation | Correct override flags | **PASS** |
+| Compilation | 2s with train_config.h base | **PASS** |
+| Training (15s budget) | 295 steps, val_loss=6.802 (from scratch) | **PASS** |
+| Result JSON output | Correct machine-parseable format | **PASS** |
+| experiments.jsonl append | Result logged correctly | **PASS** |
+
+### 14.5 autoresearch.py (Grid Search Orchestrator)
+
+| Check | Result | Status |
+|-------|--------|--------|
+| `--dry-run` | 11 configs generated correctly | **PASS** |
+| `--analyze` | 41 experiments parsed, sorted by val_loss | **PASS** |
+| Architecture search grid | Correct dims/layers/params/memory | **PASS** |
+| LR search grid | 15 configs (3 archs × 5 LRs) | **PASS** |
+
+### 14.6 Untested (Requires External Dependencies)
 
 | Item | Reason |
 |------|--------|
+| hf_to_ane.py | Requires `torch` (not installed, ~2GB) |
 | power_benchmark.sh | Requires `sudo powermetrics` |
 | GGUF loading in llama.cpp | Requires llama.cpp build |
-| Full 100-experiment autosearch | Time: ~3 hours |
+| 100-experiment autosearch | Running in background (~3 hours) |
 
 ---
 
@@ -535,6 +564,62 @@ Independent Python reimplementation of the C training binary's forward pass, tes
 - **run_autosearch.py**: Keep/discard/git-revert loop works correctly
 - **export_to_gguf.py**: Bit-perfect weight round-trip verified
 - **autoresearch.h stale header**: Found and fixed (1024d→512d)
+
+---
+
+## 16. Cross-Reference: maderix/ANE (2026-03-11)
+
+Comparison with the original ANE reverse engineering work by Manjeet Singh ([maderix/ANE](https://github.com/maderix/ANE)).
+
+### 16.1 Code Provenance
+
+| Component | Relationship | Notes |
+|-----------|-------------|-------|
+| `bridge/ane_bridge.h` | Direct adaptation | Refactored from maderix's `ane_runtime.h` into C-callable API |
+| `training/io.h` | Line-for-line adaptation | Same function names, spatial layouts, NEON conversion, blob format |
+| `training/mil_dynamic.h` | Shared approach | Same MIL generation pattern; AutoANE adds unfused matmul-only kernels |
+| `training/train.m` | Substantially extended | AutoANE adds CPU-only mode, AdamW, gradient clipping, LoRA, time budgets, autonomous search |
+
+### 16.2 Key Differences
+
+| Aspect | maderix/ANE | AutoANE |
+|--------|-------------|---------|
+| Focus | ANE-first (maximize ANE use) | Practical (CPU-only recommended) |
+| Training modes | ANE only | CPU-only, ANE matmul, ANE full |
+| Optimizer | Adam | AdamW + cosine LR + clipping |
+| Unique features | INT8, SRAM probing, GPU-ANE zero-copy, async cblas | Autonomous research, LoRA, weight import/export, time budgets |
+
+### 16.3 Potential Improvements from maderix
+
+1. **GCD async cblas overlap**: CPU dW gradients run parallel to ANE evals via GCD dispatch queue
+2. **ANE RMSNorm fusion**: Fold RMSNorm into MIL kernels, saving CPU round-trip
+3. **Forward taps via concat**: Expose Q/K/V/attention as fused kernel outputs, avoid recompute in backward
+4. **Automated process restart**: Checkpoint-and-restart to work around the ~119 ANE compile limit per process
+
+### 16.4 Credit Assessment
+
+AutoANE's README credit ("original reverse engineering of Apple's Neural Engine private APIs and first-ever training on ANE hardware") is **accurate**. The bridge, io.h, and MIL generation are directly adapted from maderix's implementation.
+
+---
+
+## 17. Summary Update (2026-03-11)
+
+### All Verified
+
+- **Data**: 40MB, 20.0M tokens, valid format, correct vocab range
+- **Parameters**: Mathematical counts match code output for all tested configs
+- **Forward pass**: Python reimplementation matches C binary (delta 0.117)
+- **Backward pass**: Gradients flow through all components, norms decreasing
+- **Optimizer**: AdamW with bias correction, cosine LR, gradient clipping — all correct
+- **Experiment results**: Reproduced, consistent with literature
+- **Tools**: generate.py (96.2 tok/s), demo.sh, run_autosearch.py, run_experiment.sh, autoresearch.py, export_to_gguf.py, gguf_to_ane.py — all verified
+- **Code provenance**: maderix/ANE comparison confirms accurate credits
+
+### Bugs Found and Fixed
+
+1. **autoresearch.h stale header** (1024d to 512d) — caused C binary to misinterpret checkpoint
+2. **gguf_to_ane.py missing Q/K interleaving** — caused incorrect RoPE after GGUF import
+3. **generate.py streaming bug** — was reprinting full text each tick (fixed with delta approach)
 
 ### No Retractions Required
 
