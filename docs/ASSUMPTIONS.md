@@ -38,7 +38,7 @@
 | V19 | Architecture ranking (E39) is robust to per-architecture LR tuning | E40: 512d/4L > 768d/2L > 1024d/2L with optimal LRs. Order unchanged. Resolves SA-E39-1. | HIGH |
 | V20 | 2-layer models overfit heavily despite high throughput | E40: 768d/2L train-val gap +0.83 at optimal LR. E41: confirmed at 300s and 600s. Depth aids generalization even when it costs throughput. | HIGH |
 | V21 | 512d/4L advantage increases with longer training budgets (120-600s) | E41: lead grows from 0.15 (120s) to 0.29 (600s). Larger models overfit while 512d/4L is still underfitting at 600s. | HIGH |
-| V22 | Data volume, not model capacity, is the bottleneck at our training scale | E41: at ~31M tokens (600s), 36.4M param model is Chinchilla-optimal. 72.9M param model needs ~73M tokens but only sees ~21M. | HIGH |
+| V22 | Data volume, not model capacity, is the bottleneck at our training scale | E41: at ~31M tokens (600s), 36.4M param model sees 0.86 tokens/param — 23× below Chinchilla's 20:1 optimum. 72.9M param model needs ~73M tokens but only sees ~21M. | HIGH |
 | V12 | Fusing non-linear ops into ANE fp16 causes train/val distribution shift | E36: val gap 1.218 (ane-full) vs 0.599 (ane-matmul-only). Identical val_loss to CPU at matched steps. | HIGH |
 | V13 | ANE should only be used for linear projections (matmul), not attention/SiLU/residual | E36: matches original maderix/ANE gen1 design. Step-10 loss matches CPU to 4 decimal places. **NOTE**: original gen3 (dynamic pipeline) fuses more into ANE — our approach is more conservative. | HIGH |
 

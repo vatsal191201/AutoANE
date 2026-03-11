@@ -41,7 +41,7 @@ The stalls are likely caused by CPU thermal throttling (backward pass is CPU-hea
 ### Software
 - AutoANE training binary compiled from commit after E36 with thermal monitoring added
 - Model: 4L/1024d (95.4M params), SEQ=256, ACCUM=10
-- Data: tinystories_smollm2_data00.bin (38MB, ~19.7M tokens)
+- Data: tinystories_smollm2_data00.bin (40MB, 20.0M tokens)
 - 90/10 train/val split
 - Random seed: srand48(42) for init, srand48(42) for training loop
 
