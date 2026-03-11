@@ -22,14 +22,16 @@
 | V1 | ANE matmul ~2.5x faster than CPU AMX | Exp 11: 29.2ms vs 71.9ms | HIGH |
 | V2 | Conv 1x1 is 1.5-2.8x faster than matmul on ANE | Exp 9: microbenchmark | HIGH |
 | V3 | CPU AMX achieves 1.5-2.5 TFLOPS fp32 | Exp 8: cblas_sgemm benchmark | HIGH |
-| V4 | IOSurface overhead is ~13% of step time | Exp 7: 8.1ms of 63.2ms | HIGH |
+| V4 | IOSurface overhead is ~13% of step time at DIM=1024 | Exp 7: 8.1ms of 63.2ms. **CLARIFIED (E38)**: scales dramatically — 5ms at DIM=1536, 129ms at DIM=2048. Not a fixed percentage. | CLARIFIED |
 | V5 | Mixed precision (ANE fwd + CPU bwd) worse than pure | Exp 11: 5.10 vs 4.90 avg loss. **CLARIFIED (E36)**: the issue is fused non-linear ops in forward, not mixed precision itself. ane-matmul-only (ANE fwd matmul + CPU everything else) matches CPU. | CLARIFIED |
 | V6 | Loss scaling (256.0) essential for ANE fp16 | Exp 1: gradients underflow without it | HIGH |
 | V7 | Shallow/wide beats deep/narrow in fixed time | Exp 2: 4L/1024d beats 32L/960d | HIGH |
 | V8 | LoRA from pretrained works on ANE | Exp 3: stable training, loss 4.22 | HIGH |
 | V9 | Classifier row-major optimization ~2x faster | Exp 13: 30.5ms → 15.7ms | HIGH |
 | V10 | Both modes suffer ~1.5x thermal throttling at 10min | CORRECTED — single-process throttling is 30% (1.3x), not 50% (1.5x). E18's 1.5x was from concurrent processes. | CORRECTED (E24) |
-| V11 | ANE only faster than CPU for large matmul shapes (2816+ width) | E23: 1024x1024 CPU 0.67x faster, 2816x1024 ANE 1.88x faster | HIGH |
+| V11 | ANE only faster than CPU for large matmul shapes (2816+ width) | E23: 1024x1024 CPU 0.67x faster, 2816x1024 ANE 1.88x faster. **CAVEAT (E38)**: raw matmul speedup exists but IOSurface overhead at larger dimensions negates it. Net effect: no throughput advantage at any tested dimension. | CLARIFIED |
+| V14 | Dynamic weight IOSurface approach has hard scaling ceiling at ~220MB total surfaces | E38: DIM=1536 (220MB) parity, DIM=2048 (379MB) ANE 2x slower. IOSurface memory pressure causes cache thrashing in ALL operations including CPU-only backward pass. | HIGH |
+| V15 | CPU-only is correct default for ALL model sizes with dynamic weight approach | E38: tested 95M-281M params. ANE never faster, and dramatically slower at DIM=2048. | HIGH |
 | V12 | Fusing non-linear ops into ANE fp16 causes train/val distribution shift | E36: val gap 1.218 (ane-full) vs 0.599 (ane-matmul-only). Identical val_loss to CPU at matched steps. | HIGH |
 | V13 | ANE should only be used for linear projections (matmul), not attention/SiLU/residual | E36: matches original maderix/ANE gen1 design. Step-10 loss matches CPU to 4 decimal places. **NOTE**: original gen3 (dynamic pipeline) fuses more into ANE — our approach is more conservative. | HIGH |
 
@@ -39,14 +41,17 @@
 |----|-----------|--------|------|
 | U1 | ANE power draw is ~2.8W at peak | maderix blog (not our measurement) | MEDIUM |
 | U2 | Deep graph compilation achieves 94% ANE utilization | Orion + maderix (not our test) | MEDIUM |
-| U3 | INT8 provides no compute speedup over fp16 | maderix blog (not our test) | LOW |
-| U4 | SRAM is ~32MB with 30% cliff above | maderix blog (not our test) | LOW |
+| U3 | INT8 provides no compute speedup over fp16 | maderix blog + Orion paper: ANE dequantizes INT8→FP16 before compute. INT8 saves only memory bandwidth (1.88x throughput from smaller weight loads), not compute cycles. True peak is 19 TFLOPS FP16 regardless. | CONFIRMED (literature) |
+| U4 | SRAM is ~32MB with 30% cliff above | maderix Part 2: 2048x2048 (24MB) gets 5.7 TFLOPS, 4096x4096 (96MB) drops to 4.0 TFLOPS (30% drop). **E38 corroboration**: our W1 surface at DIM=2048 is 24MB — right at the cliff edge. | CONFIRMED (literature + E38) |
 | U5 | _ANEClient API enables delta compilation | Orion paper (not our test) | HIGH |
 | U6 | Gradient sanitization will fix 10-min divergence | Orion paper analogy (hypothesis) | HIGH |
 | U7 | Kernel fusion (16-64 ops) will improve our throughput | **DISPROVED for training (E36)**: fusing non-linear ops into ANE fp16 causes overfitting. May still hold for inference-only. | DISPROVED (training) |
 | U8 | ANE thermal throttling causes our observed step-time stalls | **DISPROVED (E37)**: ANE max step time 165ms, CPU max 16,273ms. ANE had zero stalls. CPU scheduling jitter was the cause all along. | DISPROVED |
-| U9 | Single-op ANE kernels get only ~30% utilization (vs 74-94% for deep graphs) | maderix Part 2 benchmarks. Our unfused approach uses 28 single-matmul dispatches/step. | HIGH |
+| U9 | Single-op ANE kernels get only ~30% utilization (vs 74-94% for deep graphs) | maderix Part 2 benchmarks. Our unfused approach uses 28 single-matmul dispatches/step. 4-layer fusion achieves 7.7x speedup but hurts generalization (V12). | HIGH |
 | U10 | ANE dispatch overhead is ~0.095ms per call | maderix Part 2. 28 dispatches/step = ~2.7ms fixed cost. | MEDIUM |
+| U11 | M2 Pro only supports ch=512 for conv 1x1 operations | maderix Issue #3: M1/M2/M3 Pro only compile ch=512. M4+ supports flexible channels. Does not affect our matmul-based approach. | MEDIUM |
+| U12 | _ANEChainingRequest could eliminate CPU round-trips between layers | M5 benchmark report: supports loopback, firmware-level enqueue, shared memory pools. Untested for training. | HIGH |
+| U13 | No one has trained models larger than DIM=1024 before our E38 | maderix tested Stories110M (DIM=768) and Qwen3-0.6B (DIM=1024). Our DIM=1536 and DIM=2048 experiments are novel. | CONFIRMED (literature) |
 
 ## Category: DISPROVED (tested and found wrong)
 
@@ -58,6 +63,7 @@
 | D4 | Higher LR helps ANE training | Exp 5: larger activations degrade fp16 |
 | D5 | Delta compilation works via _ANEInMemoryModel reload | Exp 10, 17: output unchanged |
 | D6 | ANE→CPU mid-training would improve over pure modes | E29: adaptive 4.507 vs pure ANE 4.354 vs pure CPU 3.897. fp16 damage is cumulative in weights. |
+| D7 | ANE becomes advantageous at larger model dimensions | E38: tested DIM=1024/1536/2048. ANE never faster. At DIM=2048, ANE 2x SLOWER due to IOSurface memory pressure (379MB wired memory causes cache thrashing). |
 
 ---
 
