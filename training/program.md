@@ -1,166 +1,210 @@
-# ANE Autoresearch Agent Protocol
+# AutoANE Autoresearch Agent Protocol
+
+> Adapted from [karpathy/autoresearch](https://github.com/karpathy/autoresearch) for Apple Neural Engine training.
 
 ## Overview
 
-You are optimizing a transformer language model trained **from scratch** on Apple Neural Engine (ANE).
-The model trains on TinyStories (children's stories) using fp16 ANE compute with fp32 CPU accumulation.
-Your goal: **minimize `final_loss`** within a fixed **60-second** training budget per experiment.
+You are an autonomous ML research agent optimizing a transformer language model trained on Apple Silicon. Your goal: **minimize `val_loss`** through iterative modification of `train.py`, using a git-based keep/revert loop.
 
-## System Architecture
+You run experiments in a tight loop: modify → commit → train → evaluate → keep or revert. You do NOT pause to ask the human. The loop runs until the human interrupts you.
 
-- **Llama-family transformer**: RMSNorm, GQA attention with RoPE, SwiGLU FFN
-- **ANE kernels**: 10 MIL kernels compiled once at startup, weights staged via IOSurface each step
-- **fp16 compute**: all ANE matmuls in fp16, CPU accumulation in fp32
-- **DeepNet scaling**: residual connections scaled by `1/sqrt(2*NLAYERS)` for fp16 stability
-- **Loss scaling**: gradients scaled by 256x to prevent fp16 underflow in ANE backward pass
-- **Gradient sanitization**: optional NaN/Inf cleanup (per Orion paper Bug #3 fix)
-- **AdamW optimizer**: with bias correction, cosine LR schedule, linear warmup
+## Setup (Run Once)
 
-## How to Run an Experiment
+1. Read these files to understand the system:
+   - `README.md` (project overview)
+   - `training/program.md` (this file — your protocol)
+   - `training/train.py` (the ONLY file you modify)
+   - `docs/ASSUMPTIONS.md` (verified findings from prior research)
 
-Use `run_experiment.sh` to compile and run training with custom hyperparameters:
+2. Create a fresh git branch:
+   ```bash
+   git checkout -b autoresearch/<tag>   # e.g., autoresearch/mar11
+   ```
+
+3. Verify training data exists:
+   ```bash
+   ls -la tinystories_smollm2_data00.bin   # should be ~40MB
+   ```
+
+4. Initialize `training/results.tsv`:
+   ```bash
+   echo "commit\tval_loss\tsteps\tparams_M\tms_step\tstatus\tdescription" > training/results.tsv
+   ```
+
+5. Run baseline experiment (no changes):
+   ```bash
+   cd training && python3 train.py
+   ```
+   Record the baseline val_loss. This is your "best so far."
+
+6. Confirm to the human that setup is complete and the loop is starting.
+
+## The Experiment Loop
+
+Repeat forever:
+
+### 1. Propose a Change
+
+Examine `train.py` and decide what to modify. You may change ONLY the `AGENT-EDITABLE HYPERPARAMETERS` section:
+
+**Architecture** (triggers recompile + new random init):
+- `DEPTH` — transformer layers (2-12 typical)
+- `DIM` — model dimension (256-2048)
+- `HIDDEN` — FFN hidden dim (usually 2.75× DIM, rounded to 64)
+- `HEADS` — query attention heads (DIM / HEAD_DIM)
+- `KV_HEADS` — key/value heads (HEADS must be divisible by KV_HEADS)
+- `HEAD_DIM` — per-head dimension (64 typical)
+- `SEQ` — sequence length (128-512)
+
+**Training hyperparameters** (no recompile needed if architecture unchanged):
+- `LR` — peak learning rate
+- `WARMUP_STEPS` — linear warmup steps
+- `ACCUM_STEPS` — gradient accumulation (effective batch = ACCUM_STEPS × SEQ tokens)
+- `GRAD_CLIP` — gradient norm clipping
+- `WEIGHT_DECAY` — AdamW weight decay
+- `ADAM_B1`, `ADAM_B2` — Adam momentum parameters
+
+**Training mode**:
+- `CPU_ONLY` — pure CPU fp32 (recommended default, see V15)
+- `ANE_MATMUL_ONLY` — ANE for linear projections only (viable up to DIM=1536)
+- `LOSS_SCALE` — fp16 gradient scaling (only for ANE modes)
+
+**Budget**:
+- `TIME_BUDGET` — wall-clock seconds per experiment
+
+### 2. Commit
 
 ```bash
-# Default config (4 layers, dim=1024, lr=3e-4)
-./run_experiment.sh
-
-# Override specific hyperparameters via JSON
-./run_experiment.sh '{"lr": "5e-4", "wd": "0.2", "accum": "5"}'
-
-# Override architecture
-./run_experiment.sh '{"nlayers": "8", "dim": "512", "heads": "8", "kv_heads": "4", "hd": "64", "hidden": "1408"}'
-
-# Pass a config file
-./run_experiment.sh my_config.json
+git add training/train.py
+git commit -m "<short description of what you changed and why>"
 ```
 
-Each experiment:
-1. Compiles `train.m` with `-D` overrides from `train_config.h`
-2. Runs training for exactly 60 seconds (`--time 60`)
-3. Captures machine-parseable output (final_loss, total_seconds, num_steps, etc.)
-4. Appends result as a JSON line to `experiments.jsonl`
-5. Prints result to stdout
+### 3. Run
 
-## What You Can Modify
+```bash
+cd training && python3 train.py
+```
 
-All hyperparameters are set via JSON keys passed to `run_experiment.sh`.
+The script generates a C header, compiles the binary (~2s), and trains for `TIME_BUDGET` seconds. Output ends with machine-parseable metrics:
+```
+final_loss:       3.348118
+val_loss:         3.543304
+training_seconds: 104.6
+total_seconds:    120.0
+num_steps:        2542
+num_params_M:     36.4
+```
 
-### Architecture (triggers full recompile + new random init)
+### 4. Evaluate
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `dim` | 1024 | Model embedding dimension |
-| `nlayers` | 4 | Number of transformer layers (depth) |
-| `heads` | 16 | Query attention heads |
-| `kv_heads` | 4 | Key/value heads (GQA: heads/kv_heads groups) |
-| `hd` | 64 | Per-head dimension (dim must equal heads * hd) |
-| `hidden` | 2816 | SwiGLU FFN hidden dimension |
-| `seq` | 256 | Sequence length |
+Parse `val_loss` from the output. This is the metric to minimize.
 
-### Training Hyperparameters
+### 5. Keep or Revert
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `lr` | 3e-4 | Peak learning rate (cosine schedule) |
-| `adam_b1` | 0.9 | Adam beta1 (momentum decay) |
-| `adam_b2` | 0.95 | Adam beta2 (squared gradient decay) |
-| `adam_eps` | 1e-8 | Adam epsilon (numerical stability) |
-| `wd` | 0.1 | AdamW weight decay |
-| `accum` | 10 | Gradient accumulation steps (effective batch = accum * seq tokens) |
-| `warmup` | 100 | Linear LR warmup steps |
-| `grad_clip` | 1.0 | Global gradient norm clipping threshold |
-| `loss_scale` | 256.0 | fp16 gradient scaling factor |
-| `min_lr_frac` | 0.1 | Minimum LR as fraction of peak (cosine floor) |
+- **If val_loss IMPROVED** (lower than best so far):
+  ```bash
+  # Keep the commit. Update best.
+  echo "<commit>\t<val_loss>\t<steps>\t<params_M>\t<ms_step>\tkeep\t<description>" >> training/results.tsv
+  ```
+  Update your "best so far" val_loss.
 
-### Boolean Flags
+- **If val_loss DID NOT IMPROVE** (equal or higher):
+  ```bash
+  # Revert the commit. Go back to previous state.
+  git reset --hard HEAD~1
+  echo "<commit>\t<val_loss>\t<steps>\t<params_M>\t<ms_step>\tdiscard\t<description>" >> training/results.tsv
+  ```
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `cpu_attn_bwd` | false | Use CPU fp32 for SDPA backward (more accurate, slower) |
-| `sanitize` | false | Replace NaN with 0, clip Inf to +/-65504 in gradients |
+- **If the run CRASHED** (compile error, runtime crash, NaN loss):
+  ```bash
+  git reset --hard HEAD~1
+  echo "<commit>\tnull\t0\t0\t0\tcrash\t<description>" >> training/results.tsv
+  ```
+  Debug if obvious; otherwise skip and try a different change.
 
-## Architecture Constraints
+### 6. Go to Step 1
 
-- `dim` must equal `heads * hd`
-- `heads` must be divisible by `kv_heads`
-- Total memory is approximately 3x model params in float32 (weights + Adam m + Adam v)
-- Keep total params under ~500M for reasonable step throughput on ANE
-- Larger models get fewer training steps in the 60s budget
+Do NOT pause to ask the human. Do NOT stop to analyze. Run the next experiment immediately. The loop runs until interrupted.
 
 ## What You CANNOT Modify
 
-- `vocab` (49152, fixed by SmolLM2 tokenizer)
-- `data_path` (TinyStories dataset, fixed)
-- The C training code (`train.m`, `mil_dynamic.h`, `cpu_ops.h`, `io.h`, `config.h`)
-- The kernel compilation pipeline
-- The 60-second time budget
+- `train.m` — the C/Obj-C training binary
+- `mil_dynamic.h`, `cpu_ops.h`, `io.h`, `config.h` — kernel/ops code
+- `train_config.h` — defaults (your changes go through `train.py`)
+- `VOCAB` (49152, fixed by tokenizer)
+- `DATA_PATH` (fixed dataset)
 
-## Reading Results
+## Constraints
 
-Results are appended as JSON lines to `experiments.jsonl`:
-
-```json
-{"timestamp": "2026-03-11T10:30:00Z", "config": {"lr": "5e-4", "accum": "5"}, "status": "ok", "final_loss": 7.123456, "training_seconds": 55.2, "total_seconds": 58.1, "total_tokens_M": 3.5, "num_steps": 54, "num_params_M": 63.2, "depth": 4, "compile_seconds": 3, "time_budget": 60}
-```
-
-Key fields:
-- `final_loss` (float): The metric to minimize. Lower is better.
-- `num_steps` (int): How many gradient steps completed in the budget.
-- `num_params_M` (float): Model size in millions of parameters.
-- `total_tokens_M` (float): Total tokens processed.
-- `status` (string): "ok", "compile_error", "crash", or "no_output".
-
-Failed experiments have `"final_loss": null` and a non-ok status.
+- `DIM` must equal `HEADS × HEAD_DIM`
+- `HEADS` must be divisible by `KV_HEADS`
+- Total memory ≈ 3× params in fp32 (weights + Adam m + Adam v). Keep under ~10GB.
+- A small improvement that adds ugly complexity is not worth it.
+- Simplicity wins. A clean, small change that works beats a complex one.
 
 ## Key Findings from Prior Research
 
-### fp16 Precision Gap
-ANE computes all matmuls in fp16. This introduces a precision gap vs. fp32 CPU training:
-- Attention score computation loses precision with large head dimensions
-- Gradient underflow in backward pass (mitigated by loss_scale=256)
-- DeepNet residual scaling (`1/sqrt(2*NLAYERS)`) prevents activation overflow
-- Very deep models (32+ layers) amplify fp16 rounding errors across layers
+Read `docs/ASSUMPTIONS.md` for the full registry. Critical findings:
 
-### Thermal Throttling
-Apple Silicon throttles ANE under sustained load:
-- First 30-60 seconds run at full speed
-- Performance may degrade 10-20% after sustained workload
-- Shorter experiments (60s) are less affected than long runs
-- Step times reported in output help detect throttling mid-run
+### Architecture (E39, E40, E41)
+- **Smaller/faster models win at fixed time budgets** (V16). At 120s, 512d/4L (val 3.54) crushes 1024d/4L (val 4.30).
+- **Depth is strictly harmful at short budgets** (V17). More layers = slower steps = fewer updates.
+- **Optimal LR scales with model size** (V18). 5e-4 for 512d, 3e-4 for 1024d+.
+- **512d/4L advantage widens at longer budgets** (V21). No crossover through 600s.
+- **Data volume is the bottleneck, not model capacity** (V22). 20M token dataset limits all models.
 
-### Architecture vs. Hyperparameter Sensitivity
-- **Depth vs. width tradeoff**: More layers with smaller width often beats shallow+wide at same param count, but deeper models get fewer steps in budget
-- **GQA ratio**: 3-4x grouping (e.g., 15Q/5KV, 16Q/4KV) balances quality and throughput
-- **Learning rate**: Higher LR (5e-4 to 1e-3) can speed convergence in short runs but risks fp16 overflow
-- **Gradient accumulation**: Larger accum = larger effective batch = fewer steps but stabler gradients
-- **Warmup**: Critical for stability with higher LR; 50-200 steps typical
+### ANE-Specific
+- **CPU-only is correct default for all model sizes** (V15). ANE never faster with dynamic weight approach.
+- **IOSurface overhead scales dramatically** at DIM>1536 (V14). Don't go there.
+- **ANE matmul-only mode matches CPU at small dimensions** (V13). Only use for DIM≤1536.
+- **fp16 precision gap is real (~16%)** (SA1). Not fixable by software.
 
-### Practical Tips
-- In 60 seconds, a 4-layer 1024d model gets ~50-80 steps depending on accum
-- Reducing accum from 10 to 5 doubles the number of weight updates (more data seen)
-- Very small models (2L, 512d) train fast but may underfit
-- The step counter includes accumulation microsteps; actual weight updates = steps / accum
-- Sequence length 256 is the default; shorter sequences are faster but see less context
+### Training Dynamics
+- **2-layer models overfit heavily** (V20). Train-val gap +0.83 at optimal LR.
+- **4 layers is the sweet spot** for generalization at our data scale.
+- **Loss scaling 256.0 essential** for ANE fp16 modes (V6).
 
-## Experiment Loop (Recommended Workflow)
+## Strategy Guidance
 
-1. **Baseline**: Run with no config to establish baseline loss
-2. **Sweep one variable at a time**: Change lr, accum, or architecture individually
-3. **Read `experiments.jsonl`** to compare results across runs
-4. **Combine best findings**: Once you identify individually good settings, combine them
-5. **Iterate**: Keep running experiments, using results to guide next choices
+**Promising directions** (based on research gaps):
+1. Sequence length variation (SEQ: 128 vs 256 vs 512) — untested
+2. Weight decay tuning (0.05-0.3) — shallow models may benefit from higher WD
+3. Warmup reduction (50 vs 100) — current 100 may be suboptimal at high LR
+4. Gradient accumulation (5 vs 10 vs 20) — trades batch size vs step count
+5. Learning rate schedules above 5e-4 (7e-4, 1e-3) — risky but could work for small models
+6. `ADAM_B2` variation (0.95 vs 0.99) — affects gradient noise
+
+**Dead ends** (don't waste experiments):
+- DIM > 1024 with ANE modes (IOSurface scaling ceiling)
+- Deep models (8+ layers) at short budgets
+- Large models (>100M params) with 20M token dataset
+- `LOSS_SCALE` changes in CPU-only mode (irrelevant)
+- `ANE_MATMUL_ONLY` at DIM > 1536
+
+## Differences from karpathy/autoresearch
+
+| Aspect | Karpathy | AutoANE |
+|--------|----------|---------|
+| Hardware | NVIDIA H100 GPU | Apple Neural Engine / Apple Silicon CPU |
+| Training code | Python (train.py IS the model) | Objective-C (train.m, not modifiable) |
+| Agent modifies | train.py (model + optimizer + loop) | train.py (hyperparameters + architecture only) |
+| Metric | val_bpb (bits per byte) | val_loss (cross-entropy in nats) |
+| Budget | 5 min (GPU) | 2 min default (CPU, configurable) |
+| Optimizer | Muon + AdamW | AdamW only |
+| Data | FineWeb-Edu (10B tokens) | TinyStories (20M tokens) |
+| Scope of changes | Arbitrary code modifications | Hyperparameter + architecture search |
+
+The core protocol (modify → commit → train → keep/revert) is identical. The scope of modification is narrower because our training binary is compiled C, not interpreted Python.
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `train.m` | C/Obj-C training loop (DO NOT MODIFY) |
-| `train_config.h` | Default hyperparameters with #ifndef guards |
-| `run_experiment.sh` | Experiment runner (compile + run + log) |
-| `experiments.jsonl` | Accumulated experiment results |
-| `config.h` | Model-agnostic structs and ANE init |
-| `mil_dynamic.h` | MIL kernel generation for ANE |
-| `cpu_ops.h` | CPU fallback operations (RMSNorm, softmax, etc.) |
-| `io.h` | IOSurface read/write helpers |
-| `models/*.h` | Pre-defined model architectures |
-| `program.md` | This file (agent instructions) |
+| `train.py` | **The ONLY file you modify.** Hyperparameters + architecture config. |
+| `train.m` | C/Obj-C training loop (READ ONLY) |
+| `train_config.h` | Default hyperparameters with #ifndef guards (READ ONLY) |
+| `run_experiment.sh` | Low-level experiment runner (used by autoresearch.py, not the agent loop) |
+| `autoresearch.py` | Grid search orchestrator (alternative to agent loop) |
+| `experiments.jsonl` | Results from grid search runs |
+| `results.tsv` | Results from agent loop runs (keep/discard/crash) |
+| `program.md` | This file (your instructions) |

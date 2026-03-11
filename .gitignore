@@ -32,5 +32,5 @@ run.log
 .vscode/
 .idea/
 
-# results tracking
-results.tsv
+# Temporary files
+*.tmp

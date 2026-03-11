@@ -394,7 +394,34 @@ Result: **GAP WIDENS**: 12% at 120s → 37% at 600s. ANE loss diverges (4.69→4
 
 ### Remaining research directions (post-E41):
 
-1. **Data scaling** — Current bottleneck is data volume (~31M tokens at 600s), not model capacity. Test with multiple data shards or larger dataset to see if larger models catch up.
+1. **Data scaling** — Current bottleneck is data volume (20M tokens), not model capacity. Test with multiple data shards or larger dataset to see if larger models catch up.
 2. **Sequence length sweep** — SEQ=256 limits context. Test SEQ=512/1024 to see effect on val_loss and throughput.
 3. **Weight decay sweep** — 768d/2L overfits heavily. Higher WD (0.2-0.5) might help shallow models.
 4. **Longer training (10-30 min)** — 512d/4L is still underfitting at 600s (val < train). How far can it go?
+
+### E42: Independent Verification (2026-03-11)
+
+All E39-E41 claims verified by re-running 4 key configurations. Val_loss values match to within 0.3%, step counts within 3%. No retractions needed. Data size corrected from ~19M to 20.0M tokens (40MB file). See EXPERIMENTS.md E42 for full table.
+
+### Karpathy Autoresearch Integration (2026-03-11)
+
+Rewrote `training/program.md` to implement the [karpathy/autoresearch](https://github.com/karpathy/autoresearch) protocol:
+
+**What we implemented:**
+- Git-based keep/revert loop (create branch, commit, evaluate, keep or reset)
+- `train.py` as the single mutable file (agent modifies hyperparameters only)
+- `results.tsv` tracking (commit, val_loss, steps, params, status, description)
+- Autonomous loop protocol (agent runs until human interrupts)
+- Strategy guidance based on verified research findings (E39-E41)
+
+**Key adaptations from Karpathy's original:**
+- **Hardware**: Apple Silicon CPU/ANE instead of NVIDIA H100
+- **Training code**: Compiled Objective-C binary (not modifiable by agent) vs Python (fully modifiable)
+- **Scope**: Agent modifies hyperparameters + architecture config, not model/optimizer code
+- **Metric**: val_loss (cross-entropy) instead of val_bpb (bits per byte)
+- **Budget**: 2 minutes (CPU-bound) vs 5 minutes (GPU-bound)
+- **Data**: 20M token TinyStories vs 10B token FineWeb-Edu
+
+**Two modes available:**
+1. **Agent loop** (`program.md` + `train.py`): Karpathy-style autonomous keep/revert
+2. **Grid search** (`autoresearch.py`): Pre-defined sweeps, no agent needed

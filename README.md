@@ -125,31 +125,48 @@ ANE computes in fp16. DeepNet scaling (`res_alpha = 1/sqrt(2*N_layers)`) keeps a
 
 ## Autoresearch Integration
 
-The autoresearch system lets an AI agent (Claude Code, etc.) automatically optimize the model:
+AutoANE implements the [karpathy/autoresearch](https://github.com/karpathy/autoresearch) protocol: an AI agent autonomously optimizes a training configuration through a keep/revert loop.
 
-1. Agent reads `training/program.md` for the protocol
-2. Edits hyperparameters in `training/train.py`
-3. Commits, runs training with time budget
-4. Parses `final_loss` from output
-5. Keeps improvement or reverts
-6. Loops forever, exploring the search space
+### How It Works
 
-Key finding from autoresearch: **"In a fixed time window, more optimizer steps beats more parameters."**
+The agent follows `training/program.md`:
 
-### Editable Hyperparameters
+1. Creates a git branch (`autoresearch/<tag>`)
+2. Modifies `training/train.py` (the ONLY mutable file)
+3. Commits, runs `python3 train.py` (compiles C binary → trains for N seconds)
+4. Parses `val_loss` from output
+5. **Keep** if val_loss improved, **revert** (`git reset --hard HEAD~1`) if not
+6. Loops forever until human interrupts (~30 experiments/hour at 2min budget)
+
+Results are tracked in `training/results.tsv` (commit, val_loss, status: keep/discard/crash).
+
+### Two Modes
+
+| Mode | Script | Use Case |
+|------|--------|----------|
+| **Agent Loop** | `program.md` + `train.py` | Autonomous Karpathy-style keep/revert via Claude Code |
+| **Grid Search** | `autoresearch.py` | Pre-defined architecture/LR sweeps, no agent needed |
+
+### Key Finding
+
+**"In a fixed time window, more optimizer steps beats more parameters."**
+
+At 120s: 512d/4L (36.4M params, 2500 steps, val_loss **3.54**) beats 1024d/4L (95.4M params, 1050 steps, val_loss 4.30). The smaller model gets 2.4× more gradient updates and wins decisively. This advantage **widens** at longer budgets (V21).
+
+### Agent-Editable Hyperparameters
 
 ```python
-# Architecture (triggers recompile ~2s)
-DEPTH = 32          # transformer layers
-DIM = 960           # model dimension
-HIDDEN = 2560       # FFN hidden dim
-HEADS = 15          # query attention heads
-KV_HEADS = 5        # key/value heads (GQA)
+# Architecture (E39: 512d/4L optimal for ≤10min budgets)
+DEPTH = 4           # transformer layers
+DIM = 512           # model dimension
+HIDDEN = 1408       # FFN hidden dim (2.75× DIM)
+HEADS = 8           # query attention heads
+KV_HEADS = 2        # key/value heads (GQA)
 HEAD_DIM = 64       # per-head dimension
 SEQ = 256           # sequence length
 
-# Training
-LR = 3e-4           # peak learning rate
+# Training (E40: LR=5e-4 optimal for 512d)
+LR = 5e-4           # peak learning rate
 WARMUP_STEPS = 100  # linear warmup
 ACCUM_STEPS = 10    # gradient accumulation
 GRAD_CLIP = 1.0     # gradient norm clipping
@@ -204,7 +221,7 @@ AutoANE/
 
 ## Credits
 
-- **[Andrej Karpathy](https://github.com/karpathy)** — [autoresearch](https://github.com/karpathy/autoresearch): the automated hyperparameter search protocol that powers the agent loop. AutoANE adapts this for ANE hardware constraints.
+- **[Andrej Karpathy](https://github.com/karpathy)** — [autoresearch](https://github.com/karpathy/autoresearch): the autonomous keep/revert experiment loop protocol. AutoANE adapts this for Apple Silicon with compiled C training and ANE-specific constraints.
 - **[Manjeet Singh (maderix)](https://github.com/maderix)** — [ANE](https://github.com/maderix/ANE): the original reverse engineering of Apple's Neural Engine private APIs and first-ever training on ANE hardware.
 - **Orion** — [arXiv:2603.06728](https://arxiv.org/abs/2603.06728): first open end-to-end system for ANE LLM training and inference, demonstrating delta compilation and LoRA adapter hot-swap.
 
