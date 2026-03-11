@@ -10,12 +10,12 @@ import subprocess, os, sys, time, re
 
 # ===== AGENT-EDITABLE HYPERPARAMETERS =====
 
-# Architecture
+# Architecture (E39: 512d/4L optimal for 120s budget — val_loss 3.61 vs 4.30 for 1024d/4L)
 DEPTH = 4           # number of transformer layers
-DIM = 1024          # model dimension (embedding size)
-HIDDEN = 2816       # FFN hidden dimension (typically 2-4x DIM)
-HEADS = 16          # number of query attention heads
-KV_HEADS = 4        # number of key/value heads (GQA: HEADS must be divisible by KV_HEADS)
+DIM = 512           # model dimension (E39: 512 optimal for quick iteration)
+HIDDEN = 1408       # FFN hidden dimension (2.75x DIM, rounded to 64)
+HEADS = 8           # number of query attention heads
+KV_HEADS = 2        # number of key/value heads (GQA: HEADS must be divisible by KV_HEADS)
 HEAD_DIM = 64       # attention head dimension
 SEQ = 256           # sequence length
 

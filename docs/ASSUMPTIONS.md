@@ -32,6 +32,8 @@
 | V11 | ANE only faster than CPU for large matmul shapes (2816+ width) | E23: 1024x1024 CPU 0.67x faster, 2816x1024 ANE 1.88x faster. **CAVEAT (E38)**: raw matmul speedup exists but IOSurface overhead at larger dimensions negates it. Net effect: no throughput advantage at any tested dimension. | CLARIFIED |
 | V14 | Dynamic weight IOSurface approach has hard scaling ceiling at ~220MB total surfaces | E38: DIM=1536 (220MB) parity, DIM=2048 (379MB) ANE 2x slower. IOSurface memory pressure causes cache thrashing in ALL operations including CPU-only backward pass. | HIGH |
 | V15 | CPU-only is correct default for ALL model sizes with dynamic weight approach | E38: tested 95M-281M params. ANE never faster, and dramatically slower at DIM=2048. | HIGH |
+| V16 | At 120s CPU-only budget, smaller/shallower models achieve lower val_loss | E39: 512d/4L (36.4M) val_loss 3.61 beats all 11 configs tested. Step count (2471 vs 577 for 1024d/8L) is the dominant factor. Depth strictly hurts at every width. | HIGH |
+| V17 | Depth is strictly harmful at fixed short time budgets (120s) | E39: at every width tested, adding layers increases val_loss. 512d: 4L→8L costs +0.61. 768d: 2L→4L→6L costs +0.30/+0.12. 1024d: 2L→4L→6L→8L costs +0.44/+0.31/+0.45. | HIGH |
 | V12 | Fusing non-linear ops into ANE fp16 causes train/val distribution shift | E36: val gap 1.218 (ane-full) vs 0.599 (ane-matmul-only). Identical val_loss to CPU at matched steps. | HIGH |
 | V13 | ANE should only be used for linear projections (matmul), not attention/SiLU/residual | E36: matches original maderix/ANE gen1 design. Step-10 loss matches CPU to 4 decimal places. **NOTE**: original gen3 (dynamic pipeline) fuses more into ANE — our approach is more conservative. | HIGH |
 
@@ -52,6 +54,8 @@
 | U11 | M2 Pro only supports ch=512 for conv 1x1 operations | maderix Issue #3: M1/M2/M3 Pro only compile ch=512. M4+ supports flexible channels. Does not affect our matmul-based approach. | MEDIUM |
 | U12 | _ANEChainingRequest could eliminate CPU round-trips between layers | M5 benchmark report: supports loopback, firmware-level enqueue, shared memory pools. Untested for training. | HIGH |
 | U13 | No one has trained models larger than DIM=1024 before our E38 | maderix tested Stories110M (DIM=768) and Qwen3-0.6B (DIM=1024). Our DIM=1536 and DIM=2048 experiments are novel. | CONFIRMED (literature) |
+| U14 | LR=3e-4 is equally good for all architectures in E39 grid | E39 used constant LR. Smaller models may benefit from higher LR, larger from lower. Unverified — could change E39 ranking. | HIGH |
+| U15 | 120s budget is representative of quick-iteration training regime | E39 results are specific to this budget. Optimal architecture shifts with longer training. Crossover point untested. | MEDIUM |
 
 ## Category: DISPROVED (tested and found wrong)
 

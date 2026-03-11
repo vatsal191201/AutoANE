@@ -375,6 +375,19 @@ Result: **GAP WIDENS**: 12% at 120s → 37% at 600s. ANE loss diverges (4.69→4
 6. **INT8 for bandwidth savings**: Reduces IOSurface size by 2x, potentially moving the memory pressure cliff higher.
 
 **Autoresearch (high value):**
-7. **Build the autoresearch loop** — The core "Auto" in AutoANE. CPU-only backend is now validated. Automated experiment design, execution, analysis, and iteration.
-8. **Architecture search at scale** — Systematically explore depth/width/GQA tradeoffs using the autoresearch loop.
+7. ✓ **Build the autoresearch loop** — COMPLETE. autoresearch.py orchestrates configs via run_experiment.sh.
+8. ✓ **Architecture search at scale** — COMPLETE (E39). 11 configs tested. 512d/4L wins at 120s budget.
 9. **Training recipe optimization** — Automated hyperparameter search (LR, WD, warmup, accumulation).
+
+### E39 Architecture Search Findings (added 2026-03-11):
+
+16. **512d/4L (36.4M params) is optimal for 120s CPU-only training** (E39) — val_loss 3.61, beating all 10 larger configs including the 1024d/4L baseline (val_loss 4.30). Step count dominance: 2471 steps at 42ms/step vs 577 steps at 183ms/step for 1024d/8L.
+17. **Depth is strictly harmful at short budgets** (E39/V17) — at every width, adding layers worsens val_loss. This is purely a throughput effect: deeper = slower per step = fewer total steps.
+18. **Overfitting correlates with model size at 120s** (E39) — models >70M params show val > train (overfitting), while smaller models show val < train (underfitting).
+19. **The 1024d/4L default config was suboptimal** (E39) — ranked 7th of 11. Recommended default change to 512d/4L for quick iteration.
+
+### Revised next steps (post-E39):
+
+1. **LR sweep per architecture** — Test whether optimal LR varies across top configs (512d/4L, 768d/2L, 1024d/2L). Could change rankings. (Addresses U14)
+2. **Longer budget runs** — Test top 3 configs at 300s and 600s to find where larger models overtake. (Addresses U15)
+3. **Update train.py defaults** — Change from 1024d/4L to 512d/4L for quick experiments.

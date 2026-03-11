@@ -117,12 +117,20 @@ def generate_arch_search():
 
 
 def generate_lr_search():
-    """Generate learning rate sweep configs."""
+    """Generate learning rate sweep across top E39 architectures."""
     configs = []
-    for lr in [1e-4, 2e-4, 3e-4, 5e-4, 1e-3]:
-        cfg = make_arch_config(1024, 4)  # baseline architecture
-        cfg["lr"] = f"{lr}"
-        configs.append(cfg)
+    # Test top 3 from E39: 512d/4L, 768d/2L, 1024d/2L
+    top_archs = [
+        (512, 4),   # E39 winner: val_loss 3.61
+        (768, 2),   # E39 #2: val_loss 3.73
+        (1024, 2),  # E39 #3: val_loss 3.86
+    ]
+    lrs = [1e-4, 3e-4, 5e-4, 1e-3, 2e-3]
+    for dim, nlayers in top_archs:
+        for lr in lrs:
+            cfg = make_arch_config(dim, nlayers)
+            cfg["lr"] = f"{lr}"
+            configs.append(cfg)
     return configs
 
 
