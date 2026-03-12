@@ -1301,7 +1301,7 @@ int main(int argc, char *argv[]) {
                 }
                 vDSP_vsmul(grms_final,1,&gsc,grms_final,1,(vDSP_Length)DIM);
                 vocab_scatter_grads(gembed, gcembed, &vm, DIM);
-                for(size_t i=0;i<(size_t)VOCAB*DIM;i++) gembed[i]*=gsc;
+                vDSP_vsmul(gembed,1,&gsc,gembed,1,(vDSP_Length)((size_t)VOCAB*DIM));
 
                 // Gradient sanitization: NaN→0, ±Inf→±65504 (per Orion paper)
                 if (grad_sanitize) {

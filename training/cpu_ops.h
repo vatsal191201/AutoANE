@@ -53,14 +53,52 @@ static void rmsnorm_bwd(float *dx, float *dw, const float *dy, const float *x, c
     free(ss); free(rrms); free(dot);
 }
 
+// Adam optimizer — vectorized with vDSP/vForce (matches vectorized RMSNorm pattern)
+static float *g_adam_tmp1 = NULL, *g_adam_tmp2 = NULL;
+static size_t g_adam_tmp_sz = 0;
+
 static void adam_update(float *w, const float *g, AdamState *s, int t, float lr, float b1, float b2, float eps, float wd) {
-    float bc1 = 1.0f - powf(b1, t), bc2 = 1.0f - powf(b2, t);
-    for (size_t i=0; i<s->n; i++) {
-        s->m[i] = b1*s->m[i] + (1-b1)*g[i];
-        s->v[i] = b2*s->v[i] + (1-b2)*g[i]*g[i];
-        float mh = s->m[i]/bc1, vh = s->v[i]/bc2;
-        w[i] -= lr * (mh / (sqrtf(vh) + eps) + wd * w[i]);
+    size_t n = s->n;
+    vDSP_Length vn = (vDSP_Length)n;
+
+    // Lazy-alloc temp buffers (reused across calls, grown as needed)
+    if (n > g_adam_tmp_sz) {
+        free(g_adam_tmp1); free(g_adam_tmp2);
+        g_adam_tmp1 = (float*)malloc(n * sizeof(float));
+        g_adam_tmp2 = (float*)malloc(n * sizeof(float));
+        g_adam_tmp_sz = n;
     }
+
+    // m = b1*m + (1-b1)*g
+    float one_minus_b1 = 1.0f - b1;
+    vDSP_vsmul(s->m, 1, &b1, s->m, 1, vn);
+    vDSP_vsma(g, 1, &one_minus_b1, s->m, 1, s->m, 1, vn);
+
+    // v = b2*v + (1-b2)*g*g
+    float one_minus_b2 = 1.0f - b2;
+    vDSP_vmul(g, 1, g, 1, g_adam_tmp1, 1, vn);      // tmp1 = g²
+    vDSP_vsmul(s->v, 1, &b2, s->v, 1, vn);
+    vDSP_vsma(g_adam_tmp1, 1, &one_minus_b2, s->v, 1, s->v, 1, vn);
+
+    // Bias-corrected: mhat = m/bc1, vhat = v/bc2
+    float bc1 = 1.0f - powf(b1, t), bc2 = 1.0f - powf(b2, t);
+    float inv_bc1 = 1.0f / bc1, inv_bc2 = 1.0f / bc2;
+    vDSP_vsmul(s->m, 1, &inv_bc1, g_adam_tmp1, 1, vn);  // tmp1 = mhat
+    vDSP_vsmul(s->v, 1, &inv_bc2, g_adam_tmp2, 1, vn);  // tmp2 = vhat
+
+    // update = mhat / (sqrt(vhat) + eps)
+    int ni = (int)n;
+    vvsqrtf(g_adam_tmp2, g_adam_tmp2, &ni);               // tmp2 = sqrt(vhat)
+    vDSP_vsadd(g_adam_tmp2, 1, &eps, g_adam_tmp2, 1, vn); // tmp2 += eps
+    vDSP_vdiv(g_adam_tmp2, 1, g_adam_tmp1, 1, g_adam_tmp1, 1, vn); // tmp1 = mhat/(sqrt(vhat)+eps)
+
+    // Weight decay: update += wd * w
+    if (wd > 0.0f)
+        vDSP_vsma(w, 1, &wd, g_adam_tmp1, 1, g_adam_tmp1, 1, vn);
+
+    // w -= lr * update
+    float neg_lr = -lr;
+    vDSP_vsma(g_adam_tmp1, 1, &neg_lr, w, 1, w, 1, vn);
 }
 
 // Cross-entropy loss: operates on logits[S, V] row-major (each row = one token, contiguous)
@@ -131,10 +169,10 @@ static float *vocab_compact_embed(const float *full_embed, const VocabMap *vm, i
 
 // Scatter compact embed gradients back to full embed
 static void vocab_scatter_grads(float *full_gembed, const float *compact_gembed, const VocabMap *vm, int dim) {
+    float one = 1.0f;
     for (int c = 0; c < vm->compact_vocab; c++) {
         int fv = vm->compact_to_full[c];
-        for (int d = 0; d < dim; d++)
-            full_gembed[fv*dim + d] += compact_gembed[c*dim + d];
+        cblas_saxpy(dim, one, compact_gembed + c*dim, 1, full_gembed + fv*dim, 1);
     }
 }
 
@@ -147,16 +185,17 @@ static void vocab_update_full(float *full_embed, const float *compact_embed, con
 static void embed_lookup(float *x, const float *embed, const uint16_t *tokens, int dim, int seq) {
     for (int t = 0; t < seq; t++) {
         int tok = tokens[t];
-        for (int d = 0; d < dim; d++)
-            x[d*seq + t] = embed[tok*dim + d];
+        // Copy embed[tok*dim : +dim] (stride 1) → x[t, t+seq, t+2*seq, ...] (stride seq)
+        cblas_scopy(dim, embed + tok*dim, 1, x + t, seq);
     }
 }
 
 static void embed_backward(float *d_embed, const float *dx, const uint16_t *tokens, int dim, int seq) {
+    float one = 1.0f;
     for (int t = 0; t < seq; t++) {
         int tok = tokens[t];
-        for (int d = 0; d < dim; d++)
-            d_embed[tok*dim + d] += dx[d*seq + t];
+        // Accumulate dx[t, t+seq, t+2*seq, ...] (stride seq) → d_embed[tok*dim : +dim] (stride 1)
+        cblas_saxpy(dim, one, dx + t, seq, d_embed + tok*dim, 1);
     }
 }
 

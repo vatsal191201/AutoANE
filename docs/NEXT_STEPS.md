@@ -155,12 +155,15 @@ All assumptions are tracked in [ASSUMPTIONS.md](ASSUMPTIONS.md). Summary:
 **Implemented (2026-03-12)**:
 1. Gradient scaling vectorization (`train.m:1291-1303`): replaced 9 scalar `for` loops per layer with `vDSP_vsmul` — matches the gradient clipping code 70 lines later. Zero risk.
 2. `transpose_weight` vectorization (`train.m:64-68`): replaced naive nested loop with `vDSP_mtrans`. Called for 7 matrices × 32 layers at startup and every Adam step.
+3. Adam optimizer vectorization (`cpu_ops.h:56-102`): replaced scalar loop with vDSP/vForce pipeline (vDSP_vsmul, vDSP_vsma, vDSP_vmul, vvsqrtf, vDSP_vdiv). Largest buffer is embed at 25.2M floats; called 38+ times per accum step. Lazy-allocated temp buffers (same pattern as g_rms_tmp).
+4. `gqa_reduce_kv` vectorization (`io.h:359-370`): replaced scalar inner loop with `vDSP_vadd`. Called 2× per backward step per layer.
+5. `vocab_scatter_grads` vectorization (`cpu_ops.h:133-139`): replaced scalar inner loop with `cblas_saxpy`. Called once per accum step over ~16893 tokens.
+6. `embed_lookup` vectorization (`cpu_ops.h:147-153`): replaced scalar scatter-write with `cblas_scopy` (strided). Called once per forward step.
+7. `embed_backward` vectorization (`cpu_ops.h:155-162`): replaced scalar gather-accumulate with `cblas_saxpy` (strided). Called once per backward step.
 
 **Remaining** (from P7 assessment):
-- PR #32 Adam vectorization: `cpu_ops.h:56-64` still scalar. Replace with `vDSP_vsmsa`/`vvsqrtf`/`vvrecf`. Estimated 3-5x on Adam step.
-- PR #39 complete compact embed: infrastructure exists (`VocabMap`, `cembed`), but `embed_lookup` at `train.m:656` still uses the full 181MB table. Wire `cinput_tokens` through `vm.full_to_compact[]` to use compact table.
+- PR #39 complete compact embed: `embed_lookup` at `train.m:656` still uses full 49152-token table. Switching to compact (16893 tokens) would reduce Adam embed state from 25.2M to 8.6M elements and eliminate `vocab_scatter_grads`. **Deferred**: Requires changes to 8+ locations (embed lookup, backward, gradient norm, clipping, sanitization, Adam, checkpoint save/load) with checkpoint format compatibility concerns. The vectorized Adam already handles 25.2M elements efficiently.
 - PR #33 env-var: operational convenience only, 15 min. Already have `--accum` CLI and `train_config.h` defines.
-- Additional: `gqa_reduce_kv` inner loop (scalar `+=` → `vDSP_vadd`), `vocab_scatter_grads` inner loop (scalar → `cblas_saxpy`).
 
 ---
 

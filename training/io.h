@@ -363,8 +363,7 @@ static void gqa_reduce_kv(float *out, const float *in, int seq) {
             int q_head = kv * GQA_RATIO + r;
             const float *src = in + q_head * HD * seq;
             float *dst = out + kv * HD * seq;
-            for (int i = 0; i < HD * seq; i++)
-                dst[i] += src[i];
+            vDSP_vadd(src, 1, dst, 1, dst, 1, (vDSP_Length)(HD * seq));
         }
     }
 }
