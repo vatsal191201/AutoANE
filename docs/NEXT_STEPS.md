@@ -62,7 +62,7 @@ All assumptions are tracked in [ASSUMPTIONS.md](ASSUMPTIONS.md). Summary:
 | IA1 | Training data is always available at `../tinystories_smollm2_data00.bin` | train.py, run_experiment.sh | **FIXED**: added existence check |
 | IA2 | GGUF files are always F32/F16/BF16 | gguf_to_ane.py | **FIXED**: now errors on unsupported dtypes |
 | IA3 | SmolLM2 tokenizer is available for generate.py | generate.py | LOW: graceful fallback exists |
-| IA4 | Xcode CLT are installed | Makefile | MEDIUM: could check for `xcrun` before build |
+| IA4 | Xcode CLT are installed | Makefile | **FIXED**: Makefile now checks `command -v xcrun` before build |
 | IA5 | IOSurface slot sizes are correctly ordered | mil_dynamic.h, io.h | **VERIFIED SAFE (P6 audit, 2026-03-12)**: All 14 kernels use exactly 1 input + 1 output IOSurface. Single-surface spatial packing provides structural immunity. Only `bridge/ane_bridge.m` supports multi-slot (no ordering check). |
 | IA6 | Matmul inner dimensions are multiples of 32 | all ANE kernel code | MEDIUM: our DIM=512 is fine, but other configs could silently fail |
 | IA7 | Single-process training (no concurrent ANE users) | train.m | CONFIRMED: E18/E37 showed concurrent processes cause false divergence |
@@ -172,7 +172,7 @@ All assumptions are tracked in [ASSUMPTIONS.md](ASSUMPTIONS.md). Summary:
 | # | Issue | Severity | Status |
 |---|-------|----------|--------|
 | 1 | No automated tests | MEDIUM | No test infrastructure exists. Would need synthetic data + expected output comparison. |
-| 2 | Makefile doesn't check for Xcode CLT | LOW | Could check `which xcrun` before build. |
+| 2 | Makefile doesn't check for Xcode CLT | LOW | **FIXED**: Added `command -v xcrun` check before build. |
 | 3 | Data file symlinks point to absolute paths | LOW | Local-only issue, not tracked by git (.gitignore excludes *.bin). |
 | 4 | EXPERIMENTS.md line 380: "2.8W, 6.6 TFLOPS/W" cited from Orion, but our measurement shows ANE peak 1.2W | MEDIUM | **FIXED**: Struck through stale values, added correction note with actual measured data, replaced estimated table with measured powermetrics data. |
 | 5 | U3 says "19 TFLOPS FP16" without specifying chip (this is M4-specific) | LOW | **FIXED**: Clarified "19 TFLOPS FP16 on M4 (lower on earlier chips: ~15.8 TOPS INT8 on M2)" |
