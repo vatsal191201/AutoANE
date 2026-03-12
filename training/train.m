@@ -220,9 +220,11 @@ static bool load_checkpoint(const char *path, int *step, int *total_steps, float
     if (h.magic != 0x424C5A54 || h.version != 4) { fclose(f); return false; }
     // Validate checkpoint dimensions match compiled model (security: prevent OOB from untrusted files)
     if (h.n_layers != NLAYERS || h.dim != DIM || h.vocab_size != VOCAB ||
-        h.hidden_dim != HIDDEN || h.seq_len != SEQ || h.n_heads != HEADS) {
-        fprintf(stderr, "Checkpoint mismatch: expected %dL/%dd/%dv, got %dL/%dd/%dv\n",
-                NLAYERS, DIM, VOCAB, h.n_layers, h.dim, h.vocab_size);
+        h.hidden_dim != HIDDEN || h.seq_len != SEQ || h.n_heads != HEADS ||
+        h.kv_heads != KV_HEADS || h.head_dim != HD || h.q_dim != Q_DIM) {
+        fprintf(stderr, "Checkpoint mismatch: expected %dL/%dd/%dv/%dkv/%dhd/%dqd, got %dL/%dd/%dv/%dkv/%dhd/%dqd\n",
+                NLAYERS, DIM, VOCAB, KV_HEADS, HD, Q_DIM,
+                h.n_layers, h.dim, h.vocab_size, h.kv_heads, h.head_dim, h.q_dim);
         fclose(f); return false;
     }
     if (h.step < 0 || h.step > 10000000 || h.adam_t < 0 || h.adam_t > 10000000) {
@@ -449,8 +451,10 @@ int main(int argc, char *argv[]) {
         if (data_fd < 0) { printf("Cannot open %s\n", data_path); return 1; }
         struct stat st; fstat(data_fd, &st);
         size_t data_len = st.st_size;
+        if (data_len == 0) { fprintf(stderr, "FATAL: data file is empty\n"); close(data_fd); return 1; }
+        if (data_len % 2 != 0) { fprintf(stderr, "FATAL: data file size %zu is odd (corrupt?)\n", data_len); close(data_fd); return 1; }
         uint16_t *token_data = (uint16_t*)mmap(NULL, data_len, PROT_READ, MAP_PRIVATE, data_fd, 0);
-        if (token_data == MAP_FAILED) { printf("mmap failed\n"); return 1; }
+        if (token_data == MAP_FAILED) { printf("mmap failed\n"); close(data_fd); return 1; }
         size_t n_tokens = data_len / 2;
         // Validate all tokens are within vocab range (untrusted data file)
         for (size_t i = 0; i < n_tokens; i++) {
@@ -472,8 +476,6 @@ int main(int argc, char *argv[]) {
 
         float *cembed = vocab_compact_embed(embed, &vm, DIM);
         float *gcembed = (float*)safe_calloc((size_t)CV*DIM, 4);
-        AdamState acembed = adam_alloc((size_t)CV*DIM);
-
         // ===== Compile all kernels ONCE (skip for CPU-only mode) =====
         DynLayerKernels dk;
         PerLayerSurfaces pls[NLAYERS];
@@ -631,7 +633,6 @@ int main(int argc, char *argv[]) {
         float *xnorm_buf = (float*)safe_malloc(SEQ*DIM*4);
         float *logits = (float*)safe_malloc(SEQ*CV*4);
         float *dlogits = (float*)safe_malloc(SEQ*CV*4);
-        float *gate_buf = (float*)safe_malloc(SEQ*HIDDEN*4);
         float *dh1 = (float*)safe_malloc(SEQ*HIDDEN*4);
         float *dh3 = (float*)safe_malloc(SEQ*HIDDEN*4);
         float *dsilu = (float*)safe_malloc(SEQ*HIDDEN*4);

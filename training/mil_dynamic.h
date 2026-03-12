@@ -518,7 +518,7 @@ static NSString *gen_sdpa_bwd2(void) {
 static NSData *g_mask_blob = nil;
 static NSData *get_mask_blob(void) {
     if (!g_mask_blob) {
-        _Float16 *mask = (_Float16*)calloc(SEQ*SEQ, sizeof(_Float16));
+        _Float16 *mask = (_Float16*)safe_calloc(SEQ*SEQ, sizeof(_Float16));
         for(int t=0;t<SEQ;t++) for(int t2=0;t2<SEQ;t2++)
             mask[t*SEQ+t2] = (t2<=t) ? (_Float16)0.0f : (_Float16)(-65504.0f);
         g_mask_blob = build_blob_fp16(mask, SEQ*SEQ);
@@ -533,7 +533,7 @@ static NSData *g_rope_sin_blob = nil;
 
 static NSData *get_rope_cos_blob(void) {
     if (!g_rope_cos_blob) {
-        _Float16 *buf = (_Float16*)calloc(SEQ * HD, sizeof(_Float16));
+        _Float16 *buf = (_Float16*)safe_calloc(SEQ * HD, sizeof(_Float16));
         for (int p = 0; p < SEQ; p++)
             for (int i = 0; i < HD/2; i++) {
                 float theta = p / powf(10000.0f, 2.0f * i / (float)HD);
@@ -549,7 +549,7 @@ static NSData *get_rope_cos_blob(void) {
 
 static NSData *get_rope_sin_blob(void) {
     if (!g_rope_sin_blob) {
-        _Float16 *buf = (_Float16*)calloc(SEQ * HD, sizeof(_Float16));
+        _Float16 *buf = (_Float16*)safe_calloc(SEQ * HD, sizeof(_Float16));
         for (int p = 0; p < SEQ; p++)
             for (int i = 0; i < HD/2; i++) {
                 float theta = p / powf(10000.0f, 2.0f * i / (float)HD);
