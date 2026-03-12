@@ -6,6 +6,19 @@
 
 ## What Has Been Done
 
+### Exhaustive Verification Sweep (Session 4, 2026-03-12)
+- **6 parallel verification agents** covering: malloc/calloc safety, math ops, MIL kernels/IO, documentation vs code, bridge security, checkpoint/token handling
+- **Critical bug found and fixed**: RMSNorm backward gradient had extra `w[i]` factor on correction term. Old: `dx=w[i]*rrms*(dy-x*dot)`. Correct: `dx=rrms*(w[i]*dy-x*dot)`. 7.5% relative error with non-unit weights, masked when w≈1.0.
+- **Dead allocations removed (66.7MB)**: `acembed` AdamState (66MB, never used) and `gate_buf` (720KB, never used)
+- **GQA dimension validation added**: checkpoint load now validates kv_heads, head_dim, q_dim (were written but never checked on read)
+- **Data file validation added**: explicit checks for empty files and odd-byte-count (corrupt) files
+- **4 remaining raw calloc calls** converted to safe_calloc (cpu_ops.h:35, mil_dynamic.h:521,536,552)
+- **File descriptor leak fixed**: added `close(data_fd)` on mmap failure path
+- **UP19 experiment**: confirmed ACCUM_STEPS throughput scaling — CPU 3.0x at accum=50, ANE 2.2x at accum=100 (lower than upstream's claimed 4.74x)
+- **3 agent false positives caught**: math agent missed RMSNorm bug; MIL agent falsely claimed sdpaBwd1/2 memory leak (they ARE freed line 1583); bridge agent incorrectly said integer overflow fix was wrong (unary cast precedence)
+- **Verified correct (no changes needed)**: Adam optimizer, vDSP_vdiv order, cross-entropy, gradient accumulation, loss scaling, LR schedule, LoRA, GQA, classifier GEMMs, all 14 MIL kernels, IOSurface creation, checkpoint save/load symmetry, token validation
+- All 8 regression tests pass after all fixes. Committed as `db3be79`.
+
 ### Security Hardening & Bridge Audit (Session 3, 2026-03-12)
 - **P10 COMPLETE**: 10 security fixes across config.h, cpu_ops.h, train.m, Makefile
 - `safe_malloc()`/`safe_calloc()` wrappers abort on allocation failure — ~60+ call sites converted
@@ -68,7 +81,7 @@ All assumptions are tracked in [ASSUMPTIONS.md](ASSUMPTIONS.md). Summary:
 | Qualified | 1 | V27: autosearch 3.288 was best-of-88, not reproducible |
 | Disproved | 8 | D1-D8 — tested and found wrong |
 | Unverified/Resolved | 13 | U1-U17 — most resolved or confirmed via literature |
-| New from upstream | 6 | UP1-UP6 — not yet tested by us |
+| New from upstream | 23 | UP1-UP23 — most not yet tested; UP19 experimentally confirmed at lower magnitude |
 
 ### Implicit Assumptions Found During Audit
 
@@ -253,3 +266,7 @@ This was previously identified as "likely highest ROI" but is now confirmed impo
 | 2026-03-12 | @bearmug's autoresearch PRs (#103, #149, #196) achieve val_loss 3.102 | Most technically ambitious Apple Silicon contribution to karpathy/autoresearch. Uses same dynamic weight pipeline as ours. None merged. |
 | 2026-03-12 | All vectorization changes verified correct by first-principles analysis | vDSP_vdiv parameter order confirmed from SDK headers (B,A swapped). Adam matches mathematical definition exactly. CPU vs ANE numerical agreement <0.001% over 70 steps. |
 | 2026-03-12 | P10 security hardening complete — 10 fixes across 3 files | safe_malloc/calloc wrappers, token OOB bounds checks, checkpoint validation, ane_init() validation, compiler hardening flags. All 7 tests pass, all 3 model configs compile. |
+| 2026-03-12 | RMSNorm backward gradient bug fixed (critical) | Extra `w[i]` on correction term: `dx=w[i]*rrms*(dy-x*dot)` → `dx=rrms*(w[i]*dy-x*dot)`. 7.5% error with non-unit weights. Masked when w≈1.0 (e.g., early training). |
+| 2026-03-12 | 66.7MB dead allocations removed | `acembed` AdamState (66MB) and `gate_buf` (720KB) allocated but never used. |
+| 2026-03-12 | UP19 experimentally confirmed at lower magnitude | ACCUM_STEPS throughput: CPU 3.0x at accum=50, ANE 2.2x at accum=100. Upstream claims 4.74x — likely model-size/architecture dependent. |
+| 2026-03-12 | Verification agents require cross-checking | 3 false positives caught from 6 parallel agents: missed RMSNorm bug, false memory leak claim, wrong integer overflow analysis. Agent outputs must be manually verified. |

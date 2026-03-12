@@ -2,9 +2,9 @@
 
 **Training transformers on Apple's Neural Engine: an empirical study**
 
-AutoANE is an open-source system for training Llama-family transformers on Apple Silicon, building on [maderix/ANE](https://github.com/maderix/ANE)'s pioneering reverse engineering of the Neural Engine's private APIs. It adds systematic ANE vs CPU benchmarking, power measurement, and an autonomous hyperparameter search loop adapted from [karpathy/autoresearch](https://github.com/karpathy/autoresearch). The training loop is a compiled Objective-C binary (1571 lines).
+AutoANE is an open-source system for training Llama-family transformers on Apple Silicon, building on [maderix/ANE](https://github.com/maderix/ANE)'s pioneering reverse engineering of the Neural Engine's private APIs. It adds systematic ANE vs CPU benchmarking, power measurement, and an autonomous hyperparameter search loop adapted from [karpathy/autoresearch](https://github.com/karpathy/autoresearch). The training loop is a compiled Objective-C binary (~1580 lines).
 
-43 controlled experiments, a 100-experiment autonomous search, and first-principles verification produced three central findings:
+44 controlled experiments, a 100-experiment autonomous search, and first-principles verification produced three central findings:
 
 1. **ANE has a genuine 2.5x matmul speedup over CPU** (Apple AMX/Accelerate), but IOSurface weight-staging overhead negates this advantage end-to-end. CPU-only training wins at every tested model size (36M-281M params).
 
@@ -12,11 +12,11 @@ AutoANE is an open-source system for training Llama-family transformers on Apple
 
 3. **In a fixed time window, more optimizer steps beats more parameters.** 512d/4L (36M params, ~4300 steps at 120s) achieves val_loss ~3.5 while 1024d/4L (95M params, ~1050 steps) achieves ~4.3. This confirms Kaplan et al.'s observation that the data scaling exponent (0.095) exceeds the parameter exponent (0.076) in the severely data-constrained regime.
 
-Full experiment log: [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) | Verification report: [docs/VERIFICATION.md](docs/VERIFICATION.md) | Assumption registry: [docs/ASSUMPTIONS.md](docs/ASSUMPTIONS.md) | Technical report: [docs/TECHNICAL_REPORT.md](docs/TECHNICAL_REPORT.md)
+**[Complete Findings & Methodology](docs/FINDINGS.md)** | [Experiment Log (E1-E44)](docs/EXPERIMENTS.md) | [Verification Report](docs/VERIFICATION.md) | [Assumptions Registry (71 tracked)](docs/ASSUMPTIONS.md) | [Technical Report](docs/TECHNICAL_REPORT.md) | [Research Roadmap](docs/NEXT_STEPS.md)
 
 ---
 
-## Reproducing Results
+## Quick Start
 
 **Requirements**: macOS 15+, Apple Silicon (M1/M2/M3/M4), Xcode Command Line Tools.
 
@@ -26,7 +26,7 @@ git clone https://github.com/vatsal191201/AutoANE.git && cd AutoANE
 # Download training data (TinyStories, 40MB, 20M tokens, SmolLM2 BPE tokenizer)
 bash tools/download_data.sh
 
-# Train from scratch (120s, CPU-only)
+# Train from scratch (120s, CPU-only, 36.4M params)
 cd training && python3 train.py
 
 # Expected output:
@@ -34,17 +34,235 @@ cd training && python3 train.py
 #   num_steps: ~4100-4200 (on clean system; step time 22-24ms)
 #   36.4M params, 512d/4L, SEQ=128
 
-# Or use demo.sh for the baseline config (LR=4e-4, typically val_loss ~3.5):
+# Or use demo.sh for the full pipeline (download + train + generate):
 cd .. && bash demo.sh
-
-# Generate text from trained checkpoint
-python3 generate.py --prompt "Once upon a time" --tokens 200
-
-# Run autonomous hyperparameter search (~3 hours)
-cd training && python3 run_autosearch.py --experiments 100
 ```
 
 All experiments use the same 40MB binary file (`tinystories_smollm2_data00.bin`): 20M tokens, SmolLM2 BPE vocabulary (49152 tokens, 16893 active in this dataset), 90/10 train/val split. Every model trains from random initialization (Xavier/Kaiming) unless stated otherwise.
+
+---
+
+## How to Use This Codebase
+
+### Train a model
+
+```bash
+cd training
+
+# CPU-only (recommended — best model quality)
+python3 train.py
+
+# ANE matmul-only (ANE for linear projections, CPU for everything else)
+# Edit train.py: set USE_ANE = True, ANE_MATMUL_ONLY = True
+python3 train.py
+
+# ANE full (all ops on ANE — worse quality, for research only)
+# Edit train.py: set USE_ANE = True, ANE_MATMUL_ONLY = False
+python3 train.py
+
+# Or compile and run directly (skipping the Python wrapper):
+make MODEL=autoresearch
+./train --scratch --data ../tinystories_smollm2_data00.bin \
+    --lr 4e-4 --warmup 100 --accum 10 --clip 1.0 \
+    --steps 999999 --time 120 --scale 256.0 --cpu-only --seed 42
+```
+
+### Generate text
+
+```bash
+# From a trained checkpoint (uses numpy, no dependencies beyond Python stdlib)
+python3 generate.py --prompt "Once upon a time" --tokens 200
+
+# With a specific checkpoint
+python3 generate.py --checkpoint training/ane_autoresearch_ckpt.bin --prompt "The cat" --tokens 100
+```
+
+### Convert weights
+
+```bash
+# HuggingFace → ANE (any llama-family model: llama, qwen2, qwen3, smollm2)
+python3 tools/hf_to_ane.py HuggingFaceTB/SmolLM2-135M --output smollm2_135m.bin
+
+# ANE → GGUF (for llama.cpp / Ollama)
+python3 tools/export_to_gguf.py training/ane_autoresearch_ckpt.bin --output model.gguf
+
+# GGUF → ANE (e.g., from Ollama)
+python3 tools/gguf_to_ane.py model.gguf --output ane_checkpoint.bin
+```
+
+RoPE convention is handled automatically: ANE uses paired interleaving `[re0, im0, re1, im1, ...]`; HuggingFace/GGUF uses split halves `[re0, re1, ..., im0, im1, ...]`. Round-trip verified bit-perfect on all 38 tensors (512d/4L) and all 272 tensors (SmolLM2-135M).
+
+### Run the autonomous hyperparameter search
+
+```bash
+cd training
+
+# Random perturbation search (no AI agent needed, ~3 hours for 100 experiments)
+python3 run_autosearch.py --experiments 100
+
+# With multi-seed evaluation to reduce noise (slower but more reliable)
+python3 run_autosearch.py --experiments 50 --n-seeds 3
+
+# Architecture grid search
+python3 autoresearch.py --search arch --time 120
+
+# LR sweep across top architectures
+python3 autoresearch.py --search lr --time 120
+```
+
+### Run tests
+
+```bash
+cd training && bash ../tests/test_training.sh
+
+# 8 tests: compilation, forward/backward, Adam update,
+# seed sensitivity, checkpoint I/O, ANE mode, gradient health, Python wrapper
+```
+
+### Measure power consumption
+
+```bash
+# Requires sudo for powermetrics
+sudo bash tools/power_benchmark.sh
+```
+
+### LoRA fine-tuning
+
+```bash
+cd training
+# Edit train.py: set USE_LORA = True, LORA_RANK = 8
+# Ensure a checkpoint exists to fine-tune from
+python3 train.py
+```
+
+---
+
+## Navigating the Code
+
+### Where things live
+
+```
+AutoANE/
+├── training/                    # ── Core training engine ──
+│   ├── train.m                  # Main training loop (Obj-C, ~1580 lines)
+│   │                            #   Forward pass, backward pass, Adam optimizer,
+│   │                            #   checkpoint save/load, CLI argument parsing,
+│   │                            #   ANE kernel compilation, gradient accumulation
+│   ├── cpu_ops.h                # CPU-side ops: RMSNorm fwd/bwd, cross-entropy,
+│   │                            #   AdamW optimizer, embedding fwd/bwd, SDPA,
+│   │                            #   vocab compaction (49152 → 16893 active tokens)
+│   ├── mil_dynamic.h            # MIL program generators for 10 ANE kernels/layer:
+│   │                            #   sdpaFwd, woFwd, ffnFused, sdpaBwd1/2, qBwd,
+│   │                            #   kvBwd, wotBwd, ffnBwdW2t, ffnBwdW13t
+│   ├── io.h                     # IOSurface helpers, fp32→fp16 weight staging,
+│   │                            #   kernel compile/eval wrappers, GQA tile/reduce
+│   ├── config.h                 # Model structs, ANE init, safe_malloc/calloc,
+│   │                            #   checkpoint header (BLZT v4), layer allocation
+│   ├── train_config.h           # Default hyperparameters (#ifndef guards)
+│   ├── Makefile                 # Build: xcrun clang -O2, Accelerate, IOSurface, ObjC ARC
+│   │
+│   ├── train.py                 # Python wrapper: generates C header from hyperparams,
+│   │                            #   compiles, runs binary. THE file the agent edits.
+│   ├── run_autosearch.py        # Autonomous search: random perturbation + keep/revert
+│   ├── autoresearch.py          # Grid search orchestrator (DIM × NLAYERS grids)
+│   ├── program.md               # Karpathy-style agent protocol (for Claude Code)
+│   ├── run_experiment.sh        # Single experiment runner (used by autoresearch.py)
+│   ├── models/                  # 8 model header configs:
+│   │   ├── autoresearch.h       #   512d/4L (36.4M) — default/optimal
+│   │   ├── autoresearch_1536.h  #   1536d/4L (142M) — scaling study
+│   │   ├── autoresearch_2048.h  #   2048d/4L (281M) — scaling study
+│   │   ├── stories110m.h        #   768d/12L (110M) — TinyStories baseline
+│   │   ├── smollm2_135m.h       #   576d/30L (135M) — SmolLM2 architecture
+│   │   ├── smollm2_360m.h       #   960d/32L (362M) — SmolLM2 architecture
+│   │   ├── qwen3_06b.h          #   896d/28L (600M) — Qwen3 architecture
+│   │   └── qwen3_06b_compact.h  #   (compact vocab variant)
+│   ├── results.tsv              # Autosearch results log
+│   └── experiments.jsonl        # Grid search results
+│
+├── generate.py                  # ── Text generation ──
+│                                #   Pure numpy inference, top-k sampling,
+│                                #   loads BLZT v4 checkpoints, optional HF tokenizer
+│
+├── tools/                       # ── Utilities ──
+│   ├── hf_to_ane.py             # HuggingFace safetensors → ANE checkpoint
+│   ├── gguf_to_ane.py           # GGUF (llama.cpp) → ANE checkpoint
+│   ├── export_to_gguf.py        # ANE checkpoint → GGUF with tokenizer metadata
+│   ├── verify_forward_pass.py   # E2E verification: Python forward vs C binary
+│   ├── download_data.sh         # Downloads TinyStories training data
+│   └── power_benchmark.sh       # Power measurement script (requires sudo)
+│
+├── bridge/                      # ── Python ↔ ANE bridge ──
+│   ├── ane_bridge.h             # C-callable API for ANE from Python/ctypes
+│   ├── ane_bridge.m             # Bridge implementation (IOSurface, compile, eval)
+│   └── Makefile                 # Builds libane_bridge.dylib
+│
+├── tests/
+│   └── test_training.sh         # 8 regression tests
+│
+├── docs/                        # ── Documentation ──
+│   ├── FINDINGS.md              # Complete findings, methodology, audit trail
+│   ├── TECHNICAL_REPORT.md      # Full technical report (13 sections)
+│   ├── EXPERIMENTS.md           # Experiment log (E1-E44)
+│   ├── VERIFICATION.md          # First-principles verification (22 sections)
+│   ├── ASSUMPTIONS.md           # 71 tracked assumptions (27 verified, 8 disproved, ...)
+│   ├── NEXT_STEPS.md            # Research roadmap + session work logs
+│   ├── RESEARCH_PLAN.md         # Original research plan (all tasks completed)
+│   ├── P1_DESIGN.md             # Design doc: runtime weight injection
+│   ├── E37_PROTOCOL.md          # Experiment 37 protocol (sustained throughput)
+│   └── E38_PROTOCOL.md          # Experiment 38 protocol (dimension scaling)
+│
+├── demo.sh                      # One-command: download → train → generate
+└── LICENSE                      # MIT
+```
+
+### How the training pipeline works
+
+```
+train.py (Python)
+   │
+   ├── 1. Generates autoresearch.h (C header with hyperparameters)
+   ├── 2. Runs `make MODEL=autoresearch` to compile train.m
+   └── 3. Runs ./train with CLI flags
+          │
+          train.m (Compiled Obj-C binary)
+             │
+             ├── Loads data file (mmap'd binary, uint16 tokens)
+             ├── Loads/initializes weights (Xavier/Kaiming or from checkpoint)
+             ├── IF ANE mode:
+             │   ├── ane_init() — dlopen AppleNeuralEngine.framework
+             │   ├── Compile 10 MIL kernels per layer (mil_dynamic.h)
+             │   └── Create IOSurfaces for weight staging
+             │
+             └── Training loop (time-budgeted):
+                 ├── Forward pass:
+                 │   ├── Embed tokens (compact vocab: 49152 → 16893)
+                 │   ├── For each layer:
+                 │   │   ├── RMSNorm (cpu_ops.h)
+                 │   │   ├── Q/K/V projections (ANE matmul or cblas_sgemm)
+                 │   │   ├── RoPE (cpu_ops.h)
+                 │   │   ├── SDPA + causal mask (ANE or cpu_ops.h)
+                 │   │   ├── Output projection (ANE or cblas_sgemm)
+                 │   │   └── SwiGLU FFN with residual (ANE or cblas_sgemm)
+                 │   └── Classifier head → cross-entropy loss
+                 │
+                 ├── Backward pass (reverse order, same structure)
+                 │
+                 └── Every ACCUM_STEPS:
+                     ├── Gradient clipping (global L2 norm)
+                     ├── AdamW update (cpu_ops.h)
+                     ├── LR schedule (cosine with warmup)
+                     └── Checkpoint save (BLZT v4 format)
+```
+
+### Key design decisions
+
+1. **Compiled C binary, not Python**: The training loop is Obj-C for direct access to ANE private APIs and Accelerate framework. Python is only used as a config generator and orchestrator.
+
+2. **Single IOSurface per kernel**: Each ANE kernel uses exactly 1 input and 1 output IOSurface. Weights and activations are packed into the spatial dimension and separated by `slice_by_size` inside the MIL program. This provides structural immunity to IOSurface slot ordering bugs.
+
+3. **Compact vocabulary**: The full SmolLM2 vocab (49152 tokens) is mapped to the 16893 tokens active in the training data. Reduces classifier from 49152×512 to 16893×512, saving memory and compute.
+
+4. **DeepNet scaling**: Residual connections use `alpha = 1/sqrt(2*n_layers)` for fp16 stability in ANE modes. Required because fp16 residual streams overflow without scaling.
 
 ---
 
@@ -56,6 +274,7 @@ We distinguish what is novel from what is adapted from prior work.
 - First quantitative ANE vs CPU training comparison at matched configurations (throughput, loss quality, power)
 - First ANE training power measurement (macOS `powermetrics`, 60s per mode, idle-subtracted)
 - First IOSurface scaling study across model dimensions (DIM 1024/1536/2048) — demonstrates hard memory pressure ceiling at ~220MB total IOSurface allocation
+- First demonstration that selective ANE offloading (matmul-only) matches CPU training quality
 - Autonomous hyperparameter search on Apple Silicon with compiled C binary and git keep/revert protocol
 - Lossless weight conversion pipeline: HuggingFace <-> ANE checkpoint <-> GGUF (verified bit-perfect on 272-tensor round-trip)
 
@@ -82,11 +301,11 @@ This advantage **widens** at longer budgets:
 | 300s | 3.09 | 3.20 | 0.11 |
 | 600s | 2.55 | 2.84 | 0.29 |
 
-At 600s, the 512d/4L model has seen 1.57 epochs of data (31M token-encounters on a 20M token dataset). It is still underfitting. At 1800s (4.89 epochs), it reaches val_loss 2.22, consistent with the TinyStories literature baseline of ~2.0 at convergence for 33M-param models (Eldan & Li, 2023).
+At 1800s (4.89 epochs), it reaches val_loss 2.22, consistent with the TinyStories literature baseline of ~2.0 at convergence for 33M-param models (Eldan & Li, 2023).
 
-**Interpretation**: Kaplan et al. (2020) showed loss scales as L(D) ~ D^(-0.095) for data and L(N) ~ N^(-0.076) for parameters. Since 0.095 > 0.076, each additional gradient step contributes more than each additional parameter. In our severely data-constrained regime (23-329x below Chinchilla optimal), this effect is amplified: the data exponent dominates.
+**Interpretation**: Kaplan et al. (2020) showed loss scales as L(D) ~ D^(-0.095) for data and L(N) ~ N^(-0.076) for parameters. Since 0.095 > 0.076, each additional gradient step contributes more than each additional parameter. In our severely data-constrained regime (23-329x below Chinchilla optimal), this effect is amplified.
 
-Experiments: E39 (11-config architecture grid), E40 (per-architecture LR sweep), E41 (budget scaling 120-1800s), E42 (independent verification, all results reproduced within 0.3%).
+Experiments: E39, E40, E41, E42.
 
 ### Finding 2: CPU-only training beats ANE at every tested dimension
 
@@ -96,219 +315,53 @@ Experiments: E39 (11-config architecture grid), E40 (per-architecture LR sweep),
 | ANE fp16 | 68.7 | 1297 | 4.69 | 29.2ms | 8.1ms |
 | ANE matmul-only | ~71 | 1149 | ~4.65 | ~30ms | ~8ms |
 
-(All values for 1024d/4L, 95.4M params, loss_scale=256. Loss values are 200-step rolling averages.)
+(All values for 1024d/4L, 95.4M params, loss_scale=256.)
 
-ANE achieves 2.46x faster raw matmuls (29.2ms vs 71.9ms via cblas_sgemm). But the end-to-end picture is different: IOSurface weight staging costs 8.1ms/step (fp32->fp16 conversion + spatial packing via NEON), and fp16 precision degrades loss by ~16% (irreducible — tested via clamping, LR tuning, weight decay tuning). CPU fp32 produces better models despite fewer steps.
+ANE achieves 2.46x faster raw matmuls but IOSurface weight staging costs 8.1ms/step and fp16 precision degrades loss by ~16% (irreducible). At DIM=2048, ANE is 2x *slower* due to IOSurface memory pressure (379MB causes cache thrashing).
 
-At larger dimensions, ANE gets *worse*:
-
-| DIM | IOSurface size | ANE vs CPU | Reason |
-|-----|---------------|------------|--------|
-| 1024 | 60MB | 1.5x faster (step) | IOSurface fits L2 cache |
-| 1536 | 220MB | Parity | Cache pressure begins |
-| 2048 | 379MB | 2x *slower* | Cache thrashing in all operations |
-
-Experiments: E11 (CPU vs ANE comparison), E36 (matmul-only mode), E38 (dimension scaling study, novel).
+Experiments: E11, E36, E38.
 
 ### Finding 3: ANE does not save power
 
-Measured via `sudo powermetrics --samplers cpu_power,gpu_power,ane_power` for 60 seconds per mode:
+| Mode | Package Power | Energy/step |
+|------|--------------|-------------|
+| Idle | 8,455 mW | — |
+| CPU-only | 13,273 mW | 9.2 mJ |
+| ANE matmul | 12,568 mW | 10.9 mJ |
+| ANE full | 12,664 mW | 9.7 mJ |
 
-| Mode | CPU Power | ANE Power | Package Power | Energy/step |
-|------|-----------|-----------|---------------|-------------|
-| Idle | — | — | 8455 mW | — |
-| CPU-only | 13241 mW | 9 mW | 13273 mW | 9.2 mJ |
-| ANE matmul | 12132 mW | 384 mW | 12568 mW | 10.9 mJ |
-| ANE full | 11821 mW | 765 mW | 12664 mW | 9.7 mJ |
-
-Package power is ~12.5-13.3W across all modes. ANE shifts ~1.4W from CPU to ANE subsystem, but total power is unchanged. CPU-only achieves the lowest energy per step (9.2 mJ) because it completes more steps in the same time at the same power draw.
-
-Orion emphasizes ANE as "dedicated silicon that's idle in most workloads" but does not quantify power efficiency for training. Our measurement shows no power benefit for training workloads.
+ANE shifts ~1.4W from CPU to ANE subsystem, but total power is unchanged. CPU-only achieves the lowest energy per step.
 
 Experiment: E12.
 
 ### Finding 4: fp16 precision gap is irreducible
 
-ANE computes in fp16. The loss gap vs fp32 is ~16% and cannot be closed:
+5 approaches tested to close the ~16% quality gap — all failed. Root cause: fp16 MAC units accumulate sqrt(DIM) ULPs of rounding error per dot product. Hardware limitation, not software-fixable.
 
-| Approach tried | Result | Why it fails |
-|----------------|--------|-------------|
-| Activation clamping [-4, +4] | No change | Precision loss is from matmul accumulation (sqrt(DIM) ULP rounding per dot product), not magnitude |
-| Lower LR (1e-4) | Worse | Underfitting |
-| Higher weight decay (0.3) | No change | WD doesn't affect per-step precision |
-| Loss scaling (256x) | Required but doesn't close gap | Prevents underflow but doesn't improve accumulation precision |
-| DeepNet scaling | Required for stability | Prevents overflow but gap remains |
+Experiments: E14, E15, E19.
 
-At DIM=1024, each fp16 dot product accumulates sqrt(1024) = 32 ULPs of rounding error. This is a hardware limitation of fp16 MAC units.
+### Finding 5: Only use ANE for linear projections
 
-Experiments: E14 (clamping), E15 (LR/WD tuning), E19 (extended training with zero NaN/Inf confirms gap is genuine).
+ANE matmul-only mode matches CPU val_loss to 4 decimal places. The precision problem is specifically in non-linear ops (softmax, SiLU, RoPE) where fp16 error compounds. Linear projections tolerate fp16.
 
-### Finding 5: Fusing non-linear ops into ANE hurts generalization
-
-| Mode | Train-val gap | Description |
-|------|--------------|-------------|
-| ANE full (fused) | 1.22 | RoPE, attention scores, SiLU all in fp16 |
-| ANE matmul-only | 0.60 | Only 7 linear projections per layer on ANE, everything else on CPU fp32 |
-| CPU-only | 0.60 | All fp32 |
-
-ANE matmul-only achieves identical val_loss to CPU at matched step counts (to 4 decimal places). The precision problem is specifically in non-linear operations (softmax, SiLU, RoPE) where fp16 error compounds. Linear projections tolerate fp16 because error doesn't compound across the accumulation.
-
-Experiment: E36 (novel finding — first demonstration that selective ANE offloading matches CPU quality).
-
-### Finding 6: Delta compilation does not work
-
-Tested 5 approaches to avoid recompiling ANE kernels when weights change:
-
-1. Unload -> write new BLOBFILE -> reload: **Output unchanged** (ANE caches compiled binary)
-2. tmpDir weight patching: **Output unchanged**
-3. e5bundlecache investigation: Only small metadata (~96 bytes per entry)
-4. _ANEInMemoryModel reload: **API not functional**
-5. Fresh recompile with cached graph: ~60ms/kernel (too expensive)
-
-ANE loads from an inaccessible memory-mapped compiled binary, not from the source BLOBFILE. Orion claims 8.5x faster recompilation via unload/reload (494ms for 60 kernels vs 4200ms full compile). We could not reproduce this — our reload attempts returned unchanged outputs.
-
-Experiments: E10, E17 (5 approaches, all fail), E34 (re-confirmed with newer APIs).
-
-### Finding 7: Autonomous search — variance dominates signal
-
-100 experiments via `run_autosearch.py` (random perturbation with keep/revert, no AI agent):
-
-| Experiment | Change | val_loss | Cumulative improvement |
-|------------|--------|----------|----------------------|
-| Baseline | — | 3.952 | — |
-| Keep 1 | HIDDEN 1408->1152, WARMUP 100->71 | 3.906 | 1.2% |
-| Keep 2 | WEIGHT_DECAY 0.1->0.098 | 3.676 | 7.0% |
-| Keep 3 | LR 4e-4->4.19e-4 | 3.671 | 7.1% |
-| Keep 5 | ADAM_B2 0.95->0.959, LR->6.34e-4 | 3.505 | 11.3% |
-| Keep 15 | WEIGHT_DECAY 0.098->0.076 | 3.480 | 11.9% |
-| Keep 87 | ACCUM_STEPS 10->7 | 3.288 | 16.8% |
-
-Autosearch output config: `512d/4L, SEQ=128, LR=6.34e-4, ACCUM=7, WD=0.076, ADAM_B2=0.959`.
-
-**Caveat — variance exceeds signal**: Independent verification runs of this config produce val_loss ~3.8 (not 3.288). Run-to-run variance from random initialization is ~0.3 nats — larger than most "improvements" in the table above. The autosearch's keep/revert protocol uses a single evaluation per experiment, making it susceptible to hill-climbing on noise. The manually-tuned baseline config (LR=4e-4, ACCUM=10) reliably produces val_loss ~3.5, which is better than the autosearch config's typical ~3.8. The 3.288 was the minimum of 88 random seeds, not a reliably reproducible result.
-
-This is a known limitation of single-evaluation hyperparameter search. Mitigation would require either: (a) averaging N runs per evaluation (expensive — 88 × N total runs), or (b) using a longer training budget to reduce per-run variance.
+Experiment: E36.
 
 ### Additional findings
 
 | # | Finding | Evidence |
 |---|---------|----------|
-| 8 | Depth hurts at every width tested (120s budget) | E39: 512d 4L->8L costs +0.61 val_loss |
-| 9 | 2-layer models overfit despite high throughput | E40: 768d/2L train-val gap +0.83 |
-| 10 | Optimal LR scales with sqrt(model size) | E40: 5e-4 for 36M, 3e-4 for 73M |
-| 11 | SEQ=128 is optimal (throughput > context at 120s) | E43: 1.75x steps vs SEQ=256, val improves |
-| 12 | Optimal LR co-varies with batch size | E43: halving SEQ requires LR 5e-4->4e-4 (Smith et al. linear scaling rule) |
-| 13 | Minimum useful sequence length is ~128 for TinyStories | E43: SEQ=64 catastrophically worse despite 40% more steps |
-| 14 | Thermal throttling is 30% at 10 min (single process) | E24: E18's "50% throttling" was from concurrent processes |
-| 15 | Neither CPU nor ANE diverges at 10+ minutes (clean system) | E37: 5777 steps stable for both modes |
+| 6 | Delta compilation does not work (5 approaches tested) | E10, E17, E34 |
+| 7 | Autonomous search hill-climbs on noise (variance > signal) | E44 |
+| 8 | Depth hurts at every width tested (120s budget) | E39 |
+| 9 | 2-layer models overfit despite high throughput | E40 |
+| 10 | Optimal LR scales with sqrt(model size) | E40 |
+| 11 | SEQ=128 optimal (throughput > context at 120s) | E43 |
+| 12 | Neither CPU nor ANE diverges at 10+ minutes | E37 |
+| 13 | Thermal throttling is 30% single-process (E18's 50% was concurrent) | E24 |
+
+Full findings with methodology: **[docs/FINDINGS.md](docs/FINDINGS.md)**
 
 ---
-
-## System Architecture
-
-### Training Binary (`training/train.m`, 1571 lines, Objective-C)
-
-The training loop is a compiled binary, not Python. `train.py` generates a C header file from its hyperparameters, invokes `make`, and runs the resulting binary. This separation means the agent can only modify hyperparameters and architecture — not the optimizer, loss function, or data pipeline.
-
-### ANE Kernel Pipeline
-
-10 MIL (Machine Learning Intermediate Language) kernels compiled per layer at startup:
-
-| Kernel | Direction | Operation |
-|--------|-----------|-----------|
-| sdpaFwd | Forward | Scaled dot-product attention |
-| woFwd | Forward | Output projection (GQA-aware) |
-| ffnFused | Forward | SwiGLU FFN with residual |
-| sdpaBwd1/2 | Backward | Attention backward (two-pass) |
-| qBwd | Backward | Query projection backward |
-| kvBwd | Backward | Key/value projection backward |
-| wotBwd | Backward | Output projection backward |
-| ffnBwdW2t | Backward | FFN W2 backward |
-| ffnBwdW13t | Backward | FFN W1/W3 backward |
-
-Weights are staged via IOSurface spatial dimensions at each step: the compiled MIL program is fixed, and only the weight data is patched via NEON-vectorized fp32->fp16 conversion. This avoids the 4.2s recompilation cost per step that static compilation would require.
-
-### Training Modes
-
-| Mode | Flag | Precision | Best for |
-|------|------|-----------|----------|
-| **CPU-only** (recommended) | `--cpu-only` | fp32 | All training |
-| ANE matmul-only | `--ane-matmul-only` | fp16 matmul + fp32 ops | ANE research |
-| ANE full | *(default)* | fp16 | ANE characterization |
-
-### Training Features
-
-- **AdamW** with bias correction, cosine LR decay (min_lr = 0.1 * max_lr), gradient clipping
-- **Gradient accumulation** (effective batch = ACCUM_STEPS x SEQ tokens)
-- **DeepNet scaling** for fp16 stability in ANE modes
-- **LoRA fine-tuning** (`--lora --lora-rank 8`)
-- **Time-budgeted training** (`--time 120`)
-- **Checkpointing** (BLZT v4 format: 96-byte header, per-layer weights + Adam state)
-
-### Weight Conversion Pipeline
-
-```
-HuggingFace (safetensors) <-> ANE checkpoint (BLZT v4) <-> GGUF (llama.cpp)
-       hf_to_ane.py              export_to_gguf.py / gguf_to_ane.py
-```
-
-- **RoPE convention**: ANE uses paired interleaving `[re0, im0, re1, im1, ...]`; HuggingFace/GGUF uses split halves `[re0, re1, ..., im0, im1, ...]`. Converters handle this automatically.
-- **Round-trip verified**: ANE -> GGUF -> ANE produces bit-perfect results on all 38 tensors (512d/4L) and all 272 tensors (SmolLM2-135M).
-- **GGUF export** includes full tokenizer metadata (49152 BPE tokens, 48900 merge rules) for llama.cpp compatibility. Generates at 316.5 t/s in llama-cli.
-
-### Autonomous Search
-
-Two modes:
-
-| Mode | Script | How it works |
-|------|--------|-------------|
-| Agent loop | `program.md` + `train.py` | LLM agent (Claude Code) modifies train.py, commits, trains, keeps/reverts |
-| Automated search | `run_autosearch.py` | Random perturbation with keep/revert, no AI agent needed |
-
-Both produce `results.tsv` (commit, val_loss, steps, params, status, description).
-
----
-
-## Project Structure
-
-```
-AutoANE/
-├── training/
-│   ├── train.m              # Training binary (Obj-C, 1571 lines, READ ONLY)
-│   ├── train.py             # Agent-editable hyperparameters (the ONLY mutable file)
-│   ├── program.md           # Karpathy-style agent protocol
-│   ├── run_autosearch.py    # Autonomous search (no AI agent)
-│   ├── autoresearch.py      # Grid search orchestrator
-│   ├── run_experiment.sh    # Single experiment runner
-│   ├── mil_dynamic.h        # MIL kernel generator (10 kernels/layer)
-│   ├── io.h                 # IOSurface I/O, weight staging, fp32->fp16
-│   ├── cpu_ops.h            # RMSNorm, RoPE, SDPA, loss, AdamW (CPU fp32)
-│   ├── config.h             # Derived sizes, memory allocation
-│   ├── train_config.h       # Default hyperparameters (#ifndef guards)
-│   ├── Makefile             # Build: xcrun clang + Accelerate + IOSurface
-│   ├── results.tsv          # Agent loop results
-│   ├── experiments.jsonl    # Grid search results
-│   └── models/              # Model header configs (8 architectures)
-├── generate.py              # Text generation from checkpoint (numpy)
-├── demo.sh                  # One-command demo: download + train + generate
-├── tools/
-│   ├── hf_to_ane.py         # HuggingFace -> ANE converter
-│   ├── gguf_to_ane.py       # GGUF -> ANE converter
-│   ├── export_to_gguf.py    # ANE -> GGUF exporter (with tokenizer)
-│   ├── power_benchmark.sh   # Power measurement (requires sudo)
-│   └── download_data.sh     # TinyStories download
-├── bridge/
-│   ├── ane_bridge.h         # C-callable ANE API
-│   ├── ane_bridge.m         # Bridge implementation
-│   └── Makefile
-└── docs/
-    ├── TECHNICAL_REPORT.md  # Full technical report
-    ├── VERIFICATION.md      # First-principles verification (21 sections)
-    ├── EXPERIMENTS.md       # Experiment log (E1-E43 + E44 autosearch)
-    ├── ASSUMPTIONS.md       # 26 verified, 1 qualified, 8 disproved, 13 unverified, 6 upstream
-    ├── NEXT_STEPS.md        # Research roadmap, upstream findings, prioritized next steps
-    └── RESEARCH_PLAN.md     # Original research plan with completed results
-```
 
 ## Comparison to Existing Frameworks
 
@@ -330,13 +383,13 @@ MLX is better for: raw GPU throughput on large models, broader ecosystem, rapid 
 
 ## Known Limitations
 
-1. **Attention gradient underflow** (ANE modes): SDPA backward produces dq/dk magnitudes ~100x smaller than dv due to fp16 underflow. Training works (embedding + FFN gradients carry it), but attention layers learn slowly.
+1. **fp16 precision gap** (ANE modes): ~16% quality loss from fp16 matmul accumulation rounding. Irreducible via software (5 approaches tested).
 
-2. **DeepNet incompatibility with pretrained weights**: DeepNet scaling (required for fp16 stability) changes residual connection magnitudes, making fine-tuning from pretrained weights impractical in ANE modes. CPU-only mode works for fine-tuning.
+2. **DeepNet incompatibility with pretrained weights**: DeepNet scaling (required for fp16 stability) changes residual magnitudes, making ANE fine-tuning from pretrained weights impractical. CPU-only mode works fine.
 
-3. **Single dataset**: All results are on TinyStories (20M tokens). Models are 23-329x below Chinchilla optimal data:parameter ratio. Larger datasets would likely change the optimal architecture.
+3. **Single dataset**: All results on TinyStories (20M tokens). Models are 23-329x below Chinchilla optimal data:parameter ratio. Larger datasets would likely change the optimal architecture.
 
-4. **Private APIs**: Uses `_ANEClient`, `_ANECompiler` from `AppleNeuralEngine.framework` — undocumented and subject to change between macOS versions.
+4. **Private APIs**: Uses `_ANEClient`, `_ANECompiler` from `AppleNeuralEngine.framework` — undocumented, subject to change between macOS versions.
 
 5. **Sequence length**: SEQ=128 is optimal for throughput but limits context. SEQ=512+ increases SDPA backward overflow risk on ANE.
 
@@ -345,34 +398,32 @@ MLX is better for: raw GPU throughput on large models, broader ecosystem, rapid 
 ## Open Questions
 
 1. Does the step-count advantage hold with larger datasets? Chinchilla predicts a crossover where larger models become optimal — but at what data scale?
-2. Can `_ANEChainingRequest` (firmware-level chained execution) eliminate CPU round-trips between layers? [ane-infer](https://github.com/thebasedcapital/ane-infer) confirmed chaining works (error was wrong factory method). Untested in our training pipeline.
-3. INT8 quantization halves IOSurface size — does this move the memory pressure ceiling from DIM=1536 to DIM=2048+?
-4. Mega-kernel fusion (N transformer layers in one MIL program) achieves 3-4x forward speedup ([maderix/ANE PR #24](https://github.com/maderix/ANE/issues/24)). Can this be combined with runtime weight injection to avoid recompilation?
-5. [imperatormk/ane-train](https://github.com/imperatormk/ane-train) demonstrated full Adam on ANE with runtime weight ping-pong (ConvNeXt UNet, ~3 it/s on M1). Adapting this approach for transformers could change our IOSurface overhead picture.
+2. Can zeroth-order training (MeZO/FwdLLM) leverage ANE's fast forward passes while eliminating backward kernels entirely? This is the highest-impact untested direction.
+3. Mega-kernel fusion (N transformer layers in one MIL program) achieves 3-4x forward speedup ([maderix/ANE PR #24](https://github.com/maderix/ANE/issues/24)). Can this be combined with runtime weight injection?
+4. Function parameter IOSurfaces are 30% faster than our spatial packing ([maderix/ANE PR #22](https://github.com/maderix/ANE/pull/22)). Worth implementing?
+5. INT8 quantization halves IOSurface size — does this move the memory pressure ceiling from DIM=1536 to DIM=2048+?
 
 ---
 
-## Related Work (Post-Publication)
-
-Since AutoANE's initial experiments, several projects have advanced ANE training/inference:
+## Related Work
 
 | Project | Key Finding | Relevance |
 |---------|------------|-----------|
-| [imperatormk/ane-train](https://github.com/imperatormk/ane-train) | Runtime weight injection via IOSurface matmul inputs — compile once, train forever. Full Adam on ANE. | Eliminates recompilation. Documents critical IOSurface constraints (ascending slot sizes, Ci multiple of 32). |
-| [thebasedcapital/ane-infer](https://github.com/thebasedcapital/ane-infer) | `_ANEChainingRequest` works. `doEvaluateDirectWithModel:` bypasses daemon (10% faster). 25 `_ANEClient` methods documented. | Chaining could eliminate CPU round-trips. Direct eval mode is a free speedup. |
-| [maderix/ANE PR #24](https://github.com/maderix/ANE/issues/24) | Mega-kernel fusion: 4.17x forward speedup (stories15M). XPC overhead ~160μs/eval is the bottleneck. ACCUM_STEPS=100 gives 4.74x throughput. | Fusion + runtime weights is the key open question. |
-| [maderix/ANE PR #35](https://github.com/maderix/ANE/pull/35) | M5 ANE support: 128-byte IOSurface alignment, dynamic weight injection via matmul. | M5 compatibility for future work. |
-| [Community benchmark dashboard](https://github.com/dev-erik/ANE) | Cross-chip ANE benchmarks (M1-M5). M3 Ultra: 512ch only, peak 8.77 TFLOPS. | Community validation of our findings. |
+| [imperatormk/ane-train](https://github.com/imperatormk/ane-train) | Runtime weight injection via IOSurface matmul inputs — compile once, train forever. Full Adam on ANE. | Documents critical IOSurface constraints (ascending slot sizes, Ci multiple of 32). |
+| [maderix/ANE PR #24](https://github.com/maderix/ANE/issues/24) | Mega-kernel fusion: 4.17x forward speedup. XPC overhead ~160us/eval is the bottleneck. | Fusion + runtime weights is the key open question. |
+| [maderix/ANE PR #35](https://github.com/maderix/ANE/pull/35) | M5 ANE support: 128-byte IOSurface alignment. | M5 compatibility for future work. |
+| [Orion](https://github.com/mechramc/Orion) (Murai Labs) | Delta compilation: 8.5x recompile speedup. 20 documented ANE constraints. | We could not reproduce the delta compilation mechanism. |
+| [thebasedcapital/ane-infer](https://github.com/thebasedcapital/ane-infer) | 25 `_ANEClient` methods documented. `doEvaluateDirectWithModel:` bypasses daemon. | Note: `_ANEChainingRequest` is dead on macOS 15+ (requires Espresso IR from disk-compiled models). |
 
 ---
 
 ## Credits
 
 - **[maderix](https://github.com/maderix)** — [ANE](https://github.com/maderix/ANE): original reverse engineering of Apple's Neural Engine private APIs and first-ever training on ANE hardware. AutoANE's bridge, IOSurface code, and MIL generation are direct adaptations.
-- **[Andrej Karpathy](https://github.com/karpathy)** — [autoresearch](https://github.com/karpathy/autoresearch): the autonomous keep/revert experiment protocol. Agent edits a single `train.py` containing the full model, optimizer (Muon + AdamW), and training loop.
-- **[Orion](https://github.com/mechramc/Orion)** (Murai Labs): ANE training/inference runtime. Claims 8.5x faster weight reload vs full compilation. Delta compilation findings from Orion motivated our investigation (which could not reproduce their reload mechanism).
-- **[imperatormk](https://github.com/imperatormk)** — [ane-train](https://github.com/imperatormk/ane-train): runtime weight injection approach, comprehensive ANE training cheatsheet documenting IOSurface constraints, MIL op compatibility, and the sqrt fusion bug.
-- **[thebasedcapital](https://github.com/thebasedcapital)** — [ane-infer](https://github.com/thebasedcapital/ane-infer): confirmed `_ANEChainingRequest` works, documented 25 `_ANEClient` methods, achieved 3.6 TFLOPS with fused mega-kernels.
+- **[Andrej Karpathy](https://github.com/karpathy)** — [autoresearch](https://github.com/karpathy/autoresearch): the autonomous keep/revert experiment protocol.
+- **[Orion](https://github.com/mechramc/Orion)** (Murai Labs): ANE training/inference runtime. Delta compilation findings motivated our investigation.
+- **[imperatormk](https://github.com/imperatormk)** — [ane-train](https://github.com/imperatormk/ane-train): runtime weight injection approach, comprehensive ANE training cheatsheet.
+- **[thebasedcapital](https://github.com/thebasedcapital)** — [ane-infer](https://github.com/thebasedcapital/ane-infer): documented 25 `_ANEClient` methods, achieved 3.6 TFLOPS with fused mega-kernels.
 
 ## License
 
