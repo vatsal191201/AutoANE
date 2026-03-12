@@ -141,7 +141,7 @@ Source: https://github.com/maderix/ANE
 | A3 | Delta compilation (BLOBFILE patching + reload) works | High | Build minimal prototype: compile kernel, unload, patch weights, reload, eval |
 | A4 | CPU AMX achieves ~1-2 TFLOPS fp32 | Medium | Benchmark cblas_sgemm on target hardware |
 | A5 | Our 4L model's bottleneck is IOSurface + ANE dispatch | Medium | Verify with per-component timing |
-| A6 | ANE power draw is ~5-10W vs CPU ~30W | Medium | **VALIDATED**: Orion paper: ANE 2.8W peak, 6.6 TFLOPS/W |
+| A6 | ANE power draw is ~5-10W vs CPU ~30W | Medium | **DISPROVED**: Actual measurement — CPU 13.3W, ANE matmul 12.6W, ANE full 12.7W. No savings. |
 
 ---
 
@@ -219,15 +219,16 @@ By switching from matmul (runtime weights via IOSurface) to conv 1x1 (baked weig
 
 ## 7. Task C: ANE Unique Value Proposition
 
-### STATUS: PARTIALLY COMPLETE — power measurement pending
+### STATUS: COMPLETE
 
 ### 7.1 Analysis (Updated with Actual Data)
 
-**7.1.1 Power Efficiency** — VALIDATED via Orion paper (arXiv 2603.06728)
-- **M4 ANE: 2.8W at peak, 0W idle** (hard power-gated)
-- **ANE efficiency: 6.6 TFLOPS/W** (80× better than A100, 4× better than Apple GPU)
-- Estimated training power: ANE ~6-8W total vs CPU ~10-15W total
-- ANE achieves ~1297 steps at ~7W = ~5600 steps/watt-hour vs CPU ~1041 steps at ~12W = ~2900 steps/watt-hour → ANE **~2× more energy efficient**
+**7.1.1 Power Efficiency** — MEASURED via powermetrics (2026-03-12)
+- **Idle**: 8455 mW package
+- **CPU-only**: 13273 mW package, 13241 mW CPU, 9 mW ANE
+- **ANE matmul**: 12568 mW package, 12132 mW CPU, 384 mW ANE
+- **ANE full**: 12664 mW package, 11821 mW CPU, 765 mW ANE
+- **NOTE**: The Orion estimate of "ANE ~2x more energy efficient" is **DISPROVED** by our data — package power is nearly identical across all modes (~12.5-13.3W). ANE shifts ~1.4W from CPU to ANE but total consumption is the same. CPU-only is most energy-efficient per step (9.2 mW/step vs 10.9 for ANE matmul).
 
 **7.1.2 CPU/GPU Freedom** — VALIDATED by timing data
 - During ANE training: CPU handles RMSNorm (3.1ms), SiLU (5.8ms), classifier (15.2ms) = 24.1ms of CPU work per 63.2ms tracked = **CPU ~62% idle**
@@ -258,7 +259,7 @@ The most significant finding from Tasks A/B/C is the **precision-throughput trad
 - [x] Quantitative throughput comparison (ANE vs CPU)
 - [x] Training quality comparison (loss curves)
 - [x] Timing breakdown analysis
-- [ ] Power measurement (requires sudo)
+- [x] Power measurement (measured via powermetrics — ANE does NOT save power)
 - [x] Documentation of findings (EXPERIMENTS.md, RESEARCH_PLAN.md)
 
 ---
@@ -293,9 +294,9 @@ Result: lr=1e-4 worse, wd=0.3 no help — precision gap is irreducible via hyper
 Goal: End-to-end CPU training baseline
 Result: 102.2ms/step (CPU fp32) vs 68.7ms/step (ANE fp16), CPU achieves ~16% lower loss (averaged)
 
-### Experiment 12: Power Consumption ⏳ PENDING
+### Experiment 12: Power Consumption ✓ COMPLETE
 Goal: Measure ANE vs CPU power draw during training
-Status: Requires sudo for powermetrics. Manual instructions provided in EXPERIMENTS.md.
+Result: Idle 8455 mW, CPU-only 13273 mW, ANE matmul 12568 mW, ANE full 12664 mW. Package power nearly identical across all training modes. ANE does NOT save power — shifts ~1.4W from CPU to ANE subsystem but total package consumption is the same. CPU-only is most energy-efficient per step.
 
 ### Experiment 13: Classifier Optimization ✓ COMPLETE
 Goal: Reduce classifier computation time (was #1 CPU bottleneck)
@@ -318,7 +319,7 @@ Result: **GAP WIDENS**: 12% at 120s → 37% at 600s. ANE loss diverges (4.69→4
 3. ✓ Experiment 9 -- Conv vs matmul ANE benchmark
 4. ✓ Experiment 10 -- Delta compilation prototype (FAILED)
 5. ✓ Experiment 11 -- CPU-only training path
-6. ⏳ Experiment 12 -- Power measurement (requires sudo)
+6. ✓ Experiment 12 -- Power measurement (COMPLETE — ANE does NOT save power)
 7. ✓ Experiment 13 -- Classifier optimization (discovered during timing analysis)
 8. ✓ Synthesize results -- Updated EXPERIMENTS.md with all findings
 9. ✓ Final assessment -- See conclusions below
@@ -333,7 +334,7 @@ Result: **GAP WIDENS**: 12% at 120s → 37% at 600s. ANE loss diverges (4.69→4
 | CPU baseline | ms/step for CPU-only training | Measured | 102.2ms/step | ✓ |
 | Conv 1x1 value | Actual speedup ratio | Measured | 1.5-2.8× | ✓ |
 | Delta compilation | Working prototype | Correctness verified | FAILED | ✗ |
-| Power efficiency | Watts during training | Measured with powermetrics | PENDING (sudo) | ⏳ |
+| Power efficiency | Watts during training | Measured with powermetrics | CPU 13.3W, ANE matmul 12.6W, ANE full 12.7W — no savings | COMPLETE |
 | Documentation | Complete experiment log | All results in EXPERIMENTS.md | ✓ | ✓ |
 
 ---
@@ -367,7 +368,7 @@ Result: **GAP WIDENS**: 12% at 120s → 37% at 600s. ANE loss diverges (4.69→4
 ### Recommended next steps (revised 2026-03-11):
 
 **ANE research (diminishing returns):**
-1. ~~Power measurement~~: Still pending (sudo). Informative but doesn't change the throughput conclusion.
+1. ~~Power measurement~~: **COMPLETE (2026-03-12)**. ANE does NOT save power — package power identical (~12.5-13.3W) across all modes. CPU-only is most energy-efficient per step.
 2. ~~Kernel fusion~~: Would improve ANE utilization (30%→94%) but fusion hurts generalization (V12). Dead end for training.
 3. ~~Larger model scaling~~: **DISPROVED by E38** — IOSurface memory pressure degrades ANE at DIM≥2048.
 4. **Dual-input IOSurface** (imperatormk approach): Might avoid spatial packing overhead. Requires significant code changes. Medium-term research.
@@ -449,8 +450,22 @@ Ran 13 experiments via Karpathy-style keep/revert protocol. Agent explored seque
 - Agent correctly identified the linear scaling rule independently
 - Main limitation: small improvements possible given already-optimized starting point (E39-E41)
 
-**Current best configuration (post-E43):**
+### E44: 100-Experiment Autonomous Search Results (2026-03-12)
+
+Ran 100 experiments via `run_autosearch.py` (no AI agent needed — automated random perturbation with keep/revert logic). 88 experiments completed, 6 improvements kept.
+
+**Best result:** val_loss **3.288** (from scratch in 120s)
+- LR=6.34e-4, ACCUM=7, WD=0.076, ADAM_B2=0.959
+- 17% improvement over original baseline (3.952)
+- 6.2% improvement over previous best (3.507)
+
+**Notes:**
+- results.tsv logging bug found and fixed (was not appending on some runs)
+- Search space: random perturbations of LR, ACCUM, WD, ADAM_B2
+- Diminishing returns after ~60 experiments — most improvements found in first 30
+
+**Current best configuration (post-E44):**
 ```
-512d/4L, SEQ=128, LR=4e-4, ACCUM=10, CPU-only, 120s budget
-→ val_loss 3.507, 4074 steps, 24.2ms/step, 36.4M params
+512d/4L, SEQ=128, LR=6.34e-4, ACCUM=7, WD=0.076, ADAM_B2=0.959, CPU-only, 120s budget
+→ val_loss 3.288 (from scratch in 120s)
 ```

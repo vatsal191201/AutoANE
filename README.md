@@ -7,7 +7,7 @@ AutoANE is two things:
 1. **The first open-source training system for Apple's Neural Engine** — a full forward/backward pass for Llama-family transformers (RMSNorm + GQA + RoPE + SwiGLU) via reverse-engineered private APIs (`_ANEClient`, `_ANECompiler`)
 2. **An autonomous research agent** that implements [karpathy/autoresearch](https://github.com/karpathy/autoresearch) — an AI agent iteratively modifies hyperparameters, trains, measures loss, and keeps or reverts changes in a tight loop, no human in the loop
 
-43 experiments have produced [8 verified research findings](#research-findings), a [first-principles verification report](docs/VERIFICATION.md), and a [tracked assumption registry](docs/ASSUMPTIONS.md) with 25 verified, 13 unverified, and 7 disproved assumptions.
+43+ experiments plus a 100-experiment autonomous search have produced [9 verified research findings](#research-findings), a [first-principles verification report](docs/VERIFICATION.md), and a [tracked assumption registry](docs/ASSUMPTIONS.md) with 27 verified, 13 unverified, and 8 disproved assumptions.
 
 ## Quick Start
 
@@ -24,7 +24,7 @@ bash demo.sh
 bash tools/download_data.sh
 cd training
 make MODEL=autoresearch
-./train --scratch --time 120 --cpu-only --lr 4e-4
+./train --scratch --time 120 --cpu-only --lr 6.34e-4
 
 # Generate text from trained model
 cd .. && python3 generate.py --prompt "Once upon a time" --tokens 200
@@ -57,7 +57,7 @@ Point Claude Code (or any LLM agent) at `training/program.md`. The agent:
 5. **Keeps** if improved, **reverts** (`git reset --hard HEAD~1`) if not
 6. Loops until interrupted
 
-Results tracked in `training/results.tsv`. In our first session, 13 experiments in ~40 minutes found two improvements (SEQ=128, LR=4e-4), reducing val_loss from 3.533 to 3.507.
+Results tracked in `training/results.tsv`. In our first session, 13 experiments in ~40 minutes found two improvements (SEQ=128, LR=4e-4), reducing val_loss from 3.533 to 3.507. A subsequent 100-experiment autonomous search (`run_autosearch.py`) found val_loss **3.288** — a 17% improvement over the original baseline (3.952).
 
 ## Capabilities
 
@@ -88,6 +88,8 @@ Any Llama-family transformer. Pre-configured models:
 - **LoRA fine-tuning** (`--lora --lora-rank 8`) — freeze base weights, train adapters only
 - **Checkpointing** — resume training with `--resume`
 - **Time-budgeted training** (`--time 120`) — stops cleanly after N seconds
+- **GGUF export** with tokenizer metadata for llama.cpp compatibility (`tools/export_to_gguf.py`)
+- **HuggingFace import** verified (`tools/hf_to_ane.py`)
 
 ### Weight Conversion
 
@@ -178,6 +180,7 @@ ANE computes in fp16. DeepNet scaling keeps activations bounded:
 | 6 | **LR scales with sqrt(model size)** | 5e-4 for 36M, 3e-4 for 73M | LAMB heuristic |
 | 7 | **Shorter sequences trade context for throughput** | SEQ=128 gives 1.75x steps vs SEQ=256, val improves | Throughput-dominated regime |
 | 8 | **Optimal LR co-varies with batch size** | Halving SEQ requires LR 5e-4 to 4e-4 | Smith et al. (2018) linear scaling rule |
+| 9 | **ANE does not save power** | CPU-only 13.3W, ANE matmul 12.6W, ANE full 12.7W — package power identical | Novel (first ANE training power measurement) |
 
 ### The Central Finding
 
@@ -188,8 +191,9 @@ This is Kaplan et al.'s observation that the data scaling exponent (beta = 0.095
 ### Best Configuration
 
 ```
-512d/4L, SEQ=128, LR=4e-4, CPU-only, 120s budget
-  val_loss 3.507, 4074 steps, 24.2ms/step, 36.4M params
+512d/4L, SEQ=128, LR=6.34e-4, ACCUM=7, WD=0.076, ADAM_B2=0.959, CPU-only, 120s budget
+  val_loss 3.288 (from scratch in 120s)
+  Found by 100-experiment autonomous search (run_autosearch.py)
   At 1800s: val_loss 2.22 (still improving at ~5 epochs on 20M token dataset)
 ```
 
@@ -202,6 +206,7 @@ These results are novel — no prior work compares ANE and CPU training quality 
 - **fp16 precision gap is irreducible** (~16% worse loss) — not fixable by clamping, LR tuning, or weight decay. The root cause is fp16 matmul accumulation error (sqrt(DIM) ULPs of rounding per dot product)
 - **Delta compilation does not work** via any tested API path (5 approaches tried). ANE loads from compiled cache, not source BLOBFILEs
 - **Fusing non-linear ops into ANE fp16 causes overfitting** (val gap 1.22 vs 0.60). ANE should only handle linear projections (matmul), with CPU doing attention scores, SiLU, RoPE, and residuals
+- **ANE does NOT save power** — CPU-only: 13.3W package, ANE matmul: 12.6W, ANE full: 12.7W. ANE shifts ~1.4W from CPU to ANE but total package power is identical (~12.5-13.3W). CPU-only wins on throughput AND energy/step.
 
 ## Project Structure
 
@@ -254,6 +259,7 @@ AutoANE/
 | **Autonomous research** | Built-in (autoresearch protocol) | Manual | Manual |
 | **Custom architectures** | C header file | Python | Python |
 | **Export formats** | GGUF, ANE checkpoint | Safetensors | PyTorch, ONNX |
+| **Power draw** | 13.3W | Higher (GPU) | Higher (GPU) |
 | **On-device (iOS)** | Possible (ANE mode) | No | No (CoreML only) |
 
 **AutoANE's advantage**: Zero-dependency compiled C binary with built-in autonomous hyperparameter search. Your Mac stays fully usable because training runs on CPU, not GPU. ANE mode enables a future path to on-device training on iPhones/iPads.
@@ -265,7 +271,7 @@ AutoANE/
 - **Attention gradient underflow**: SDPA backward on ANE produces near-zero dq/dk/dv due to fp16 underflow. Training works (embedding + FFN gradients flow), but attention layers learn slowly.
 - **No pretrained fine-tuning**: DeepNet scaling (required for fp16 stability) is incompatible with pretrained weight magnitudes. Training from scratch works; fine-tuning requires the CPU-only path.
 - **Sequence length**: Default SEQ=128 (optimal for throughput at 120s). SEQ=64 degrades due to insufficient context for coherent gradients. SEQ=512+ increases SDPA backward overflow risk on ANE.
-- **Private APIs**: Uses `_ANEClient`, `_ANECompiler` from `AppleNeuralEngine.framework` — undocumented and subject to change between macOS versions.
+- **Private APIs**: Uses `_ANEClient`, `_ANECompiler` from `AppleNeuralEngine.framework` — undocumented and subject to change between macOS versions. `tools/power_benchmark.sh` requires `sudo` for `powermetrics` access.
 - **Single dataset**: Currently only TinyStories (20M tokens, SmolLM2 tokenizer). All models are severely data-starved (23x below Chinchilla optimal ratio).
 
 ## Roadmap
@@ -273,9 +279,10 @@ AutoANE/
 - [ ] CPU fp32 SDPA backward (fix attention gradient underflow)
 - [ ] Mixed precision pipeline (ANE fp16 forward, CPU fp32 backward)
 - [ ] Background training daemon (train while you work, ANE is a separate compute unit)
-- [ ] GGUF/CoreML export pipeline
+- [x] GGUF/CoreML export pipeline
 - [ ] Multi-shard dataset support (escape 20M token ceiling)
 - [ ] Longer sequence lengths (requires fp32 attention backward)
+- [x] Power measurement (ANE vs CPU)
 
 ## Credits
 

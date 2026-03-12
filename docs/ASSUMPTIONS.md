@@ -2,7 +2,7 @@
 
 **Purpose**: Every assumption in this project must be explicitly stated, tracked, and verified. No implicit assumptions allowed.
 
-**Last updated**: 2026-03-11
+**Last updated**: 2026-03-12
 
 ---
 
@@ -44,17 +44,19 @@
 | V25 | ACCUM=10 is optimal; deviations in either direction hurt | E43: ACCUM=5 (noisier gradients, val +0.17) and ACCUM=20 (fewer updates, val +0.30) both worse than ACCUM=10. The 10-step accumulation balances gradient quality against update frequency. | HIGH |
 | V12 | Fusing non-linear ops into ANE fp16 causes train/val distribution shift | E36: val gap 1.218 (ane-full) vs 0.599 (ane-matmul-only). Identical val_loss to CPU at matched steps. | HIGH |
 | V13 | ANE should only be used for linear projections (matmul), not attention/SiLU/residual | E36: matches original maderix/ANE gen1 design. Step-10 loss matches CPU to 4 decimal places. **NOTE**: original gen3 (dynamic pipeline) fuses more into ANE — our approach is more conservative. | HIGH |
+| V26 | ANE provides no power savings over CPU-only for training | Powermetrics data (2026-03-12): package power 12.6-13.3W for all modes. CPU-only is most energy-efficient per step (9.2 mW/step vs 10.9 for ANE matmul). | HIGH |
+| V27 | 100-experiment autosearch improves val_loss by 17% from baseline | E44: val_loss 3.952→3.288. Best config: LR=6.34e-4, ACCUM=7, WD=0.076, ADAM_B2=0.959. 6 keeps from 88 completed experiments. | HIGH |
 
 ## Category: UNVERIFIED (stated but not tested)
 
 | ID | Assumption | Source | Risk |
 |----|-----------|--------|------|
-| U1 | ANE power draw is ~2.8W at peak | maderix blog (not our measurement) | MEDIUM |
+| U1 | ~~ANE power draw is ~2.8W at peak~~ | **CORRECTED (2026-03-12)**: Actual ANE peak is ~1.2W (from ane_full mode), not 2.8W. Average 765 mW, peak 1200 mW. The Orion paper's estimate was for a different workload. Moved to CORRECTED status. | CORRECTED |
 | U2 | Deep graph compilation achieves 94% ANE utilization | Orion + maderix (not our test) | MEDIUM |
 | U3 | INT8 provides no compute speedup over fp16 | maderix blog + Orion paper: ANE dequantizes INT8→FP16 before compute. INT8 saves only memory bandwidth (1.88x throughput from smaller weight loads), not compute cycles. True peak is 19 TFLOPS FP16 regardless. | CONFIRMED (literature) |
 | U4 | SRAM is ~32MB with 30% cliff above | maderix Part 2: 2048x2048 (24MB) gets 5.7 TFLOPS, 4096x4096 (96MB) drops to 4.0 TFLOPS (30% drop). **E38 corroboration**: our W1 surface at DIM=2048 is 24MB — right at the cliff edge. | CONFIRMED (literature + E38) |
 | U5 | _ANEClient API enables delta compilation | Orion paper (not our test) | HIGH |
-| U6 | Gradient sanitization will fix 10-min divergence | Orion paper analogy (hypothesis) | HIGH |
+| U6 | ~~Gradient sanitization will fix 10-min divergence~~ | Orion paper analogy (hypothesis). **PREMISE INVALID (E37)**: the 10-min divergence was caused by concurrent processes, not ANE. With clean system, neither mode diverges. Gradient sanitization is moot. | INVALID |
 | U7 | Kernel fusion (16-64 ops) will improve our throughput | **DISPROVED for training (E36)**: fusing non-linear ops into ANE fp16 causes overfitting. May still hold for inference-only. | DISPROVED (training) |
 | U8 | ANE thermal throttling causes our observed step-time stalls | **DISPROVED (E37)**: ANE max step time 165ms, CPU max 16,273ms. ANE had zero stalls. CPU scheduling jitter was the cause all along. | DISPROVED |
 | U9 | Single-op ANE kernels get only ~30% utilization (vs 74-94% for deep graphs) | maderix Part 2 benchmarks. Our unfused approach uses 28 single-matmul dispatches/step. 4-layer fusion achieves 7.7x speedup but hurts generalization (V12). | HIGH |
@@ -78,6 +80,7 @@
 | D5 | Delta compilation works via _ANEInMemoryModel reload | Exp 10, 17: output unchanged |
 | D6 | ANE→CPU mid-training would improve over pure modes | E29: adaptive 4.507 vs pure ANE 4.354 vs pure CPU 3.897. fp16 damage is cumulative in weights. |
 | D7 | ANE becomes advantageous at larger model dimensions | E38: tested DIM=1024/1536/2048. ANE never faster. At DIM=2048, ANE 2x SLOWER due to IOSurface memory pressure (379MB wired memory causes cache thrashing). |
+| D8 | ANE is ~2x more energy efficient than CPU for training | Powermetrics measurement (2026-03-12): CPU-only 13273 mW, ANE matmul 12568 mW, ANE full 12664 mW. Package power nearly identical. CPU-only is actually most energy-efficient per step. Orion paper's estimate was for inference, not training. |
 
 ---
 
