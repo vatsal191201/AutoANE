@@ -306,7 +306,7 @@ AutoANE/
     ├── TECHNICAL_REPORT.md  # Full technical report
     ├── VERIFICATION.md      # First-principles verification (21 sections)
     ├── EXPERIMENTS.md       # Experiment log (E1-E43 + E44 autosearch)
-    ├── ASSUMPTIONS.md       # 27 verified, 8 disproved, 13 unverified
+    ├── ASSUMPTIONS.md       # 26 verified, 1 qualified, 8 disproved, 13 unverified
     └── RESEARCH_PLAN.md     # Research roadmap with completed results
 ```
 
