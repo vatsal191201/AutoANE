@@ -171,7 +171,7 @@ All assumptions are tracked in [ASSUMPTIONS.md](ASSUMPTIONS.md). Summary:
 
 | # | Issue | Severity | Status |
 |---|-------|----------|--------|
-| 1 | No automated tests | MEDIUM | No test infrastructure exists. Would need synthetic data + expected output comparison. |
+| 1 | No automated tests | MEDIUM | **FIXED**: Added `tests/test_training.sh` — 8 regression tests covering compilation, forward/backward pass, Adam update, seed sensitivity, checkpoint I/O, ANE mode, gradient health, and Python wrapper. Run: `cd training && bash ../tests/test_training.sh` |
 | 2 | Makefile doesn't check for Xcode CLT | LOW | **FIXED**: Added `command -v xcrun` check before build. |
 | 3 | Data file symlinks point to absolute paths | LOW | Local-only issue, not tracked by git (.gitignore excludes *.bin). |
 | 4 | EXPERIMENTS.md line 380: "2.8W, 6.6 TFLOPS/W" cited from Orion, but our measurement shows ANE peak 1.2W | MEDIUM | **FIXED**: Struck through stale values, added correction note with actual measured data, replaced estimated table with measured powermetrics data. |
