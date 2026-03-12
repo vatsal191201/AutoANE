@@ -110,17 +110,19 @@ else
     fail "ANE kernel compilation failed"
 fi
 
-# Test 7: Gradient norms are finite
+# Test 7: Gradient norms are finite (need accum boundary at step where (step+1)%10==0)
 echo "Test 7: Gradient health (no NaN/Inf)"
-if echo "$OUTPUT3" | grep -q "grad_norm"; then
-    GNORM=$(echo "$OUTPUT3" | grep "grad_norm" | head -1 | grep -oE 'grad_norm=[0-9.]+' | cut -d= -f2)
+OUTPUT7=$(./train --scratch --data "$DATA" --lr 4e-4 --warmup 10 --accum 10 \
+    --clip 1.0 --steps 20 --time 60 --scale 256.0 --cpu-only --seed 42 2>&1)
+if echo "$OUTPUT7" | grep -q "grad_norm"; then
+    GNORM=$(echo "$OUTPUT7" | grep "grad_norm" | head -1 | grep -oE 'grad_norm=[0-9.]+' | cut -d= -f2)
     if [ -n "$GNORM" ] && awk "BEGIN {exit !($GNORM > 0 && $GNORM < 1000)}"; then
         pass "Gradient norm=$GNORM (finite)"
     else
         fail "Gradient norm=$GNORM (suspicious)"
     fi
 else
-    echo "  SKIP: No gradient norm output (need more steps)"
+    fail "No gradient norm output (expected with accum=10, steps=20)"
 fi
 
 # Test 8: Python wrapper (train.py)
