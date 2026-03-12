@@ -292,15 +292,20 @@ Sequence: 128 tokens
 Optimizer: AdamW, LR=6.34e-4, warmup=71, β1=0.9, β2=0.959, WD=0.076
 Training: ACCUM=7 (eff. batch 896 tokens), grad_clip=1.0, loss_scale=256
 Mode: CPU-only (fp32)
-Budget: 120s → val_loss 3.288 (~4100 steps, 36.4M params)
+Budget: 120s → val_loss ~3.8 typical (best-of-88: 3.288; variance ~0.3/run)
         1800s → val_loss 2.22 (~38000 steps)
+Note: The baseline config (LR=4e-4, ACCUM=10) reliably gives ~3.5 at 120s.
 ```
 
 ### 8.4 Search Dynamics
 
 Most improvements were found early: 5 of 6 keeps occurred in the first 30 experiments. The final keep (ACCUM 10->7) at experiment 87 was the only late-stage discovery. After experiment 60, the probability of improvement per experiment was <2%.
 
-### 8.5 Protocol Bug
+### 8.5 Variance Exceeds Signal
+
+Independent verification shows this config typically gives val_loss ~3.8, not 3.288. The run-to-run variance from random initialization (~0.3 nats) is larger than most individual "improvements" in the search. The single-evaluation keep/revert protocol is susceptible to hill-climbing on noise: the search may be keeping lucky seeds rather than genuinely better configurations. The manually-tuned baseline (LR=4e-4, ACCUM=10) reliably produces ~3.5, which is better than the autosearch config's typical ~3.8.
+
+### 8.6 Protocol Bug
 
 `git reset --hard HEAD~1` (used to revert failed experiments) reverts ALL tracked files, not just the ones in the latest commit. If any file besides `train.py` is uncommitted, it gets wiped. This caused loss of `results.tsv` entries during the 100-experiment run. Fixed by committing `results.tsv` alongside `train.py` in each experiment commit.
 
@@ -392,7 +397,7 @@ ANE has genuine computational advantages for matrix multiplication (2.5x over CP
 
 For training on Apple Silicon today, CPU-only (via Accelerate/AMX) is the right choice at every tested model size. ANE's value proposition for training lies in the future: on mobile devices (iPhone/iPad) where the CPU is thermally constrained but ANE can sustain throughput, and with potential API improvements that enable efficient weight updates.
 
-The autonomous hyperparameter search demonstrates that even within a constrained search space (hyperparameters only, compiled training binary), the Karpathy keep/revert protocol finds meaningful improvements (17% val_loss reduction in 100 experiments).
+The autonomous hyperparameter search demonstrates the Karpathy keep/revert protocol in a constrained search space (hyperparameters only, compiled training binary). However, verification revealed that run-to-run variance (~0.3 nats from random initialization) exceeds the optimization signal — the search's "best" config (val_loss 3.288) typically produces ~3.8, while the manually-tuned baseline reliably produces ~3.5. This highlights a fundamental limitation of single-evaluation keep/revert: it is susceptible to hill-climbing on noise when per-run variance is large relative to the improvement signal.
 
 ---
 

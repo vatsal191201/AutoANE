@@ -2,7 +2,7 @@
 
 **Purpose**: Every assumption in this project must be explicitly stated, tracked, and verified. No implicit assumptions allowed. See [TECHNICAL_REPORT.md](TECHNICAL_REPORT.md) Section 12 for summary.
 
-**Last updated**: 2026-03-12 | **Totals**: 27 verified, 8 disproved, 13 unverified/resolved
+**Last updated**: 2026-03-12 | **Totals**: 26 verified, 1 qualified, 8 disproved, 13 unverified/resolved
 
 ---
 
@@ -45,7 +45,7 @@
 | V12 | Fusing non-linear ops into ANE fp16 causes train/val distribution shift | E36: val gap 1.218 (ane-full) vs 0.599 (ane-matmul-only). Identical val_loss to CPU at matched steps. | HIGH |
 | V13 | ANE should only be used for linear projections (matmul), not attention/SiLU/residual | E36: matches original maderix/ANE gen1 design. Step-10 loss matches CPU to 4 decimal places. **NOTE**: original gen3 (dynamic pipeline) fuses more into ANE — our approach is more conservative. | HIGH |
 | V26 | ANE provides no power savings over CPU-only for training | Powermetrics data (2026-03-12): package power 12.6-13.3W for all modes. CPU-only is most energy-efficient per step (9.2 mW/step vs 10.9 for ANE matmul). | HIGH |
-| V27 | 100-experiment autosearch improves val_loss by 17% from baseline | E44: val_loss 3.952→3.288. Best config: LR=6.34e-4, ACCUM=7, WD=0.076, ADAM_B2=0.959. 6 keeps from 88 completed experiments. | HIGH |
+| V27 | 100-experiment autosearch finds config with best-of-88 val_loss 3.288 | E44: val_loss 3.952→3.288 (best seed). **CAVEAT**: Independent verification shows typical val_loss ~3.8 for this config. Run-to-run variance (~0.3 nats) exceeds signal. The baseline config (LR=4e-4, ACCUM=10) reliably gives ~3.5. The "17% improvement" reflects seed selection, not genuine hyperparameter improvement. | QUALIFIED |
 
 ## Category: UNVERIFIED (stated but not tested)
 

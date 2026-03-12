@@ -29,10 +29,14 @@ bash tools/download_data.sh
 # Train from scratch (120s, CPU-only, best known config)
 cd training && python3 train.py
 
-# Expected output:
-#   val_loss:  3.288    (±0.05, run-to-run variance from random init)
-#   num_steps: ~4100
+# Expected output (autosearch config, LR=6.34e-4, ACCUM=7):
+#   val_loss:  ~3.8     (typical single run; run-to-run variance ~0.3 nats)
+#   num_steps: ~4100-4200 (on clean system; step time 22-24ms)
 #   36.4M params, 512d/4L, SEQ=128
+#
+# For the more reliable baseline config (LR=4e-4, ACCUM=10, as used by demo.sh):
+#   val_loss:  ~3.5     (typical single run)
+#   bash demo.sh        (runs with LR=4e-4, trains + generates text)
 
 # Generate text from trained checkpoint
 cd .. && python3 generate.py --prompt "Once upon a time" --tokens 200
@@ -166,7 +170,7 @@ ANE loads from an inaccessible memory-mapped compiled binary, not from the sourc
 
 Experiments: E10, E17 (5 approaches, all fail), E34 (re-confirmed with newer APIs).
 
-### Finding 7: Autonomous search finds 17% improvement
+### Finding 7: Autonomous search — variance dominates signal
 
 100 experiments via `run_autosearch.py` (random perturbation with keep/revert, no AI agent):
 
@@ -180,9 +184,11 @@ Experiments: E10, E17 (5 approaches, all fail), E34 (re-confirmed with newer API
 | Keep 15 | WEIGHT_DECAY 0.098->0.076 | 3.480 | 11.9% |
 | Keep 87 | ACCUM_STEPS 10->7 | 3.288 | 16.8% |
 
-Best configuration: `512d/4L, SEQ=128, LR=6.34e-4, ACCUM=7, WD=0.076, ADAM_B2=0.959`.
+Autosearch output config: `512d/4L, SEQ=128, LR=6.34e-4, ACCUM=7, WD=0.076, ADAM_B2=0.959`.
 
-Diminishing returns after ~60 experiments — 5 of 6 improvements found in the first 30. The final improvement (ACCUM 10->7) at experiment 87 was the only late-stage discovery.
+**Caveat — variance exceeds signal**: Independent verification runs of this config produce val_loss ~3.8 (not 3.288). Run-to-run variance from random initialization is ~0.3 nats — larger than most "improvements" in the table above. The autosearch's keep/revert protocol uses a single evaluation per experiment, making it susceptible to hill-climbing on noise. The manually-tuned baseline config (LR=4e-4, ACCUM=10) reliably produces val_loss ~3.5, which is better than the autosearch config's typical ~3.8. The 3.288 was the minimum of 88 random seeds, not a reliably reproducible result.
+
+This is a known limitation of single-evaluation hyperparameter search. Mitigation would require either: (a) averaging N runs per evaluation (expensive — 88 × N total runs), or (b) using a longer training budget to reduce per-run variance.
 
 ### Additional findings
 

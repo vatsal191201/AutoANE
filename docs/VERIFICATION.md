@@ -652,7 +652,7 @@ AutoANE's README credit ("original reverse engineering of Apple's Neural Engine 
 - **Experiments**: 88 (12 skipped for no-change samples)
 - **Kept**: 6, **Discarded**: 82, **Crashed**: 0
 - **Baseline val_loss**: 3.952 (from-scratch training)
-- **Best val_loss**: 3.288 (17% improvement)
+- **Best val_loss**: 3.288 (best-of-88 seeds; typical val_loss for this config is ~3.8)
 
 ### 20.2 Improvements Found
 
@@ -690,7 +690,7 @@ AutoANE's README credit ("original reverse engineering of Apple's Neural Engine 
 - **GGUF round-trip**: ANE→GGUF→ANE bit-perfect on all tensors (38 and 272 tensors)
 - **HuggingFace import**: SmolLM2-135M converted, forward pass valid, round-trip bit-perfect
 - **Power measurement**: CPU-only 13.3W package (4.8W over idle), ANE adds no power savings, CPU-only wins on throughput and energy/step
-- **100-exp autosearch**: 3.952→3.288 (17% improvement), 6 keeps in 88 experiments
+- **100-exp autosearch**: 3.952→3.288 (best-of-88 seeds; typical ~3.8; variance ~0.3/run exceeds signal)
 - **Code provenance**: maderix/ANE comparison confirms accurate credits
 
 ### Bugs Found and Fixed
@@ -702,6 +702,42 @@ AutoANE's README credit ("original reverse engineering of Apple's Neural Engine 
 5. **run_autosearch.py results.tsv not committed** — git reset wiped keep entries
 6. **Autosearch git chain breakage** — concurrent branch edits + HEAD~1 resets lost keep commits
 
-### No Retractions Required
+### Retractions
 
-All experimental claims, architecture rankings, and research conclusions hold under independent verification.
+7. **Autosearch "17% improvement" claim requires qualification** — The 3.288 val_loss was the minimum of 88 random seeds. Independent runs of the same config produce val_loss ~3.8 (not ~3.3). Run-to-run variance (~0.3 nats) exceeds the optimization signal. The manually-tuned baseline (LR=4e-4, ACCUM=10) reliably produces ~3.5, which is better than the autosearch config's typical ~3.8. The search was hill-climbing on noise.
+
+---
+
+## 22. Independent Verification (2026-03-12)
+
+### Methodology
+
+All tests run on clean system (no competing background processes), Apple Silicon, macOS 15+.
+
+### Results
+
+| Test | Measured | Documented | Status |
+|------|----------|------------|--------|
+| 512d/4L CPU-only ms/step | 22.6-22.7ms | 24-30ms | PASS |
+| 512d/4L CPU-only val_loss (LR=4e-4, ACCUM=10) | 3.561 | ~3.5 | PASS |
+| 512d/4L CPU-only val_loss (LR=6.34e-4, ACCUM=7) | 3.798 | ~3.5 (claimed) | **FAIL — actual ~3.8** |
+| 1024d/4L CPU-only ms/step | 97.2ms | 102.2ms | PASS (5% faster) |
+| 1024d/4L ANE full ms/step | 67.0ms | 68.7ms | PASS (2.5% faster) |
+| 1024d/4L ANE matmul-only ms/step | 77.6ms | ~71ms | PASS (9% slower) |
+| Round-trip ANE→GGUF→ANE | bit-perfect (38 tensors, 36.4M params) | bit-perfect | PASS |
+| Text generation | works, 97.2 tok/s | works | PASS |
+| GGUF export | works | works | PASS |
+| LoRA mode | works (val_loss 9.08 from scratch, expected) | works | PASS |
+| demo.sh | works (--quick mode tested) | works | PASS |
+| Compilation | works | works | PASS |
+
+### Key Finding: Autosearch Variance
+
+The autosearch config (LR=6.34e-4, ACCUM=7) was tested twice:
+1. With background load (63% CPU): val_loss 3.94, 3046 steps, 29.4ms/step
+2. Clean system: val_loss 3.798, 4158 steps, 22.7ms/step
+
+The baseline config (LR=4e-4, ACCUM=10) was tested once:
+- Clean system: val_loss 3.561, 4352 steps, 22.6ms/step
+
+The baseline config consistently outperforms the autosearch "best" config in typical use. The autosearch's reported 3.288 was a lucky seed from 88 trials.

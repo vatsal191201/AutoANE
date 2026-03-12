@@ -13,3 +13,4 @@ b719753	3.875	5650	36.4	16.3	discard	SEQ 128→64: too short, val degrades despi
 38d2976	3.838	4131	36.4	23.8	discard	LR 5e-4→6e-4: overshoots at SEQ=128
 0ad63f8	3.507	4074	36.4	24.2	keep	LR 5e-4→4e-4 at SEQ=128: new best!
 e08eb65	3.512	4061	36.4	24.2	discard	LR 4e-4→3.5e-4: marginally worse, 4e-4 is sweet spot
+9b0a1f5	3.956	2236	36.4	37.8	discard	LR 0.0004->0.000622
