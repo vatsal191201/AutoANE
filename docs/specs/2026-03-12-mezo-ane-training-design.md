@@ -106,22 +106,33 @@ float *logits;                            // SEQ × CV (compact vocab)
 ### 3.5 Perturbation Implementation
 
 ```c
-// Box-Muller: 2 uniform → 1 standard normal
-static inline float box_muller_next(void) {
-    double u1 = drand48(), u2 = drand48();
-    return (float)(sqrt(-2.0 * log(u1 + 1e-30)) * cos(6.283185307179586 * u2));
-}
+// xoshiro256+ PRNG + Rademacher perturbation (z_i in {-1, +1})
+// 33x faster than Box-Muller+drand48: 21ms vs 700ms per 36.4M params
+// Rademacher is valid for SPSA: E[z_i]=0, E[z_i^2]=1, independent coordinates
+static uint64_t xo_s[4];
+static void xo_seed(uint64_t seed) { /* splitmix64 expansion */ }
+static uint64_t xo_next(void) { /* xoshiro256+ */ }
 
-// Perturb a buffer in-place: buf[i] += scale * z_i
+// Rademacher perturbation: buf[i] += scale * z_i, z_i in {-1,+1}
+// Extracts 4 bits per xoshiro call for maximum throughput
 static void perturb_buffer(float *buf, size_t n, float scale) {
-    for (size_t i = 0; i < n; i++)
-        buf[i] += scale * box_muller_next();
+    float neg_scale = -scale;
+    for (size_t i = 0; i + 3 < n; i += 4) {
+        uint64_t r = xo_next();
+        buf[i+0] += (r & 1) ? scale : neg_scale;
+        buf[i+1] += (r & 2) ? scale : neg_scale;
+        buf[i+2] += (r & 4) ? scale : neg_scale;
+        buf[i+3] += (r & 8) ? scale : neg_scale;
+    }
+    // handle remainder...
 }
 
 // Perturb ALL model weights using deterministic seed
+// NOTE: perturbs embed (VOCAB*DIM), NOT cls separately.
+// Caller rebuilds cembed = vocab_compact_embed(embed, &vm, DIM) before forward.
 static void perturb_all_weights(LayerWeights *lw, float *embed, float *rms_final,
-                                float *cls, int cv, uint64_t seed, float scale) {
-    srand48((long)seed);
+                                uint64_t seed, float scale) {
+    xo_seed(seed);
     perturb_buffer(embed, (size_t)VOCAB * DIM, scale);
     for (int L = 0; L < NLAYERS; L++) {
         perturb_buffer(lw[L].rms_att, DIM, scale);
@@ -135,7 +146,7 @@ static void perturb_all_weights(LayerWeights *lw, float *embed, float *rms_final
         perturb_buffer(lw[L].W3, W3_SZ, scale);
     }
     perturb_buffer(rms_final, DIM, scale);
-    perturb_buffer(cls, (size_t)cv * DIM, scale);
+    // cls = cembed (tied weights) — rebuilt from embed after perturbation
 }
 ```
 
@@ -198,7 +209,7 @@ for (int step = 0; step < total_steps; step++) {
 
 ### 3.7 ANE Weight Re-transposition
 
-After each perturbation or update, ANE mode requires updating transposed weight buffers (the ANE forward kernels expect transposed weights packed into IOSurfaces). This is an overhead MeZO pays 4x per step:
+After perturbation, ANE mode requires updating transposed weight buffers (the ANE forward kernels expect transposed weights packed into IOSurfaces). Optimized to 2x per step (only before each forward pass, not after restore/update):
 
 ```c
 static void retranspose_all_weights(LayerWeights *lw, float **Wqt, ...) {
@@ -210,9 +221,7 @@ static void retranspose_all_weights(LayerWeights *lw, float **Wqt, ...) {
 }
 ```
 
-This is O(total_params) per call — for 36M params at 4 bytes, ~140MB of memcpy-equivalent work. At ~10GB/s memory bandwidth, ~14ms per re-transpose. 4 per step = ~56ms overhead for ANE mode. This is significant and will reduce ANE's advantage.
-
-Optimization: only re-transpose before forward passes (2x per step, not 4x). The restore and update steps don't need transposed weights.
+This is O(total_params) per call — for 36M params at 4 bytes, ~140MB of memcpy-equivalent work. At ~10GB/s memory bandwidth, ~14ms per re-transpose. Optimized to 2x per step (only before each forward pass) = ~28ms overhead for ANE mode.
 
 ## 4. CLI Interface
 
@@ -336,11 +345,11 @@ OUTPUT=$(./train_mezo --scratch --data "$DATA" --lr 1e-5 --epsilon 1e-3 \
 | Risk | Likelihood | Mitigation |
 |------|-----------|------------|
 | From-scratch ZO doesn't converge | HIGH (theory predicts this) | This IS the research result — negative results are publishable |
-| ANE re-transposition overhead negates speedup | MEDIUM | Only re-transpose before forward passes (2x not 4x). Profile and optimize. |
+| ANE re-transposition overhead negates speedup | MEDIUM | Only re-transpose before forward passes (2x/step, ~28ms). Profile and optimize. |
 | Perturbation at ε=1e-3 causes numerical issues in fp16 | LOW | Perturbation is in fp32 space; only the forward pass is fp16 |
 | MeZO fine-tuning quality far below backprop on our data | MEDIUM | Expected to be within 5% on classification; LM may be harder. Document the gap. |
 | srand48/drand48 not deterministic across platforms | LOW | We only target macOS/Apple Silicon. Verified deterministic. |
-| Box-Muller performance bottleneck (called per-parameter, 4x/step) | MEDIUM | Profile. If slow, switch to vectorized Ziggurat method or vDSP_vgenp. |
+| RNG perturbation bottleneck (called per-parameter, 4x/step) | HIGH (mitigated) | Box-Muller+drand48: 700ms/pass (2.8s/step). FIXED: Rademacher+xoshiro256+ (4 bits/call): 21ms/pass (85ms/step). 33x speedup. |
 
 ## 11. Success Criteria
 
