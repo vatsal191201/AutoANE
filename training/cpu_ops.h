@@ -5,8 +5,8 @@
 static float *g_rms_tmp = NULL;
 
 static void rmsnorm(float *out, const float *x, const float *w, int d, int S) {
-    if (!g_rms_tmp) g_rms_tmp = (float*)malloc(S*4);
-    float *ss = (float*)calloc(S, sizeof(float));
+    if (!g_rms_tmp) g_rms_tmp = (float*)safe_malloc(S*4);
+    float *ss = (float*)safe_calloc(S, sizeof(float));
     for (int i=0; i<d; i++) {
         vDSP_vmul(x+i*S, 1, x+i*S, 1, g_rms_tmp, 1, (vDSP_Length)S);
         vDSP_vadd(g_rms_tmp, 1, ss, 1, ss, 1, (vDSP_Length)S);
@@ -22,15 +22,15 @@ static void rmsnorm(float *out, const float *x, const float *w, int d, int S) {
 }
 
 static void rmsnorm_bwd(float *dx, float *dw, const float *dy, const float *x, const float *w, int d, int S) {
-    if (!g_rms_tmp) g_rms_tmp = (float*)malloc(S*4);
-    float *ss = (float*)calloc(S, sizeof(float));
+    if (!g_rms_tmp) g_rms_tmp = (float*)safe_malloc(S*4);
+    float *ss = (float*)safe_calloc(S, sizeof(float));
     for (int i=0; i<d; i++) {
         vDSP_vmul(x+i*S, 1, x+i*S, 1, g_rms_tmp, 1, (vDSP_Length)S);
         vDSP_vadd(g_rms_tmp, 1, ss, 1, ss, 1, (vDSP_Length)S);
     }
     float invd = 1.0f/d, eps=1e-5f;
     vDSP_vsmsa(ss, 1, &invd, &eps, ss, 1, (vDSP_Length)S);
-    float *rrms = (float*)malloc(S*4);
+    float *rrms = (float*)safe_malloc(S*4);
     int n = S; vvrsqrtf(rrms, ss, &n);
     float *dot = (float*)calloc(S, sizeof(float));
     for (int i=0; i<d; i++) {
@@ -64,8 +64,8 @@ static void adam_update(float *w, const float *g, AdamState *s, int t, float lr,
     // Lazy-alloc temp buffers (reused across calls, grown as needed)
     if (n > g_adam_tmp_sz) {
         free(g_adam_tmp1); free(g_adam_tmp2);
-        g_adam_tmp1 = (float*)malloc(n * sizeof(float));
-        g_adam_tmp2 = (float*)malloc(n * sizeof(float));
+        g_adam_tmp1 = (float*)safe_malloc(n * sizeof(float));
+        g_adam_tmp2 = (float*)safe_malloc(n * sizeof(float));
         g_adam_tmp_sz = n;
     }
 
@@ -120,6 +120,7 @@ static float cross_entropy_loss(float *dlogits, const float *logits, const uint1
         vDSP_vsmul(drow, 1, &inv_sum, drow, 1, (vDSP_Length)V);
         // Loss + gradient
         int tgt = targets[t];
+        if (tgt < 0 || tgt >= V) { fprintf(stderr, "FATAL: target[%d]=%d OOB (vocab=%d)\n", t, tgt, V); abort(); }
         total_loss -= logf(drow[tgt] + 1e-10f);
         drow[tgt] -= 1.0f;
         vDSP_vsmul(drow, 1, &invS, drow, 1, (vDSP_Length)V);
@@ -136,7 +137,7 @@ typedef struct {
 
 static VocabMap vocab_map_build(const uint16_t *data, size_t n_tokens, int full_vocab) {
     VocabMap vm;
-    vm.full_to_compact = (int*)malloc(full_vocab * sizeof(int));
+    vm.full_to_compact = (int*)safe_malloc(full_vocab * sizeof(int));
     memset(vm.full_to_compact, -1, full_vocab * sizeof(int));
     // Scan for used tokens
     for (size_t i = 0; i < n_tokens; i++) {
@@ -151,7 +152,7 @@ static VocabMap vocab_map_build(const uint16_t *data, size_t n_tokens, int full_
             vm.full_to_compact[v] = -1;
     }
     vm.compact_vocab = cid;
-    vm.compact_to_full = (int*)malloc(cid * sizeof(int));
+    vm.compact_to_full = (int*)safe_malloc(cid * sizeof(int));
     for (int v = 0; v < full_vocab; v++) {
         if (vm.full_to_compact[v] >= 0)
             vm.compact_to_full[vm.full_to_compact[v]] = v;
@@ -161,7 +162,7 @@ static VocabMap vocab_map_build(const uint16_t *data, size_t n_tokens, int full_
 
 // Create compact embedding from full embedding
 static float *vocab_compact_embed(const float *full_embed, const VocabMap *vm, int dim) {
-    float *ce = (float*)malloc((size_t)vm->compact_vocab * dim * 4);
+    float *ce = (float*)safe_malloc((size_t)vm->compact_vocab * dim * 4);
     for (int c = 0; c < vm->compact_vocab; c++)
         memcpy(ce + c*dim, full_embed + vm->compact_to_full[c]*dim, dim*4);
     return ce;
@@ -182,18 +183,20 @@ static void vocab_update_full(float *full_embed, const float *compact_embed, con
         memcpy(full_embed + vm->compact_to_full[c]*dim, compact_embed + c*dim, dim*4);
 }
 
-static void embed_lookup(float *x, const float *embed, const uint16_t *tokens, int dim, int seq) {
+static void embed_lookup(float *x, const float *embed, const uint16_t *tokens, int dim, int seq, int vocab) {
     for (int t = 0; t < seq; t++) {
         int tok = tokens[t];
+        if (tok < 0 || tok >= vocab) { fprintf(stderr, "FATAL: token[%d]=%d OOB (vocab=%d)\n", t, tok, vocab); abort(); }
         // Copy embed[tok*dim : +dim] (stride 1) → x[t, t+seq, t+2*seq, ...] (stride seq)
         cblas_scopy(dim, embed + tok*dim, 1, x + t, seq);
     }
 }
 
-static void embed_backward(float *d_embed, const float *dx, const uint16_t *tokens, int dim, int seq) {
+static void embed_backward(float *d_embed, const float *dx, const uint16_t *tokens, int dim, int seq, int vocab) {
     float one = 1.0f;
     for (int t = 0; t < seq; t++) {
         int tok = tokens[t];
+        if (tok < 0 || tok >= vocab) { fprintf(stderr, "FATAL: token[%d]=%d OOB (vocab=%d)\n", t, tok, vocab); abort(); }
         // Accumulate dx[t, t+seq, t+2*seq, ...] (stride seq) → d_embed[tok*dim : +dim] (stride 1)
         cblas_saxpy(dim, one, dx + t, seq, d_embed + tok*dim, 1);
     }
@@ -212,8 +215,8 @@ static void cpu_sdpa_backward(
     int q_dim = heads * hd;
 
     // Temp buffers (per head, processed sequentially)
-    float *scores = (float*)malloc(seq * seq * sizeof(float));
-    float *ds     = (float*)malloc(seq * seq * sizeof(float));
+    float *scores = (float*)safe_malloc(seq * seq * sizeof(float));
+    float *ds     = (float*)safe_malloc(seq * seq * sizeof(float));
 
     memset(dq_out, 0, q_dim * seq * sizeof(float));
     memset(dk_out, 0, q_dim * seq * sizeof(float));
@@ -313,7 +316,7 @@ static void cpu_sdpa_forward(
     int heads, int hd, int seq)
 {
     float scale = 1.0f / sqrtf((float)hd);
-    float *scores = (float*)malloc(seq * seq * sizeof(float));
+    float *scores = (float*)safe_malloc(seq * seq * sizeof(float));
 
     for (int h = 0; h < heads; h++) {
         const float *Q_h = Q + h * hd * seq;

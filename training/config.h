@@ -16,6 +16,18 @@
 #include <fcntl.h>
 #include <arm_neon.h>
 
+// Safe malloc: abort on allocation failure (prevents NULL deref from untrusted sizes)
+static inline void *safe_malloc(size_t sz) {
+    void *p = malloc(sz);
+    if (!p && sz > 0) { fprintf(stderr, "FATAL: malloc(%zu) failed\n", sz); abort(); }
+    return p;
+}
+static inline void *safe_calloc(size_t n, size_t sz) {
+    void *p = calloc(n, sz);
+    if (!p && n > 0 && sz > 0) { fprintf(stderr, "FATAL: calloc(%zu, %zu) failed\n", n, sz); abort(); }
+    return p;
+}
+
 // Include selected model config
 // MODEL_HEADER is set by Makefile via -include models/xxx.h
 #ifndef MODEL_NAME
@@ -100,25 +112,34 @@ static Class g_D, g_I, g_AR, g_AIO;
 static mach_timebase_info_data_t g_tb;
 static int g_compile_count = 0;
 
-static void ane_init(void) {
-    dlopen("/System/Library/PrivateFrameworks/AppleNeuralEngine.framework/AppleNeuralEngine", RTLD_NOW);
+static bool ane_init(void) {
+    void *handle = dlopen("/System/Library/PrivateFrameworks/AppleNeuralEngine.framework/AppleNeuralEngine", RTLD_NOW);
+    if (!handle) {
+        fprintf(stderr, "ERROR: Failed to load AppleNeuralEngine.framework (dlopen returned NULL)\n");
+        return false;
+    }
     g_D  = NSClassFromString(@"_ANEInMemoryModelDescriptor");
     g_I  = NSClassFromString(@"_ANEInMemoryModel");
     g_AR = NSClassFromString(@"_ANERequest");
     g_AIO= NSClassFromString(@"_ANEIOSurfaceObject");
+    if (!g_D || !g_I || !g_AR || !g_AIO) {
+        fprintf(stderr, "ERROR: Failed to resolve ANE private classes (macOS 15+ required)\n");
+        return false;
+    }
+    return true;
 }
 static double tb_ms(uint64_t t) { return (double)t * g_tb.numer / g_tb.denom / 1e6; }
 
 // Alloc helpers
-static AdamState adam_alloc(size_t n) { AdamState s; s.m=(float*)calloc(n,4); s.v=(float*)calloc(n,4); s.n=n; return s; }
+static AdamState adam_alloc(size_t n) { AdamState s; s.m=(float*)safe_calloc(n,4); s.v=(float*)safe_calloc(n,4); s.n=n; return s; }
 static void adam_free(AdamState *s) { free(s->m); free(s->v); }
 
 static LayerWeights layer_weights_alloc(void) {
     LayerWeights w;
-    w.Wq=(float*)malloc(WQ_SZ*4); w.Wk=(float*)malloc(WK_SZ*4);
-    w.Wv=(float*)malloc(WV_SZ*4); w.Wo=(float*)malloc(WO_SZ*4);
-    w.W1=(float*)malloc(W1_SZ*4); w.W2=(float*)malloc(W2_SZ*4); w.W3=(float*)malloc(W3_SZ*4);
-    w.rms_att=(float*)malloc(DIM*4); w.rms_ffn=(float*)malloc(DIM*4);
+    w.Wq=(float*)safe_malloc(WQ_SZ*4); w.Wk=(float*)safe_malloc(WK_SZ*4);
+    w.Wv=(float*)safe_malloc(WV_SZ*4); w.Wo=(float*)safe_malloc(WO_SZ*4);
+    w.W1=(float*)safe_malloc(W1_SZ*4); w.W2=(float*)safe_malloc(W2_SZ*4); w.W3=(float*)safe_malloc(W3_SZ*4);
+    w.rms_att=(float*)safe_malloc(DIM*4); w.rms_ffn=(float*)safe_malloc(DIM*4);
     return w;
 }
 static void layer_weights_free(LayerWeights *w) {
@@ -139,13 +160,13 @@ static void layer_adam_free(LayerAdam *a) {
 }
 static LayerActs layer_acts_alloc(void) {
     LayerActs a;
-    a.layer_in=(float*)malloc(SEQ*DIM*4);
-    a.xnorm=(float*)malloc(SEQ*DIM*4);
-    a.Q=(float*)malloc(SEQ*Q_DIM*4); a.K=(float*)malloc(SEQ*KV_DIM*4); a.V=(float*)malloc(SEQ*KV_DIM*4);
-    a.attn_out=(float*)malloc(SEQ*Q_DIM*4); a.o_out=(float*)malloc(SEQ*DIM*4);
-    a.x2=(float*)malloc(SEQ*DIM*4); a.x2norm=(float*)malloc(SEQ*DIM*4);
-    a.h1=(float*)malloc(SEQ*HIDDEN*4); a.h3=(float*)malloc(SEQ*HIDDEN*4);
-    a.silu_out=(float*)malloc(SEQ*HIDDEN*4); a.ffn_out=(float*)malloc(SEQ*DIM*4);
+    a.layer_in=(float*)safe_malloc(SEQ*DIM*4);
+    a.xnorm=(float*)safe_malloc(SEQ*DIM*4);
+    a.Q=(float*)safe_malloc(SEQ*Q_DIM*4); a.K=(float*)safe_malloc(SEQ*KV_DIM*4); a.V=(float*)safe_malloc(SEQ*KV_DIM*4);
+    a.attn_out=(float*)safe_malloc(SEQ*Q_DIM*4); a.o_out=(float*)safe_malloc(SEQ*DIM*4);
+    a.x2=(float*)safe_malloc(SEQ*DIM*4); a.x2norm=(float*)safe_malloc(SEQ*DIM*4);
+    a.h1=(float*)safe_malloc(SEQ*HIDDEN*4); a.h3=(float*)safe_malloc(SEQ*HIDDEN*4);
+    a.silu_out=(float*)safe_malloc(SEQ*HIDDEN*4); a.ffn_out=(float*)safe_malloc(SEQ*DIM*4);
     return a;
 }
 static void layer_acts_free(LayerActs *a) {
@@ -156,10 +177,10 @@ static void layer_acts_free(LayerActs *a) {
 }
 static LayerGrads layer_grads_alloc(void) {
     LayerGrads g;
-    g.Wq=(float*)calloc(WQ_SZ,4); g.Wk=(float*)calloc(WK_SZ,4);
-    g.Wv=(float*)calloc(WV_SZ,4); g.Wo=(float*)calloc(WO_SZ,4);
-    g.W1=(float*)calloc(W1_SZ,4); g.W2=(float*)calloc(W2_SZ,4); g.W3=(float*)calloc(W3_SZ,4);
-    g.rms_att=(float*)calloc(DIM,4); g.rms_ffn=(float*)calloc(DIM,4);
+    g.Wq=(float*)safe_calloc(WQ_SZ,4); g.Wk=(float*)safe_calloc(WK_SZ,4);
+    g.Wv=(float*)safe_calloc(WV_SZ,4); g.Wo=(float*)safe_calloc(WO_SZ,4);
+    g.W1=(float*)safe_calloc(W1_SZ,4); g.W2=(float*)safe_calloc(W2_SZ,4); g.W3=(float*)safe_calloc(W3_SZ,4);
+    g.rms_att=(float*)safe_calloc(DIM,4); g.rms_ffn=(float*)safe_calloc(DIM,4);
     return g;
 }
 static void layer_grads_zero(LayerGrads *g) {
@@ -189,12 +210,12 @@ typedef struct { float *Aq, *Bq, *Ak, *Bk, *Av, *Bv, *Ao, *Bo; } LoRAGrads;
 
 static LoRALayer lora_layer_alloc(int rank) {
     LoRALayer l; l.rank = rank;
-    l.Aq=(float*)calloc((size_t)rank*DIM,4);     l.Bq=(float*)calloc((size_t)Q_DIM*rank,4);
-    l.Ak=(float*)calloc((size_t)rank*DIM,4);     l.Bk=(float*)calloc((size_t)KV_DIM*rank,4);
-    l.Av=(float*)calloc((size_t)rank*DIM,4);     l.Bv=(float*)calloc((size_t)KV_DIM*rank,4);
-    l.Ao=(float*)calloc((size_t)rank*Q_DIM,4);   l.Bo=(float*)calloc((size_t)DIM*rank,4);
-    l.Wq_base=(float*)malloc(WQ_SZ*4); l.Wk_base=(float*)malloc(WK_SZ*4);
-    l.Wv_base=(float*)malloc(WV_SZ*4); l.Wo_base=(float*)malloc(WO_SZ*4);
+    l.Aq=(float*)safe_calloc((size_t)rank*DIM,4);     l.Bq=(float*)safe_calloc((size_t)Q_DIM*rank,4);
+    l.Ak=(float*)safe_calloc((size_t)rank*DIM,4);     l.Bk=(float*)safe_calloc((size_t)KV_DIM*rank,4);
+    l.Av=(float*)safe_calloc((size_t)rank*DIM,4);     l.Bv=(float*)safe_calloc((size_t)KV_DIM*rank,4);
+    l.Ao=(float*)safe_calloc((size_t)rank*Q_DIM,4);   l.Bo=(float*)safe_calloc((size_t)DIM*rank,4);
+    l.Wq_base=(float*)safe_malloc(WQ_SZ*4); l.Wk_base=(float*)safe_malloc(WK_SZ*4);
+    l.Wv_base=(float*)safe_malloc(WV_SZ*4); l.Wo_base=(float*)safe_malloc(WO_SZ*4);
     return l;
 }
 static void lora_layer_free(LoRALayer *l) {

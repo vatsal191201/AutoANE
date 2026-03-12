@@ -105,15 +105,56 @@ All assumptions are tracked in [ASSUMPTIONS.md](ASSUMPTIONS.md). Summary:
 
 **Estimated effort**: 3-5 days engineering.
 
-### P3: _ANEChainingRequest Integration [MEDIUM IMPACT]
+### P3: _ANEChainingRequest Integration — **INVALIDATED**
 
-**What**: Use `_ANEChainingRequest` to chain kernel evaluations without CPU round-trips.
+**Status (2026-03-12)**: maderix/ANE PR #40 definitively shows `_ANEChainingRequest` requires Espresso IR from disk-compiled `_ANEModel`. Our in-memory MIL path (`_ANEInMemoryModelDescriptor`) cannot produce the required format. **Dead on macOS 15+.**
 
-**Why**: Even without mega-kernel fusion, chaining could eliminate the ~160μs XPC overhead between kernels. Combined with runtime weights, this gives the best of both worlds.
+This was previously identified as "likely highest ROI" but is now confirmed impossible with our architecture. The ~4.5ms/step XPC overhead (28 dispatches × ~160μs) remains addressable only via mega-kernel fusion (P2) or complete CPU fallback.
 
-**Status**: ane-infer confirmed it works. The correct factory method is `objectWithstatsSurRef:outputBuffer:`. Our U12 is now "confirmed working by third party, untested by us."
+### P8: Delta Compilation via Unload/Reload [MEDIUM IMPACT — NEW]
 
-**Estimated effort**: 2-3 days engineering (requires understanding ane-infer's implementation).
+**What**: Implement Orion paper's delta compilation approach: `unloadWithQoS(21)` → patch weight BLOBFILE on disk → `loadWithQoS(21)`. Bypasses `ANECCompile()` entirely.
+
+**Why**: 8.5× speedup over full recompilation (4200ms → 494ms). Eliminates the ~119 compilation limit per process. Enables const() weights in MIL (better ANE utilization) while still updating weights at each accumulation step.
+
+**Trade-off vs our approach**: Our runtime weight injection compiles once and never recompiles (0ms overhead), but uses spatial packing with slice_by_size ops and single-input IOSurfaces. Delta compilation allows const() weights (cleaner MIL, potentially higher ANE utilization) but adds 494ms per weight update. At ACCUM=7, that's 70ms/step amortized — vs our 24ms/step total. **Not competitive for our small model (36.4M params)**, but could be valuable for larger models where ANE compute dominates.
+
+**Estimated effort**: 1-2 days. Requires understanding Orion's temp directory management.
+
+### P9: Zeroth-Order Training Exploration [HIGH IMPACT — RESEARCH]
+
+**What**: Implement MeZO (Memory-Efficient Zeroth-Order Optimizer) for ANE fine-tuning. Uses only forward passes — no backward kernels needed.
+
+**Why**: Eliminates our most complex code path (backward MIL generation, dW accumulation, gradient sanitization). MeZO estimates gradients via random perturbation: `∇f(w) ≈ [f(w+ε·z) - f(w-ε·z)] / (2ε) · z`. Only needs 2 forward passes per step. Models 2-25× larger can be trained in same memory budget.
+
+**Key insight**: ANE's primary strength is fast forward passes. Our backward pass already falls back to CPU for most ops (SDPA, dW). ZO methods play to ANE's strength while eliminating its weakness.
+
+**Variants to explore**:
+- **MeZO**: Standard ZO optimizer, drop-in replacement for Adam
+- **ElasticZO-INT8**: Integer-only arithmetic, leverages ANE's 1.88× INT8 throughput
+- **MobiZO**: Parallelized ZO for edge/NPU devices, 4.3× speedup over MeZO
+
+**Risk**: ZO methods converge slower than backprop. May need 5-10× more forward passes to match backprop quality. Untested for from-scratch training (all literature is fine-tuning).
+
+**Estimated effort**: 2-3 days for basic MeZO, 1 week for comprehensive comparison.
+
+### P10: Security Hardening — **IMPLEMENTED**
+
+**What**: Port critical security fixes from maderix/ANE PRs #7, #13, #8, #5, #45.
+
+**Implemented (2026-03-12)**:
+1. `config.h`: `ane_init()` → `bool` return type, validates `dlopen()` and `NSClassFromString()` results (PR #7)
+2. `config.h`: `safe_malloc()`/`safe_calloc()` wrappers that abort on failure (PR #13)
+3. `config.h`: All allocation functions (`layer_weights_alloc`, `layer_acts_alloc`, `layer_grads_alloc`, `adam_alloc`, `lora_layer_alloc`) converted to safe variants
+4. `cpu_ops.h`: All malloc/calloc → safe_malloc/safe_calloc (rmsnorm, Adam, SDPA, VocabMap)
+5. `cpu_ops.h`: Token OOB bounds checks in `cross_entropy_loss` (targets), `embed_lookup` (tokens), `embed_backward` (tokens) — added vocab parameter (PR #13)
+6. `train.m`: `ane_init()` call site checks return value, exits gracefully with actionable message
+7. `train.m`: Checkpoint header validation: magic number, version, dimension matching against compiled model, step/adam_t bounds (PR #45)
+8. `train.m`: All 40+ malloc/calloc calls → safe variants (including dispatch_async captured buffers)
+9. `train.m`: Token range validation on data file load — verifies all tokens < VOCAB before training
+10. `Makefile`: Added `-fstack-protector-strong -D_FORTIFY_SOURCE=2` compiler flags (PR #5)
+
+**Verification**: All 7 regression tests pass. All 3 model configs (stories110m, smollm2_360m, autoresearch) compile cleanly.
 
 ### P4: Multi-Seed Autosearch [MEDIUM IMPACT] — **IMPLEMENTED**
 
@@ -189,3 +230,11 @@ All assumptions are tracked in [ASSUMPTIONS.md](ASSUMPTIONS.md). Summary:
 | 2026-03-12 | 512d/4L is the optimal architecture for quick iteration (120-600s) | V16, V17, V21: confirmed at 120s, 300s, 600s. Gap widens with time. |
 | 2026-03-12 | autoresearch.py is NOT dead code | It's the grid search orchestrator, distinct from run_autosearch.py. |
 | 2026-03-12 | Runtime weight injection is the correct next research direction | UP1 + UP2 + UP5 from upstream suggest this could change the ANE throughput picture. |
+| 2026-03-12 | P3 (_ANEChainingRequest) is DEAD — do not pursue | maderix/ANE PR #40: requires Espresso IR from disk-compiled models, incompatible with in-memory MIL. Dead on macOS 15+. |
+| 2026-03-12 | Orion paper (arxiv:2603.06728) is the definitive ANE training reference | 20 documented constraints, delta compilation (8.5x), 3 NaN bugs fixed, Stories110M training in 22.4 min. Must cross-reference all our findings. |
+| 2026-03-12 | concat works on ios18 MIL target — contradicts Orion's constraint | Tested: 10 concat ops compile and execute correctly in our sdpaFwd, ffnFused, sdpaBwd1/2. Orion likely used ios16 target. |
+| 2026-03-12 | Zeroth-order training (MeZO) is a promising alternative to backprop for ANE | Forward-only training eliminates backward kernels, plays to ANE's strength. ElasticZO-INT8 could leverage ANE's 1.88x INT8 throughput. New P9 research priority. |
+| 2026-03-12 | M5 GPU Neural Accelerators (~70 TFLOPS) make ANE training more niche | Apple investing in GPU ML acceleration via MLX, not ANE training. ANE advantage: zero idle power, dedicated silicon. |
+| 2026-03-12 | @bearmug's autoresearch PRs (#103, #149, #196) achieve val_loss 3.102 | Most technically ambitious Apple Silicon contribution to karpathy/autoresearch. Uses same dynamic weight pipeline as ours. None merged. |
+| 2026-03-12 | All vectorization changes verified correct by first-principles analysis | vDSP_vdiv parameter order confirmed from SDK headers (B,A swapped). Adam matches mathematical definition exactly. CPU vs ANE numerical agreement <0.001% over 70 steps. |
+| 2026-03-12 | P10 security hardening complete — 10 fixes across 3 files | safe_malloc/calloc wrappers, token OOB bounds checks, checkpoint validation, ane_init() validation, compiler hardening flags. All 7 tests pass, all 3 model configs compile. |

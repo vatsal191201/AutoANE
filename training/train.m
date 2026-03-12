@@ -216,8 +216,19 @@ static bool load_checkpoint(const char *path, int *step, int *total_steps, float
     FILE *f = fopen(path, "rb");
     if (!f) return false;
     CkptHdr h;
-    fread(&h, sizeof(h), 1, f);
+    if (fread(&h, sizeof(h), 1, f) != 1) { fclose(f); return false; }
     if (h.magic != 0x424C5A54 || h.version != 4) { fclose(f); return false; }
+    // Validate checkpoint dimensions match compiled model (security: prevent OOB from untrusted files)
+    if (h.n_layers != NLAYERS || h.dim != DIM || h.vocab_size != VOCAB ||
+        h.hidden_dim != HIDDEN || h.seq_len != SEQ || h.n_heads != HEADS) {
+        fprintf(stderr, "Checkpoint mismatch: expected %dL/%dd/%dv, got %dL/%dd/%dv\n",
+                NLAYERS, DIM, VOCAB, h.n_layers, h.dim, h.vocab_size);
+        fclose(f); return false;
+    }
+    if (h.step < 0 || h.step > 10000000 || h.adam_t < 0 || h.adam_t > 10000000) {
+        fprintf(stderr, "Checkpoint has invalid step/adam_t values\n");
+        fclose(f); return false;
+    }
     *step = h.step; *total_steps = h.total_steps; *lr = h.lr; *loss = h.loss;
     *ct = h.cum_train; *cw = h.cum_wall; *cs = h.cum_steps; *adam_t = h.adam_t;
     for (int L = 0; L < NLAYERS; L++) {
@@ -303,7 +314,12 @@ int main(int argc, char *argv[]) {
         if (cpu_only) use_cpu_bwd = true;            // CPU-only implies CPU backward
         if (ane_matmul_only) use_cpu_bwd = true;   // ANE matmul-only implies CPU backward
         if (use_cpu_bwd) use_cpu_attn_bwd = true;  // CPU backward implies CPU attention backward
-        if (!cpu_only) ane_init();
+        if (!cpu_only) {
+            if (!ane_init()) {
+                fprintf(stderr, "ANE initialization failed. Use --cpu-only or install macOS 15+.\n");
+                return 1;
+            }
+        }
         float lr = max_lr;
 
         // Allocate per-layer state
@@ -313,10 +329,10 @@ int main(int argc, char *argv[]) {
             lw[L] = layer_weights_alloc(); la[L] = layer_adam_alloc();
             acts[L] = layer_acts_alloc(); grads[L] = layer_grads_alloc();
         }
-        float *rms_final = (float*)malloc(DIM*4);
-        float *embed = (float*)malloc(VOCAB*DIM*4);
-        float *grms_final = (float*)calloc(DIM, 4);
-        float *gembed = (float*)calloc(VOCAB*DIM, 4);
+        float *rms_final = (float*)safe_malloc(DIM*4);
+        float *embed = (float*)safe_malloc(VOCAB*DIM*4);
+        float *grms_final = (float*)safe_calloc(DIM, 4);
+        float *gembed = (float*)safe_calloc(VOCAB*DIM, 4);
         AdamState arms_final = adam_alloc(DIM);
         AdamState aembed = adam_alloc((size_t)VOCAB*DIM);
 
@@ -411,10 +427,10 @@ int main(int argc, char *argv[]) {
         float *W1t_buf[NLAYERS], *W2t_buf[NLAYERS], *W3t_buf[NLAYERS];
         for (int L=0; L<NLAYERS; L++) {
             if (!cpu_only) {
-                Wqt_buf[L]=(float*)malloc(WQ_SZ*4); Wkt_buf[L]=(float*)malloc(WK_SZ*4);
-                Wvt_buf[L]=(float*)malloc(WV_SZ*4); Wot_buf[L]=(float*)malloc(WO_SZ*4);
-                W1t_buf[L]=(float*)malloc(W1_SZ*4); W2t_buf[L]=(float*)malloc(W2_SZ*4);
-                W3t_buf[L]=(float*)malloc(W3_SZ*4);
+                Wqt_buf[L]=(float*)safe_malloc(WQ_SZ*4); Wkt_buf[L]=(float*)safe_malloc(WK_SZ*4);
+                Wvt_buf[L]=(float*)safe_malloc(WV_SZ*4); Wot_buf[L]=(float*)safe_malloc(WO_SZ*4);
+                W1t_buf[L]=(float*)safe_malloc(W1_SZ*4); W2t_buf[L]=(float*)safe_malloc(W2_SZ*4);
+                W3t_buf[L]=(float*)safe_malloc(W3_SZ*4);
                 transpose_weight(Wqt_buf[L], lw[L].Wq, Q_DIM, DIM);
                 transpose_weight(Wkt_buf[L], lw[L].Wk, KV_DIM, DIM);
                 transpose_weight(Wvt_buf[L], lw[L].Wv, KV_DIM, DIM);
@@ -436,6 +452,13 @@ int main(int argc, char *argv[]) {
         uint16_t *token_data = (uint16_t*)mmap(NULL, data_len, PROT_READ, MAP_PRIVATE, data_fd, 0);
         if (token_data == MAP_FAILED) { printf("mmap failed\n"); return 1; }
         size_t n_tokens = data_len / 2;
+        // Validate all tokens are within vocab range (untrusted data file)
+        for (size_t i = 0; i < n_tokens; i++) {
+            if (token_data[i] >= VOCAB) {
+                fprintf(stderr, "FATAL: token[%zu]=%d >= VOCAB=%d (corrupt data file?)\n", i, token_data[i], VOCAB);
+                return 1;
+            }
+        }
         size_t val_start = (size_t)(n_tokens * 0.9);  // 90/10 train/val split
         size_t train_tokens = val_start;
         size_t val_tokens = n_tokens - val_start;
@@ -448,7 +471,7 @@ int main(int argc, char *argv[]) {
         printf("Vocab compaction: %d → %d active tokens (%.1fx reduction)\n", VOCAB, CV, (float)VOCAB/CV);
 
         float *cembed = vocab_compact_embed(embed, &vm, DIM);
-        float *gcembed = (float*)calloc((size_t)CV*DIM, 4);
+        float *gcembed = (float*)safe_calloc((size_t)CV*DIM, 4);
         AdamState acembed = adam_alloc((size_t)CV*DIM);
 
         // ===== Compile all kernels ONCE (skip for CPU-only mode) =====
@@ -594,32 +617,32 @@ int main(int argc, char *argv[]) {
         }
 
         // Gradient + work buffers (GQA: Q has Q_DIM, K/V have KV_DIM)
-        float *dy = (float*)malloc(SEQ*DIM*4);
-        float *dffn = (float*)malloc(SEQ*DIM*4);
-        float *dx_ffn = (float*)malloc(SEQ*DIM*4);
-        float *dx2 = (float*)malloc(SEQ*DIM*4);
-        float *dx_attn = (float*)malloc(SEQ*DIM*4);
-        float *dq = (float*)malloc(SEQ*Q_DIM*4);     // Q_DIM for Q grads
-        float *dk_buf = (float*)malloc(SEQ*KV_DIM*4); // KV_DIM for K grads
-        float *dv = (float*)malloc(SEQ*KV_DIM*4);     // KV_DIM for V grads
-        float *da_buf = (float*)malloc(SEQ*Q_DIM*4);  // Q_DIM for attn grads
-        float *x_cur = (float*)malloc(SEQ*DIM*4);
-        float *x_final = (float*)malloc(SEQ*DIM*4);
-        float *xnorm_buf = (float*)malloc(SEQ*DIM*4);
-        float *logits = (float*)malloc(SEQ*CV*4);
-        float *dlogits = (float*)malloc(SEQ*CV*4);
-        float *gate_buf = (float*)malloc(SEQ*HIDDEN*4);
-        float *dh1 = (float*)malloc(SEQ*HIDDEN*4);
-        float *dh3 = (float*)malloc(SEQ*HIDDEN*4);
-        float *dsilu = (float*)malloc(SEQ*HIDDEN*4);
-        float *silu_tmp = (float*)malloc(SEQ*HIDDEN*4);
-        float *silu_tmp2 = (float*)malloc(SEQ*HIDDEN*4);
+        float *dy = (float*)safe_malloc(SEQ*DIM*4);
+        float *dffn = (float*)safe_malloc(SEQ*DIM*4);
+        float *dx_ffn = (float*)safe_malloc(SEQ*DIM*4);
+        float *dx2 = (float*)safe_malloc(SEQ*DIM*4);
+        float *dx_attn = (float*)safe_malloc(SEQ*DIM*4);
+        float *dq = (float*)safe_malloc(SEQ*Q_DIM*4);     // Q_DIM for Q grads
+        float *dk_buf = (float*)safe_malloc(SEQ*KV_DIM*4); // KV_DIM for K grads
+        float *dv = (float*)safe_malloc(SEQ*KV_DIM*4);     // KV_DIM for V grads
+        float *da_buf = (float*)safe_malloc(SEQ*Q_DIM*4);  // Q_DIM for attn grads
+        float *x_cur = (float*)safe_malloc(SEQ*DIM*4);
+        float *x_final = (float*)safe_malloc(SEQ*DIM*4);
+        float *xnorm_buf = (float*)safe_malloc(SEQ*DIM*4);
+        float *logits = (float*)safe_malloc(SEQ*CV*4);
+        float *dlogits = (float*)safe_malloc(SEQ*CV*4);
+        float *gate_buf = (float*)safe_malloc(SEQ*HIDDEN*4);
+        float *dh1 = (float*)safe_malloc(SEQ*HIDDEN*4);
+        float *dh3 = (float*)safe_malloc(SEQ*HIDDEN*4);
+        float *dsilu = (float*)safe_malloc(SEQ*HIDDEN*4);
+        float *silu_tmp = (float*)safe_malloc(SEQ*HIDDEN*4);
+        float *silu_tmp2 = (float*)safe_malloc(SEQ*HIDDEN*4);
         // GQA tile/reduce buffers
-        float *k_tiled = (float*)malloc(SEQ*Q_DIM*4);  // KV_DIM → Q_DIM
-        float *v_tiled = (float*)malloc(SEQ*Q_DIM*4);
-        float *dq_full = (float*)malloc(SEQ*Q_DIM*4);  // from sdpaBwd2
-        float *dk_full = (float*)malloc(SEQ*Q_DIM*4);  // from sdpaBwd2 (needs reduce)
-        float *dv_full = (float*)malloc(SEQ*Q_DIM*4);  // from sdpaBwd1 (needs reduce)
+        float *k_tiled = (float*)safe_malloc(SEQ*Q_DIM*4);  // KV_DIM → Q_DIM
+        float *v_tiled = (float*)safe_malloc(SEQ*Q_DIM*4);
+        float *dq_full = (float*)safe_malloc(SEQ*Q_DIM*4);  // from sdpaBwd2
+        float *dk_full = (float*)safe_malloc(SEQ*Q_DIM*4);  // from sdpaBwd2 (needs reduce)
+        float *dv_full = (float*)safe_malloc(SEQ*Q_DIM*4);  // from sdpaBwd1 (needs reduce)
 
         dispatch_queue_t dw_q = dispatch_queue_create("dw_cblas", DISPATCH_QUEUE_SERIAL);
         dispatch_group_t dw_grp = dispatch_group_create();
@@ -653,7 +676,7 @@ int main(int argc, char *argv[]) {
             uint16_t ctargets[SEQ];
             for (int t = 0; t < SEQ; t++) ctargets[t] = (uint16_t)vm.full_to_compact[target_tokens_raw[t]];
 
-            embed_lookup(x_cur, embed, input_tokens, DIM, SEQ);
+            embed_lookup(x_cur, embed, input_tokens, DIM, SEQ, VOCAB);
 
             double t_rms=0, t_ane_fwd=0, t_io_fwd=0, t_cblas_wait=0;
             double t_ane_bwd=0, t_io_bwd=0, t_silu=0, t_rms_bwd=0, t_cls=0, t_dw_copy=0;
@@ -915,7 +938,7 @@ int main(int argc, char *argv[]) {
             });
 
             // Final RMSNorm backward
-            float *dx_rms_final = (float*)calloc(SEQ*DIM, 4);
+            float *dx_rms_final = (float*)safe_calloc(SEQ*DIM, 4);
             rmsnorm_bwd(dx_rms_final, grms_final, dy, x_cur, rms_final, DIM, SEQ);
             memcpy(dy, dx_rms_final, SEQ*DIM*4);
             free(dx_rms_final);
@@ -992,11 +1015,11 @@ int main(int argc, char *argv[]) {
 
                 // dW FFN async
                 t0 = mach_absolute_time();
-                float *capt_dffn = (float*)malloc(SEQ*DIM*4); memcpy(capt_dffn, dffn, SEQ*DIM*4);
-                float *capt_silu = (float*)malloc(SEQ*HIDDEN*4); memcpy(capt_silu, ac->silu_out, SEQ*HIDDEN*4);
-                float *capt_dh1 = (float*)malloc(SEQ*HIDDEN*4); memcpy(capt_dh1, dh1, SEQ*HIDDEN*4);
-                float *capt_dh3 = (float*)malloc(SEQ*HIDDEN*4); memcpy(capt_dh3, dh3, SEQ*HIDDEN*4);
-                float *capt_x2n = (float*)malloc(SEQ*DIM*4); memcpy(capt_x2n, ac->x2norm, SEQ*DIM*4);
+                float *capt_dffn = (float*)safe_malloc(SEQ*DIM*4); memcpy(capt_dffn, dffn, SEQ*DIM*4);
+                float *capt_silu = (float*)safe_malloc(SEQ*HIDDEN*4); memcpy(capt_silu, ac->silu_out, SEQ*HIDDEN*4);
+                float *capt_dh1 = (float*)safe_malloc(SEQ*HIDDEN*4); memcpy(capt_dh1, dh1, SEQ*HIDDEN*4);
+                float *capt_dh3 = (float*)safe_malloc(SEQ*HIDDEN*4); memcpy(capt_dh3, dh3, SEQ*HIDDEN*4);
+                float *capt_x2n = (float*)safe_malloc(SEQ*DIM*4); memcpy(capt_x2n, ac->x2norm, SEQ*DIM*4);
                 t_dw_copy += tb_ms(mach_absolute_time() - t0);
                 dispatch_group_async(dw_grp, dw_q, ^{
                     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, DIM, HIDDEN, SEQ,
@@ -1016,7 +1039,7 @@ int main(int argc, char *argv[]) {
                 t_rms_bwd += tb_ms(mach_absolute_time() - t0);
 
                 // Wo^T backward: alpha*dx2 @ Wo → da[Q_DIM]
-                float *dx2_scaled = (float*)malloc(SEQ*DIM*4);
+                float *dx2_scaled = (float*)safe_malloc(SEQ*DIM*4);
                 vDSP_vsmul(dx2, 1, &res_alpha, dx2_scaled, 1, (vDSP_Length)(SEQ*DIM));
                 t0 = mach_absolute_time();
                 if (use_cpu_attn_bwd) {
@@ -1034,9 +1057,9 @@ int main(int argc, char *argv[]) {
 
                 // dWo async: gr->Wo[DIM,Q_DIM] += dx2_scaled[DIM,SEQ] @ attn_out^T[SEQ,Q_DIM]
                 t0 = mach_absolute_time();
-                float *capt_do = (float*)malloc(SEQ*DIM*4); memcpy(capt_do, dx2_scaled, SEQ*DIM*4);
+                float *capt_do = (float*)safe_malloc(SEQ*DIM*4); memcpy(capt_do, dx2_scaled, SEQ*DIM*4);
                 free(dx2_scaled);
-                float *capt_attn = (float*)malloc(SEQ*Q_DIM*4); memcpy(capt_attn, ac->attn_out, SEQ*Q_DIM*4);
+                float *capt_attn = (float*)safe_malloc(SEQ*Q_DIM*4); memcpy(capt_attn, ac->attn_out, SEQ*Q_DIM*4);
                 t_dw_copy += tb_ms(mach_absolute_time() - t0);
                 dispatch_group_async(dw_grp, dw_q, ^{
                     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, DIM, Q_DIM, SEQ,
@@ -1109,10 +1132,10 @@ int main(int argc, char *argv[]) {
                 // dWk[KV_DIM,DIM] += dk[KV_DIM,SEQ] @ xnorm^T[SEQ,DIM]
                 // dWv[KV_DIM,DIM] += dv[KV_DIM,SEQ] @ xnorm^T[SEQ,DIM]
                 t0 = mach_absolute_time();
-                float *capt_dq = (float*)malloc(SEQ*Q_DIM*4); memcpy(capt_dq, dq, SEQ*Q_DIM*4);
-                float *capt_dk = (float*)malloc(SEQ*KV_DIM*4); memcpy(capt_dk, dk_buf, SEQ*KV_DIM*4);
-                float *capt_dv = (float*)malloc(SEQ*KV_DIM*4); memcpy(capt_dv, dv, SEQ*KV_DIM*4);
-                float *capt_xn = (float*)malloc(SEQ*DIM*4); memcpy(capt_xn, ac->xnorm, SEQ*DIM*4);
+                float *capt_dq = (float*)safe_malloc(SEQ*Q_DIM*4); memcpy(capt_dq, dq, SEQ*Q_DIM*4);
+                float *capt_dk = (float*)safe_malloc(SEQ*KV_DIM*4); memcpy(capt_dk, dk_buf, SEQ*KV_DIM*4);
+                float *capt_dv = (float*)safe_malloc(SEQ*KV_DIM*4); memcpy(capt_dv, dv, SEQ*KV_DIM*4);
+                float *capt_xn = (float*)safe_malloc(SEQ*DIM*4); memcpy(capt_xn, ac->xnorm, SEQ*DIM*4);
                 t_dw_copy += tb_ms(mach_absolute_time() - t0);
                 dispatch_group_async(dw_grp, dw_q, ^{
                     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, Q_DIM, DIM, SEQ,
@@ -1126,7 +1149,7 @@ int main(int argc, char *argv[]) {
 
                 // Q backward: dq[Q_DIM] @ Wq^T → dx_q[DIM]
                 // KV backward: dk[KV_DIM]@Wk^T + dv[KV_DIM]@Wv^T → dx_kv[DIM]
-                float *dx_kv = (float*)malloc(SEQ*DIM*4);
+                float *dx_kv = (float*)safe_malloc(SEQ*DIM*4);
                 t0 = mach_absolute_time();
                 if (use_cpu_attn_bwd) {
                     // CPU fp32: dx_q = Wq^T @ dq  [DIM,Q_DIM]^T is [DIM,Q_DIM] transposed
@@ -1159,7 +1182,7 @@ int main(int argc, char *argv[]) {
 
                 // RMSNorm1 backward
                 t0 = mach_absolute_time();
-                float *dx_rms1 = (float*)calloc(SEQ*DIM, 4);
+                float *dx_rms1 = (float*)safe_calloc(SEQ*DIM, 4);
                 rmsnorm_bwd(dx_rms1, gr->rms_att, dx_attn, ac->layer_in, lw[L].rms_att, DIM, SEQ);
                 for(int i=0;i<SEQ*DIM;i++) dy[i] = dx_rms1[i] + dx2[i];
                 free(dx_rms1);
@@ -1168,7 +1191,7 @@ int main(int argc, char *argv[]) {
 
             // Embedding backward
             dispatch_group_wait(dw_grp, DISPATCH_TIME_FOREVER);
-            embed_backward(gembed, dy, input_tokens, DIM, SEQ);
+            embed_backward(gembed, dy, input_tokens, DIM, SEQ, VOCAB);
 
             double step_ms = tb_ms(mach_absolute_time() - t_step);
             total_train_ms += step_ms;
@@ -1215,25 +1238,25 @@ int main(int argc, char *argv[]) {
             if (step % 100 == 0 && step > start_step && val_tokens > SEQ + 1) {
                 float val_loss_sum = 0;
                 int val_samples = 10;
-                float *val_x = (float*)malloc(SEQ*DIM*4);
-                float *val_xn = (float*)malloc(SEQ*DIM*4);
-                float *val_xf = (float*)malloc(SEQ*DIM*4);
-                float *val_q = (float*)malloc(SEQ*Q_DIM*4);
-                float *val_k = (float*)malloc(SEQ*KV_DIM*4);
-                float *val_v = (float*)malloc(SEQ*KV_DIM*4);
-                float *val_kt = (float*)malloc(SEQ*Q_DIM*4);
-                float *val_vt = (float*)malloc(SEQ*Q_DIM*4);
-                float *val_ao = (float*)malloc(SEQ*Q_DIM*4);
-                float *val_oo = (float*)malloc(SEQ*DIM*4);
-                float *val_x2 = (float*)malloc(SEQ*DIM*4);
-                float *val_x2n = (float*)malloc(SEQ*DIM*4);
-                float *val_h1 = (float*)malloc(SEQ*HIDDEN*4);
-                float *val_h3 = (float*)malloc(SEQ*HIDDEN*4);
-                float *val_silu = (float*)malloc(SEQ*HIDDEN*4);
-                float *val_fo = (float*)malloc(SEQ*DIM*4);
-                float *val_logits = (float*)malloc(SEQ*CV*4);
-                float *val_dlogits = (float*)malloc(SEQ*CV*4);  // unused but cross_entropy_loss writes it
-                float *val_stmp = (float*)malloc(SEQ*HIDDEN*4);
+                float *val_x = (float*)safe_malloc(SEQ*DIM*4);
+                float *val_xn = (float*)safe_malloc(SEQ*DIM*4);
+                float *val_xf = (float*)safe_malloc(SEQ*DIM*4);
+                float *val_q = (float*)safe_malloc(SEQ*Q_DIM*4);
+                float *val_k = (float*)safe_malloc(SEQ*KV_DIM*4);
+                float *val_v = (float*)safe_malloc(SEQ*KV_DIM*4);
+                float *val_kt = (float*)safe_malloc(SEQ*Q_DIM*4);
+                float *val_vt = (float*)safe_malloc(SEQ*Q_DIM*4);
+                float *val_ao = (float*)safe_malloc(SEQ*Q_DIM*4);
+                float *val_oo = (float*)safe_malloc(SEQ*DIM*4);
+                float *val_x2 = (float*)safe_malloc(SEQ*DIM*4);
+                float *val_x2n = (float*)safe_malloc(SEQ*DIM*4);
+                float *val_h1 = (float*)safe_malloc(SEQ*HIDDEN*4);
+                float *val_h3 = (float*)safe_malloc(SEQ*HIDDEN*4);
+                float *val_silu = (float*)safe_malloc(SEQ*HIDDEN*4);
+                float *val_fo = (float*)safe_malloc(SEQ*DIM*4);
+                float *val_logits = (float*)safe_malloc(SEQ*CV*4);
+                float *val_dlogits = (float*)safe_malloc(SEQ*CV*4);  // unused but cross_entropy_loss writes it
+                float *val_stmp = (float*)safe_malloc(SEQ*HIDDEN*4);
 
                 unsigned short xsubi[3] = {(unsigned short)(step*7+1), (unsigned short)(step*13+3), (unsigned short)(step*17+5)};
                 for (int vs = 0; vs < val_samples; vs++) {
@@ -1243,7 +1266,7 @@ int main(int argc, char *argv[]) {
                     uint16_t *vtgt_raw = token_data + vpos + 1;
                     uint16_t vctargets[SEQ];
                     for (int t = 0; t < SEQ; t++) vctargets[t] = (uint16_t)vm.full_to_compact[vtgt_raw[t]];
-                    embed_lookup(val_x, embed, vinp, DIM, SEQ);
+                    embed_lookup(val_x, embed, vinp, DIM, SEQ, VOCAB);
                     for (int L = 0; L < NLAYERS; L++) {
                         rmsnorm(val_xn, val_x, lw[L].rms_att, DIM, SEQ);
                         cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,Q_DIM,SEQ,DIM,1.0f,lw[L].Wq,DIM,val_xn,SEQ,0.0f,val_q,SEQ);

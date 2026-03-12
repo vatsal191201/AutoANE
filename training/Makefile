@@ -1,6 +1,7 @@
 CC = xcrun clang
 CFLAGS = -O2 -DACCELERATE_NEW_LAPACK -framework Foundation -framework IOSurface -framework Accelerate \
-         -isysroot $(shell xcrun --show-sdk-path) -fobjc-arc
+         -isysroot $(shell xcrun --show-sdk-path) -fobjc-arc \
+         -fstack-protector-strong -D_FORTIFY_SOURCE=2
 
 # Model selection: make MODEL=smollm2_360m
 #   Available models:
