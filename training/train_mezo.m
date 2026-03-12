@@ -236,6 +236,7 @@ int main(int argc, char *argv[]) {
         float epsilon = 1e-3f;
         double time_budget_sec = 0;
         bool from_scratch = false, cpu_only = false, ane_matmul_only = false;
+        bool lr_from_cli = false;
         long init_seed = 42;
         int val_every = 500;
         const char *data_path = DEFAULT_DATA_PATH;
@@ -245,7 +246,7 @@ int main(int argc, char *argv[]) {
             if (strcmp(argv[i], "--scratch") == 0) from_scratch = true;
             else if (strcmp(argv[i], "--cpu-only") == 0) cpu_only = true;
             else if (strcmp(argv[i], "--ane-matmul-only") == 0) ane_matmul_only = true;
-            else if (strcmp(argv[i], "--lr") == 0 && i+1 < argc) { lr = atof(argv[++i]); base_lr = lr; }
+            else if (strcmp(argv[i], "--lr") == 0 && i+1 < argc) { lr = atof(argv[++i]); base_lr = lr; lr_from_cli = true; }
             else if (strcmp(argv[i], "--epsilon") == 0 && i+1 < argc) epsilon = atof(argv[++i]);
             else if (strcmp(argv[i], "--steps") == 0 && i+1 < argc) total_steps = atoi(argv[++i]);
             else if (strcmp(argv[i], "--time") == 0 && i+1 < argc) time_budget_sec = atof(argv[++i]);
@@ -287,7 +288,12 @@ int main(int argc, char *argv[]) {
         if (ckpt_load_path) {
             if (mezo_load_checkpoint(ckpt_load_path, &start_step, &lr, &resume_loss, lw, rms_final, embed)) {
                 printf("[RESUMED from step %d, loss=%.4f]\n", start_step, resume_loss);
-                base_lr = lr;
+                if (lr_from_cli) {
+                    lr = base_lr;  // CLI --lr overrides checkpoint lr
+                    printf("  (using CLI lr=%g instead of checkpoint lr)\n", lr);
+                } else {
+                    base_lr = lr;
+                }
             } else {
                 fprintf(stderr, "Failed to load checkpoint %s\n", ckpt_load_path);
                 return 1;
