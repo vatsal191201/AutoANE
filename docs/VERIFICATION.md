@@ -1,8 +1,9 @@
 # AutoANE: Independent Verification Report
 
-**Date**: 2026-03-11
+**Date**: 2026-03-11 (updated 2026-03-12)
 **Purpose**: First-principles verification of every claim, result, and assumption in this project.
 **Methodology**: Re-run experiments, cross-check against raw data, verify code, compare to literature.
+**Summary**: All claims verified. 6 bugs found and fixed. No retractions. See [TECHNICAL_REPORT.md](TECHNICAL_REPORT.md) Section 10.
 
 ---
 

@@ -1,8 +1,8 @@
 # AutoANE: Stated Assumptions Registry
 
-**Purpose**: Every assumption in this project must be explicitly stated, tracked, and verified. No implicit assumptions allowed.
+**Purpose**: Every assumption in this project must be explicitly stated, tracked, and verified. No implicit assumptions allowed. See [TECHNICAL_REPORT.md](TECHNICAL_REPORT.md) Section 12 for summary.
 
-**Last updated**: 2026-03-12
+**Last updated**: 2026-03-12 | **Totals**: 27 verified, 8 disproved, 13 unverified/resolved
 
 ---
 
