@@ -17,10 +17,15 @@ train: train.m config.h io.h cpu_ops.h mil_dynamic.h $(MODEL_HDR)
 	@echo "Building for model: $(MODEL)"
 	$(CC) $(CFLAGS) -include $(MODEL_HDR) -o train train.m
 
+mezo: train_mezo.m config.h io.h cpu_ops.h mil_dynamic.h $(MODEL_HDR)
+	@command -v xcrun >/dev/null 2>&1 || { echo "ERROR: Xcode Command Line Tools not found. Install with: xcode-select --install"; exit 1; }
+	@echo "Building MeZO for model: $(MODEL)"
+	$(CC) $(CFLAGS) -include $(MODEL_HDR) -o train_mezo train_mezo.m
+
 benchmark: benchmark.m
 	$(CC) $(CFLAGS) -include dlfcn.h -o benchmark benchmark.m
 
 clean:
-	rm -f train benchmark
+	rm -f train train_mezo benchmark
 
 .PHONY: clean
