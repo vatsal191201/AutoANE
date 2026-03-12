@@ -159,18 +159,21 @@ ANEKernelHandle *ane_bridge_compile_multi_weights(
 
         // Create kernel handle
         ANEKernelHandle *k = (ANEKernelHandle *)calloc(1, sizeof(ANEKernelHandle));
+        if (!k) { fprintf(stderr, "ane_bridge: calloc failed\n"); return NULL; }
         k->model = mdl;
         k->tmpDir = td;
         k->nInputs = n_inputs;
         k->nOutputs = n_outputs;
         k->inputBytes = (size_t *)malloc(n_inputs * sizeof(size_t));
         k->outputBytes = (size_t *)malloc(n_outputs * sizeof(size_t));
+        if (!k->inputBytes || !k->outputBytes) { fprintf(stderr, "ane_bridge: malloc failed\n"); free(k); return NULL; }
         memcpy(k->inputBytes, input_sizes, n_inputs * sizeof(size_t));
         memcpy(k->outputBytes, output_sizes, n_outputs * sizeof(size_t));
 
         // Create IOSurfaces
-        k->ioInputs = (IOSurfaceRef *)malloc(n_inputs * sizeof(IOSurfaceRef));
-        k->ioOutputs = (IOSurfaceRef *)malloc(n_outputs * sizeof(IOSurfaceRef));
+        k->ioInputs = (IOSurfaceRef *)calloc(n_inputs, sizeof(IOSurfaceRef));
+        k->ioOutputs = (IOSurfaceRef *)calloc(n_outputs, sizeof(IOSurfaceRef));
+        if (!k->ioInputs || !k->ioOutputs) { fprintf(stderr, "ane_bridge: malloc failed\n"); free(k->inputBytes); free(k->outputBytes); free(k); return NULL; }
         for (int i = 0; i < n_inputs; i++)
             k->ioInputs[i] = create_surface(input_sizes[i]);
         for (int i = 0; i < n_outputs; i++)
@@ -285,15 +288,16 @@ void ane_bridge_reset_compile_count(void) {
 
 uint8_t *ane_bridge_build_weight_blob(const float *src, int rows, int cols,
                                        size_t *out_len) {
-    int wsize = rows * cols * 2; // fp16
-    int total = 128 + wsize;
+    size_t wsize = (size_t)rows * cols * 2; // fp16
+    size_t total = 128 + wsize;
     uint8_t *buf = (uint8_t *)calloc(total, 1);
+    if (!buf) { *out_len = 0; return NULL; }
 
     // ANE blob header
     buf[0] = 0x01; buf[4] = 0x02;
     buf[64] = 0xEF; buf[65] = 0xBE; buf[66] = 0xAD; buf[67] = 0xDE;
     buf[68] = 0x01;
-    *(uint32_t*)(buf + 72) = wsize;
+    *(uint32_t*)(buf + 72) = (uint32_t)wsize;
     *(uint32_t*)(buf + 80) = 128;
 
     // Convert float32 -> float16
@@ -308,14 +312,15 @@ uint8_t *ane_bridge_build_weight_blob(const float *src, int rows, int cols,
 
 uint8_t *ane_bridge_build_weight_blob_transposed(const float *src, int rows, int cols,
                                                    size_t *out_len) {
-    int wsize = rows * cols * 2;
-    int total = 128 + wsize;
+    size_t wsize = (size_t)rows * cols * 2;
+    size_t total = 128 + wsize;
     uint8_t *buf = (uint8_t *)calloc(total, 1);
+    if (!buf) { *out_len = 0; return NULL; }
 
     buf[0] = 0x01; buf[4] = 0x02;
     buf[64] = 0xEF; buf[65] = 0xBE; buf[66] = 0xAD; buf[67] = 0xDE;
     buf[68] = 0x01;
-    *(uint32_t*)(buf + 72) = wsize;
+    *(uint32_t*)(buf + 72) = (uint32_t)wsize;
     *(uint32_t*)(buf + 80) = 128;
 
     _Float16 *fp16 = (_Float16 *)(buf + 128);
@@ -329,9 +334,10 @@ uint8_t *ane_bridge_build_weight_blob_transposed(const float *src, int rows, int
 
 uint8_t *ane_bridge_build_weight_blob_int8(const int8_t *src, int rows, int cols,
                                             size_t *out_len) {
-    int wsize = rows * cols;  // 1 byte per int8 element
-    int total = 64 + wsize;   // 64-byte header + data
+    size_t wsize = (size_t)rows * cols;  // 1 byte per int8 element
+    size_t total = 64 + wsize;           // 64-byte header + data
     uint8_t *buf = (uint8_t *)calloc(total, 1);
+    if (!buf) { *out_len = 0; return NULL; }
 
     // ANE int8 blob header
     buf[0] = 0xEF; buf[1] = 0xBE; buf[2] = 0xAD; buf[3] = 0xDE;
@@ -355,8 +361,9 @@ uint8_t *ane_bridge_build_weight_blob_quantized(const float *src, int rows, int 
     if (scale == 0.0f) scale = 1.0f;
 
     // Quantize to int8
-    int wsize = rows * cols;
+    size_t wsize = (size_t)rows * cols;
     int8_t *qdata = (int8_t *)malloc(wsize);
+    if (!qdata) { *out_scale = 0; *out_len = 0; return NULL; }
     for (int i = 0; i < wsize; i++) {
         float v = src[i] / scale;
         if (v > 127.0f) v = 127.0f;
