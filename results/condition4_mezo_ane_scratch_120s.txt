@@ -1,0 +1,54 @@
+=== MeZO (Zeroth-Order) Training: autoresearch-4L-512d (4 layers, GQA 8/2) ===
+dim=512 q_dim=512 kv_dim=128 hd=64 hidden=1408 seq=128 vocab=49152
+Params: 36.4M | Mode: ANE-matmul-only
+MeZO: lr=1e-05 epsilon=0.001 seed=42 val_every=500
+Memory: ~148MB (inference only, no gradients/optimizer)
+Initializing from scratch (seed=42)
+Tokens: 20000000 (train: 18000000, val: 2000000)
+Vocab compaction: 49152 -> 16893 active
+
+Compiling ANE forward kernels...
+  Compiling wqFwd (DIM->Q_DIM)...
+  Compiling wkvFwd (DIM->KV_DIM)...
+  Compiling woFwd (Q_DIM->DIM)...
+  Compiling w13Fwd (DIM->HIDDEN)...
+  Compiling w2Fwd (HIDDEN->DIM)...
+Compiled 5 kernels in 201ms
+Initial weight staging complete
+
+Starting MeZO training...
+
+step 0  loss_plus=9.7308  loss_minus=9.7223  proj_grad=4.266739  lr=1.00e-05  step_ms=109 (fwd=33 perturb=49 transpose=24)
+step 100  loss_plus=9.7954  loss_minus=9.7911  proj_grad=2.161026  lr=1.00e-05  step_ms=92 (fwd=25 perturb=43 transpose=21)
+step 200  loss_plus=9.7644  loss_minus=9.7669  proj_grad=-1.277447  lr=1.00e-05  step_ms=93 (fwd=25 perturb=43 transpose=22)
+step 300  loss_plus=9.7201  loss_minus=9.7151  proj_grad=2.489090  lr=1.00e-05  step_ms=97 (fwd=26 perturb=46 transpose=22)
+step 400  loss_plus=9.6551  loss_minus=9.6829  proj_grad=-13.907908  lr=1.00e-05  step_ms=92 (fwd=26 perturb=43 transpose=21)
+  [val_loss=9.7474 at step 500]
+  [ckpt saved, best_val=9.7474]
+step 500  loss_plus=9.7052  loss_minus=9.6982  proj_grad=3.477573  lr=1.00e-05  step_ms=96 (fwd=26 perturb=43 transpose=24)
+step 600  loss_plus=9.6491  loss_minus=9.6601  proj_grad=-5.498409  lr=1.00e-05  step_ms=97 (fwd=27 perturb=45 transpose=23)
+step 700  loss_plus=9.7034  loss_minus=9.7091  proj_grad=-2.848148  lr=1.00e-05  step_ms=100 (fwd=27 perturb=48 transpose=23)
+step 800  loss_plus=9.6728  loss_minus=9.6855  proj_grad=-6.379127  lr=1.00e-05  step_ms=92 (fwd=26 perturb=42 transpose=22)
+step 900  loss_plus=9.5972  loss_minus=9.5921  proj_grad=2.592087  lr=1.00e-05  step_ms=97 (fwd=27 perturb=45 transpose=22)
+  [val_loss=9.7174 at step 1000]
+  [ckpt saved, best_val=9.7174]
+step 1000  loss_plus=9.6470  loss_minus=9.6734  proj_grad=-13.212203  lr=1.00e-05  step_ms=93 (fwd=27 perturb=42 transpose=21)
+step 1100  loss_plus=9.6785  loss_minus=9.7043  proj_grad=-12.920379  lr=1.00e-05  step_ms=94 (fwd=26 perturb=44 transpose=22)
+step 1200  loss_plus=9.7308  loss_minus=9.7527  proj_grad=-10.971068  lr=1.00e-05  step_ms=97 (fwd=26 perturb=45 transpose=23)
+Time budget 120s reached at step 1265 (120.0s elapsed)
+
+=== MeZO Efficiency Report ===
+Total steps:  1265
+Train time:   119560ms (94.5ms/step)
+Wall time:    120.0s
+
+---
+final_loss_plus:  9.702206
+final_loss_minus: 9.698503
+training_seconds: 119.6
+total_seconds:    120.0
+num_steps:        1265
+num_params_M:     36.4
+mode:             mezo-ane
+epsilon:          0.001
+lr:               9.99996e-06

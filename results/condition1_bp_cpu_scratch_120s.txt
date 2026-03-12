@@ -1,0 +1,1277 @@
+=== CPU-Only Training: autoresearch-4L-512d (4 layers, GQA 8/2 heads) ===
+dim=512 q_dim=512 kv_dim=128 hd=64 hidden=1408 seq=128 vocab=49152
+Params: 36.4M (transformer 11.3M + embed 25.2M)
+Mode: CPU-only (all matmuls via cblas_sgemm fp32)
+Accum 10 steps, LR=0.0003
+FLOPs/step: fwd=2885.7M total=8657.0M
+  Training from scratch (random init, seed=42)
+Token data: 20000000 tokens (40.0 MB) — train: 18000000, val: 2000000
+Vocab compaction: 49152 → 16893 active tokens (2.9x reduction)
+CPU-only mode: skipping ANE kernel compilation
+
+    L0 sdpa_bwd: |dq|=0.070551 |dk|=0.147373 |dv|=1.951640
+  timing: ane_fwd=7.6 io_fwd=0.0 rms=0.6 ane_bwd=8.2 io_bwd=0.1 silu=2.7 rms_bwd=0.8 cls=10.4 cblas_wait=0.0 dw_copy=2.4
+step 0    loss=9.7273  lr=3.00e-04  36.1ms/step  x[-0.26,0.27] dy[-5.371e+01,5.342e+01] thermal=nominal
+  grad_norm=4.2867  attn=3.5175 ffn=0.8337 embed=2.3035
+    L0 sdpa_bwd: |dq|=0.078409 |dk|=0.173279 |dv|=1.959256
+  timing: ane_fwd=7.2 io_fwd=0.0 rms=0.3 ane_bwd=7.6 io_bwd=0.1 silu=1.5 rms_bwd=0.6 cls=5.2 cblas_wait=0.0 dw_copy=0.6
+step 10   loss=9.7308  lr=3.00e-05  24.2ms/step  x[-0.29,0.28] dy[-6.890e+01,5.338e+01] thermal=nominal
+  grad_norm=4.0077  attn=3.2944 ffn=0.7935 embed=2.1398
+    L0 sdpa_bwd: |dq|=0.107848 |dk|=0.140404 |dv|=2.008285
+  timing: ane_fwd=5.8 io_fwd=0.0 rms=0.3 ane_bwd=7.1 io_bwd=0.1 silu=1.9 rms_bwd=0.7 cls=5.3 cblas_wait=0.0 dw_copy=0.5
+step 20   loss=9.5426  lr=6.00e-05  23.0ms/step  x[-0.29,0.29] dy[-4.936e+01,5.758e+01] thermal=nominal
+  grad_norm=3.9874  attn=3.1140 ffn=0.7261 embed=2.3820
+    L0 sdpa_bwd: |dq|=0.078354 |dk|=0.138140 |dv|=1.834730
+  timing: ane_fwd=5.6 io_fwd=0.0 rms=0.3 ane_bwd=7.3 io_bwd=0.0 silu=1.1 rms_bwd=0.5 cls=5.9 cblas_wait=0.0 dw_copy=0.4
+step 30   loss=9.4705  lr=9.00e-05  22.6ms/step  x[-0.27,0.28] dy[-4.167e+01,4.012e+01] thermal=nominal
+  grad_norm=3.7708  attn=2.6771 ffn=0.6696 embed=2.5696
+    L0 sdpa_bwd: |dq|=0.068230 |dk|=0.098745 |dv|=2.013541
+  timing: ane_fwd=5.7 io_fwd=0.0 rms=0.3 ane_bwd=7.6 io_bwd=0.0 silu=1.5 rms_bwd=0.5 cls=5.4 cblas_wait=0.0 dw_copy=0.4
+step 40   loss=9.2270  lr=1.20e-04  23.0ms/step  x[-0.30,0.34] dy[-4.509e+01,4.482e+01] thermal=nominal
+  grad_norm=3.6801  attn=2.4305 ffn=0.5739 embed=2.7027
+    L0 sdpa_bwd: |dq|=0.023948 |dk|=0.046746 |dv|=0.437471
+  timing: ane_fwd=8.3 io_fwd=0.0 rms=0.4 ane_bwd=10.5 io_bwd=0.1 silu=1.7 rms_bwd=0.8 cls=7.9 cblas_wait=0.0 dw_copy=0.6
+step 50   loss=9.1783  lr=1.50e-04  32.1ms/step  x[-0.45,0.48] dy[-9.184e+00,1.084e+01] thermal=nominal
+  grad_norm=3.5147  attn=1.7940 ffn=0.4305 embed=2.9912
+    L0 sdpa_bwd: |dq|=0.017564 |dk|=0.031633 |dv|=0.587892
+  timing: ane_fwd=8.6 io_fwd=0.0 rms=0.4 ane_bwd=8.5 io_bwd=0.1 silu=1.9 rms_bwd=0.7 cls=7.7 cblas_wait=0.0 dw_copy=0.6
+step 60   loss=8.9466  lr=1.80e-04  30.3ms/step  x[-0.50,0.45] dy[-1.373e+01,1.203e+01] thermal=nominal
+  grad_norm=3.0750  attn=1.2491 ffn=0.2971 embed=2.7937
+    L0 sdpa_bwd: |dq|=0.011891 |dk|=0.018774 |dv|=0.278932
+  timing: ane_fwd=9.6 io_fwd=0.0 rms=0.5 ane_bwd=7.9 io_bwd=0.0 silu=1.4 rms_bwd=0.5 cls=7.7 cblas_wait=0.0 dw_copy=0.6
+step 70   loss=8.7987  lr=2.10e-04  30.3ms/step  x[-0.58,0.53] dy[-5.669e+00,5.360e+00] thermal=nominal
+  grad_norm=3.1693  attn=1.2654 ffn=0.3088 embed=2.8886
+    L0 sdpa_bwd: |dq|=0.010966 |dk|=0.013240 |dv|=0.165112
+  timing: ane_fwd=7.0 io_fwd=0.0 rms=0.3 ane_bwd=7.5 io_bwd=0.0 silu=1.4 rms_bwd=0.5 cls=6.3 cblas_wait=0.0 dw_copy=0.6
+step 80   loss=8.8749  lr=2.40e-04  30.6ms/step  x[-0.67,0.65] dy[-5.542e+00,4.164e+00] thermal=nominal
+  grad_norm=2.7539  attn=0.8111 ffn=0.1941 embed=2.6239
+    L0 sdpa_bwd: |dq|=0.010054 |dk|=0.015861 |dv|=0.263340
+  timing: ane_fwd=9.4 io_fwd=0.0 rms=0.4 ane_bwd=8.8 io_bwd=0.1 silu=1.5 rms_bwd=0.6 cls=8.9 cblas_wait=0.0 dw_copy=0.5
+step 90   loss=8.6260  lr=2.70e-04  31.9ms/step  x[-0.80,0.74] dy[-8.533e+00,8.887e+00] thermal=nominal
+  grad_norm=2.6285  attn=0.6871 ffn=0.1746 embed=2.5302
+  [ckpt saved, best_loss=8.4883]
+    L0 sdpa_bwd: |dq|=0.024642 |dk|=0.025082 |dv|=1.606893
+  timing: ane_fwd=19.1 io_fwd=0.0 rms=0.3 ane_bwd=9.3 io_bwd=0.1 silu=1.6 rms_bwd=0.6 cls=5.8 cblas_wait=0.0 dw_copy=0.5
+step 100  loss=8.5623  lr=3.00e-04  39.9ms/step  x[-0.92,0.84] dy[-5.260e+01,5.536e+01] thermal=nominal
+  [val] loss=8.4014 (avg of 10 samples from val split)
+  grad_norm=2.7441  attn=0.6493 ffn=0.1640 embed=2.6600
+    L0 sdpa_bwd: |dq|=0.006224 |dk|=0.008552 |dv|=0.086313
+  timing: ane_fwd=7.1 io_fwd=0.0 rms=0.3 ane_bwd=8.0 io_bwd=0.0 silu=1.8 rms_bwd=0.7 cls=6.9 cblas_wait=0.0 dw_copy=0.5
+step 110  loss=8.3363  lr=3.00e-04  28.1ms/step  x[-1.02,0.98] dy[-2.684e+00,2.993e+00] thermal=nominal
+  grad_norm=2.7821  attn=0.5829 ffn=0.1564 embed=2.7145
+    L0 sdpa_bwd: |dq|=0.006365 |dk|=0.016586 |dv|=0.247390
+  timing: ane_fwd=6.8 io_fwd=0.0 rms=0.3 ane_bwd=7.9 io_bwd=0.0 silu=1.7 rms_bwd=0.7 cls=7.8 cblas_wait=0.0 dw_copy=0.5
+step 120  loss=8.1399  lr=3.00e-04  28.3ms/step  x[-1.05,0.99] dy[-8.242e+00,6.980e+00] thermal=nominal
+  grad_norm=2.6597  attn=0.5510 ffn=0.1450 embed=2.5964
+    L0 sdpa_bwd: |dq|=0.004473 |dk|=0.007577 |dv|=0.043832
+  timing: ane_fwd=9.7 io_fwd=0.0 rms=0.5 ane_bwd=8.0 io_bwd=0.0 silu=1.8 rms_bwd=0.6 cls=7.7 cblas_wait=0.0 dw_copy=0.4
+step 130  loss=7.8527  lr=3.00e-04  31.4ms/step  x[-1.32,1.11] dy[-1.030e+00,1.362e+00] thermal=nominal
+  grad_norm=2.9729  attn=0.7491 ffn=0.1794 embed=2.8698
+    L0 sdpa_bwd: |dq|=0.005290 |dk|=0.005784 |dv|=0.044012
+  timing: ane_fwd=9.6 io_fwd=0.0 rms=0.5 ane_bwd=9.7 io_bwd=0.1 silu=1.8 rms_bwd=0.7 cls=8.0 cblas_wait=0.0 dw_copy=0.5
+step 140  loss=7.4295  lr=3.00e-04  34.0ms/step  x[-1.24,1.21] dy[-1.149e+00,1.127e+00] thermal=nominal
+  grad_norm=2.5013  attn=0.3908 ffn=0.1137 embed=2.4660
+    L0 sdpa_bwd: |dq|=0.012602 |dk|=0.018910 |dv|=0.158876
+  timing: ane_fwd=9.4 io_fwd=0.0 rms=0.5 ane_bwd=7.7 io_bwd=0.0 silu=1.4 rms_bwd=0.6 cls=7.7 cblas_wait=0.0 dw_copy=0.4
+step 150  loss=7.6675  lr=3.00e-04  33.0ms/step  x[-1.26,1.25] dy[-4.652e+00,4.584e+00] thermal=nominal
+  grad_norm=2.5319  attn=0.3689 ffn=0.1079 embed=2.5006
+    L0 sdpa_bwd: |dq|=0.004680 |dk|=0.005293 |dv|=0.597844
+  timing: ane_fwd=9.1 io_fwd=0.0 rms=0.5 ane_bwd=9.2 io_bwd=0.0 silu=1.6 rms_bwd=0.7 cls=7.5 cblas_wait=0.0 dw_copy=0.4
+step 160  loss=7.3119  lr=3.00e-04  32.1ms/step  x[-1.33,1.31] dy[-2.184e+01,2.031e+01] thermal=nominal
+  grad_norm=2.4766  attn=0.3175 ffn=0.0991 embed=2.4521
+    L0 sdpa_bwd: |dq|=0.003316 |dk|=0.005210 |dv|=0.025888
+  timing: ane_fwd=8.1 io_fwd=0.0 rms=0.4 ane_bwd=7.2 io_bwd=0.0 silu=1.0 rms_bwd=0.6 cls=5.3 cblas_wait=0.0 dw_copy=0.4
+step 170  loss=7.1401  lr=3.00e-04  25.1ms/step  x[-1.44,1.37] dy[-7.004e-01,5.721e-01] thermal=nominal
+  grad_norm=2.5923  attn=0.2996 ffn=0.0963 embed=2.5709
+    L0 sdpa_bwd: |dq|=0.003691 |dk|=0.004178 |dv|=0.023544
+  timing: ane_fwd=9.0 io_fwd=0.0 rms=0.4 ane_bwd=7.2 io_bwd=0.0 silu=1.1 rms_bwd=0.6 cls=7.7 cblas_wait=0.0 dw_copy=0.4
+step 180  loss=7.2163  lr=3.00e-04  31.2ms/step  x[-1.40,1.39] dy[-5.423e-01,5.865e-01] thermal=nominal
+  grad_norm=2.6966  attn=0.5149 ffn=0.1380 embed=2.6411
+    L0 sdpa_bwd: |dq|=0.004769 |dk|=0.005972 |dv|=0.032538
+  timing: ane_fwd=8.0 io_fwd=0.0 rms=0.4 ane_bwd=8.0 io_bwd=0.0 silu=1.8 rms_bwd=0.6 cls=7.6 cblas_wait=0.0 dw_copy=0.4
+step 190  loss=6.9790  lr=3.00e-04  29.5ms/step  x[-1.51,1.45] dy[-5.957e-01,7.879e-01] thermal=nominal
+  grad_norm=2.4323  attn=0.2623 ffn=0.0893 embed=2.4142
+  [ckpt saved, best_loss=7.0854]
+    L0 sdpa_bwd: |dq|=0.005552 |dk|=0.005496 |dv|=0.039780
+  timing: ane_fwd=7.6 io_fwd=0.0 rms=0.3 ane_bwd=7.7 io_bwd=0.0 silu=1.4 rms_bwd=0.5 cls=11.2 cblas_wait=0.0 dw_copy=0.4
+step 200  loss=6.8444  lr=3.00e-04  33.4ms/step  x[-1.56,1.50] dy[-1.082e+00,1.344e+00] thermal=nominal
+  [val] loss=6.8805 (avg of 10 samples from val split)
+  grad_norm=2.1417  attn=0.2583 ffn=0.0889 embed=2.1219
+    L0 sdpa_bwd: |dq|=0.006419 |dk|=0.006028 |dv|=0.024505
+  timing: ane_fwd=10.5 io_fwd=0.0 rms=0.5 ane_bwd=7.2 io_bwd=0.0 silu=1.0 rms_bwd=0.6 cls=8.7 cblas_wait=0.0 dw_copy=0.5
+step 210  loss=7.0652  lr=3.00e-04  33.8ms/step  x[-1.54,1.51] dy[-7.969e-01,7.073e-01] thermal=nominal
+  grad_norm=2.2416  attn=0.2531 ffn=0.0875 embed=2.2232
+    L0 sdpa_bwd: |dq|=0.009145 |dk|=0.007305 |dv|=0.019544
+  timing: ane_fwd=9.2 io_fwd=0.0 rms=0.4 ane_bwd=9.3 io_bwd=0.0 silu=1.9 rms_bwd=0.6 cls=6.2 cblas_wait=0.0 dw_copy=0.4
+step 220  loss=6.8791  lr=3.00e-04  29.9ms/step  x[-1.61,1.55] dy[-5.534e-01,6.593e-01] thermal=nominal
+  grad_norm=2.1247  attn=0.2091 ffn=0.0754 embed=2.1108
+    L0 sdpa_bwd: |dq|=0.017852 |dk|=0.010047 |dv|=0.040072
+  timing: ane_fwd=8.2 io_fwd=0.0 rms=0.4 ane_bwd=9.1 io_bwd=0.1 silu=1.6 rms_bwd=0.8 cls=7.7 cblas_wait=0.0 dw_copy=0.5
+step 230  loss=6.6064  lr=3.00e-04  30.2ms/step  x[-1.66,1.63] dy[-9.183e-01,1.176e+00] thermal=nominal
+  grad_norm=1.9035  attn=0.1771 ffn=0.0653 embed=1.8919
+    L0 sdpa_bwd: |dq|=0.011869 |dk|=0.015279 |dv|=0.017509
+  timing: ane_fwd=8.5 io_fwd=0.0 rms=0.5 ane_bwd=7.5 io_bwd=0.0 silu=1.5 rms_bwd=0.6 cls=7.6 cblas_wait=0.0 dw_copy=0.4
+step 240  loss=6.7318  lr=3.00e-04  32.4ms/step  x[-1.63,1.65] dy[-4.618e-01,4.181e-01] thermal=nominal
+  grad_norm=1.8553  attn=0.2084 ffn=0.0791 embed=1.8401
+    L0 sdpa_bwd: |dq|=0.007350 |dk|=0.008895 |dv|=0.020324
+  timing: ane_fwd=7.5 io_fwd=0.0 rms=0.4 ane_bwd=9.5 io_bwd=0.0 silu=1.9 rms_bwd=0.8 cls=7.8 cblas_wait=0.0 dw_copy=0.6
+step 250  loss=6.3603  lr=3.00e-04  31.5ms/step  x[-1.69,1.68] dy[-5.368e-01,4.434e-01] thermal=nominal
+  grad_norm=1.6788  attn=0.2075 ffn=0.0835 embed=1.6618
+    L0 sdpa_bwd: |dq|=0.014242 |dk|=0.013351 |dv|=0.043462
+  timing: ane_fwd=7.2 io_fwd=0.0 rms=0.4 ane_bwd=9.4 io_bwd=0.0 silu=1.6 rms_bwd=0.8 cls=7.8 cblas_wait=0.0 dw_copy=0.5
+step 260  loss=6.3075  lr=3.00e-04  30.3ms/step  x[-1.67,1.65] dy[-7.635e-01,1.056e+00] thermal=nominal
+  grad_norm=3.5942  attn=1.4158 ffn=0.3903 embed=3.2796
+    L0 sdpa_bwd: |dq|=0.012861 |dk|=0.010275 |dv|=0.028283
+  timing: ane_fwd=9.5 io_fwd=0.0 rms=0.4 ane_bwd=9.3 io_bwd=0.0 silu=1.8 rms_bwd=0.6 cls=6.7 cblas_wait=0.0 dw_copy=0.5
+step 270  loss=6.2888  lr=3.00e-04  30.6ms/step  x[-1.72,1.69] dy[-5.798e-01,6.642e-01] thermal=nominal
+  grad_norm=1.4689  attn=0.2135 ffn=0.0863 embed=1.4495
+    L0 sdpa_bwd: |dq|=0.034156 |dk|=0.013423 |dv|=0.024952
+  timing: ane_fwd=11.0 io_fwd=0.0 rms=0.5 ane_bwd=7.8 io_bwd=0.0 silu=1.5 rms_bwd=0.6 cls=7.8 cblas_wait=0.0 dw_copy=0.4
+step 280  loss=6.4433  lr=3.00e-04  33.3ms/step  x[-1.73,1.68] dy[-9.644e-01,9.193e-01] thermal=nominal
+  grad_norm=1.4163  attn=0.3453 ffn=0.1286 embed=1.3664
+    L0 sdpa_bwd: |dq|=0.021262 |dk|=0.045255 |dv|=0.042249
+  timing: ane_fwd=7.1 io_fwd=0.0 rms=0.3 ane_bwd=9.3 io_bwd=0.1 silu=1.9 rms_bwd=0.7 cls=7.0 cblas_wait=0.0 dw_copy=0.6
+step 290  loss=6.0452  lr=3.00e-04  29.4ms/step  x[-1.73,1.68] dy[-1.759e+00,1.119e+00] thermal=nominal
+  grad_norm=1.3231  attn=0.3636 ffn=0.1418 embed=1.2634
+  [ckpt saved, best_loss=6.3219]
+    L0 sdpa_bwd: |dq|=0.074364 |dk|=0.026654 |dv|=0.063666
+  timing: ane_fwd=8.5 io_fwd=0.0 rms=0.4 ane_bwd=9.3 io_bwd=0.1 silu=1.3 rms_bwd=0.7 cls=11.1 cblas_wait=0.0 dw_copy=0.5
+step 300  loss=5.9176  lr=3.00e-04  33.2ms/step  x[-1.77,1.73] dy[-1.969e+00,1.752e+00] thermal=nominal
+  [val] loss=6.0761 (avg of 10 samples from val split)
+  grad_norm=1.1050  attn=0.2277 ffn=0.1095 embed=1.0748
+    L0 sdpa_bwd: |dq|=0.144126 |dk|=0.045429 |dv|=0.224674
+  timing: ane_fwd=9.4 io_fwd=0.0 rms=0.5 ane_bwd=9.5 io_bwd=0.1 silu=1.6 rms_bwd=0.8 cls=8.5 cblas_wait=0.0 dw_copy=0.4
+step 310  loss=6.4438  lr=3.00e-04  33.3ms/step  x[-1.89,1.78] dy[-9.010e+00,6.113e+00] thermal=nominal
+  grad_norm=0.9966  attn=0.1990 ffn=0.1088 embed=0.9697
+    L0 sdpa_bwd: |dq|=0.189359 |dk|=0.093908 |dv|=0.074118
+  timing: ane_fwd=8.5 io_fwd=0.0 rms=0.4 ane_bwd=10.1 io_bwd=0.1 silu=1.4 rms_bwd=0.7 cls=8.0 cblas_wait=0.0 dw_copy=0.5
+step 320  loss=5.9141  lr=3.00e-04  32.8ms/step  x[-1.93,1.87] dy[-5.609e+00,4.796e+00] thermal=nominal
+  grad_norm=1.1943  attn=0.4434 ffn=0.1719 embed=1.0953
+    L0 sdpa_bwd: |dq|=0.237701 |dk|=0.199235 |dv|=0.213636
+  timing: ane_fwd=10.4 io_fwd=0.0 rms=0.5 ane_bwd=8.8 io_bwd=0.1 silu=1.5 rms_bwd=0.7 cls=7.8 cblas_wait=0.0 dw_copy=0.5
+step 330  loss=5.8346  lr=3.00e-04  32.5ms/step  x[-1.93,1.85] dy[-6.908e+00,7.768e+00] thermal=nominal
+  grad_norm=1.0012  attn=0.2155 ffn=0.1207 embed=0.9700
+    L0 sdpa_bwd: |dq|=0.043018 |dk|=0.019782 |dv|=0.054184
+  timing: ane_fwd=8.4 io_fwd=0.0 rms=0.4 ane_bwd=9.0 io_bwd=0.1 silu=1.7 rms_bwd=0.8 cls=5.7 cblas_wait=0.0 dw_copy=0.5
+step 340  loss=5.6135  lr=3.00e-04  28.1ms/step  x[-1.94,1.90] dy[-1.283e+00,1.350e+00] thermal=nominal
+  grad_norm=1.0386  attn=0.2597 ffn=0.1269 embed=0.9974
+    L0 sdpa_bwd: |dq|=0.077734 |dk|=0.074435 |dv|=0.060863
+  timing: ane_fwd=5.8 io_fwd=0.0 rms=0.3 ane_bwd=8.8 io_bwd=0.1 silu=1.8 rms_bwd=0.7 cls=6.0 cblas_wait=0.0 dw_copy=0.5
+step 350  loss=5.8438  lr=3.00e-04  25.5ms/step  x[-2.04,1.97] dy[-2.246e+00,1.729e+00] thermal=nominal
+  grad_norm=0.9727  attn=0.2378 ffn=0.1737 embed=0.9267
+    L0 sdpa_bwd: |dq|=0.336215 |dk|=0.105963 |dv|=0.090760
+  timing: ane_fwd=9.2 io_fwd=0.0 rms=0.5 ane_bwd=9.2 io_bwd=0.0 silu=1.6 rms_bwd=0.6 cls=7.9 cblas_wait=0.0 dw_copy=0.4
+step 360  loss=6.3251  lr=3.00e-04  32.2ms/step  x[-1.92,1.82] dy[-1.034e+01,9.343e+00] thermal=nominal
+  grad_norm=1.0653  attn=0.3073 ffn=0.2210 embed=0.9955
+    L0 sdpa_bwd: |dq|=0.091493 |dk|=0.061355 |dv|=0.076216
+  timing: ane_fwd=9.4 io_fwd=0.0 rms=0.4 ane_bwd=9.0 io_bwd=0.0 silu=1.4 rms_bwd=0.6 cls=6.9 cblas_wait=0.0 dw_copy=0.4
+step 370  loss=5.7065  lr=3.00e-04  29.9ms/step  x[-2.17,2.05] dy[-2.785e+00,2.350e+00] thermal=nominal
+  grad_norm=3.8435  attn=1.7858 ffn=0.4710 embed=3.3704
+    L0 sdpa_bwd: |dq|=0.187300 |dk|=0.156170 |dv|=0.098074
+  timing: ane_fwd=8.5 io_fwd=0.0 rms=0.5 ane_bwd=8.8 io_bwd=0.0 silu=1.4 rms_bwd=0.6 cls=7.4 cblas_wait=0.0 dw_copy=0.4
+step 380  loss=6.3456  lr=2.99e-04  29.9ms/step  x[-1.91,1.84] dy[-6.376e+00,4.422e+00] thermal=nominal
+  grad_norm=0.9685  attn=0.2326 ffn=0.1260 embed=0.9315
+    L0 sdpa_bwd: |dq|=0.132880 |dk|=0.143576 |dv|=0.089621
+  timing: ane_fwd=5.8 io_fwd=0.0 rms=0.3 ane_bwd=8.6 io_bwd=0.0 silu=2.0 rms_bwd=0.5 cls=5.8 cblas_wait=0.0 dw_copy=0.4
+step 390  loss=6.0630  lr=2.99e-04  25.4ms/step  x[-1.93,1.91] dy[-5.661e+00,3.921e+00] thermal=nominal
+  grad_norm=0.9381  attn=0.2765 ffn=0.1485 embed=0.8839
+  [ckpt saved, best_loss=6.1008]
+    L0 sdpa_bwd: |dq|=0.190553 |dk|=0.058265 |dv|=0.071547
+  timing: ane_fwd=7.1 io_fwd=0.0 rms=0.3 ane_bwd=8.5 io_bwd=0.0 silu=1.6 rms_bwd=0.6 cls=6.5 cblas_wait=0.0 dw_copy=0.4
+step 400  loss=6.0383  lr=2.99e-04  27.8ms/step  x[-2.12,2.07] dy[-5.341e+00,6.596e+00] thermal=nominal
+  [val] loss=5.8594 (avg of 10 samples from val split)
+  grad_norm=1.0407  attn=0.2376 ffn=0.1532 embed=1.0014
+    L0 sdpa_bwd: |dq|=0.472117 |dk|=0.419201 |dv|=0.188480
+  timing: ane_fwd=7.2 io_fwd=0.0 rms=0.3 ane_bwd=9.4 io_bwd=0.0 silu=1.7 rms_bwd=0.8 cls=6.4 cblas_wait=0.0 dw_copy=0.5
+step 410  loss=6.2776  lr=2.99e-04  28.9ms/step  x[-2.14,2.06] dy[-1.433e+01,1.119e+01] thermal=nominal
+  grad_norm=0.9779  attn=0.2941 ffn=0.1497 embed=0.9203
+    L0 sdpa_bwd: |dq|=0.821599 |dk|=0.577277 |dv|=0.308975
+  timing: ane_fwd=8.3 io_fwd=0.0 rms=0.3 ane_bwd=8.1 io_bwd=0.0 silu=1.5 rms_bwd=0.6 cls=9.6 cblas_wait=0.0 dw_copy=0.5
+step 420  loss=5.5067  lr=2.99e-04  30.9ms/step  x[-2.29,2.25] dy[-2.961e+01,3.397e+01] thermal=nominal
+  grad_norm=1.4155  attn=0.3793 ffn=0.2352 embed=1.3429
+    L0 sdpa_bwd: |dq|=0.509641 |dk|=0.405715 |dv|=0.233236
+  timing: ane_fwd=7.4 io_fwd=0.0 rms=0.4 ane_bwd=9.4 io_bwd=0.0 silu=1.9 rms_bwd=0.8 cls=8.2 cblas_wait=0.0 dw_copy=0.5
+step 430  loss=5.4313  lr=2.99e-04  31.4ms/step  x[-2.28,2.29] dy[-1.495e+01,1.832e+01] thermal=nominal
+  grad_norm=1.0123  attn=0.2925 ffn=0.1560 embed=0.9562
+    L0 sdpa_bwd: |dq|=0.676988 |dk|=0.490291 |dv|=0.210097
+  timing: ane_fwd=9.9 io_fwd=0.0 rms=0.4 ane_bwd=8.1 io_bwd=0.0 silu=2.0 rms_bwd=0.7 cls=8.2 cblas_wait=0.0 dw_copy=0.5
+step 440  loss=6.1256  lr=2.99e-04  31.8ms/step  x[-2.22,2.26] dy[-1.723e+01,2.187e+01] thermal=nominal
+  grad_norm=1.2996  attn=0.6559 ffn=0.2022 embed=1.1033
+    L0 sdpa_bwd: |dq|=0.407613 |dk|=0.291347 |dv|=0.350750
+  timing: ane_fwd=7.6 io_fwd=0.0 rms=0.4 ane_bwd=7.5 io_bwd=0.1 silu=2.0 rms_bwd=0.7 cls=6.4 cblas_wait=0.0 dw_copy=0.5
+step 450  loss=5.7524  lr=2.99e-04  26.7ms/step  x[-2.08,2.11] dy[-1.217e+01,1.006e+01] thermal=nominal
+  grad_norm=1.6709  attn=0.6077 ffn=0.2576 embed=1.5347
+    L0 sdpa_bwd: |dq|=0.465628 |dk|=0.312569 |dv|=0.502091
+  timing: ane_fwd=8.2 io_fwd=0.0 rms=0.4 ane_bwd=7.5 io_bwd=0.0 silu=1.4 rms_bwd=0.6 cls=6.7 cblas_wait=0.0 dw_copy=0.4
+step 460  loss=5.7697  lr=2.99e-04  31.2ms/step  x[-2.07,2.09] dy[-1.590e+01,1.562e+01] thermal=nominal
+  grad_norm=1.1981  attn=0.5124 ffn=0.2264 embed=1.0588
+    L0 sdpa_bwd: |dq|=0.410022 |dk|=0.198522 |dv|=0.262652
+  timing: ane_fwd=8.1 io_fwd=0.0 rms=0.4 ane_bwd=7.8 io_bwd=0.1 silu=2.1 rms_bwd=0.7 cls=5.8 cblas_wait=0.0 dw_copy=0.5
+step 470  loss=6.1138  lr=2.99e-04  27.2ms/step  x[-1.91,1.96] dy[-1.443e+01,1.365e+01] thermal=nominal
+  grad_norm=1.6323  attn=0.9991 ffn=0.4276 embed=1.2169
+    L0 sdpa_bwd: |dq|=0.484091 |dk|=0.218852 |dv|=0.195460
+  timing: ane_fwd=7.2 io_fwd=0.0 rms=0.4 ane_bwd=9.6 io_bwd=0.0 silu=1.7 rms_bwd=0.8 cls=6.6 cblas_wait=0.0 dw_copy=0.5
+step 480  loss=5.7439  lr=2.99e-04  29.5ms/step  x[-1.82,1.94] dy[-1.346e+01,1.573e+01] thermal=nominal
+  grad_norm=1.8197  attn=1.0954 ffn=0.3269 embed=1.4153
+    L0 sdpa_bwd: |dq|=0.618278 |dk|=0.245704 |dv|=0.422127
+  timing: ane_fwd=7.1 io_fwd=0.0 rms=0.4 ane_bwd=7.3 io_bwd=0.0 silu=1.4 rms_bwd=0.5 cls=6.6 cblas_wait=0.0 dw_copy=0.4
+step 490  loss=6.2463  lr=2.99e-04  29.3ms/step  x[-1.81,1.79] dy[-1.938e+01,2.335e+01] thermal=nominal
+  grad_norm=1.9226  attn=1.1810 ffn=0.3031 embed=1.4860
+    L0 sdpa_bwd: |dq|=0.266182 |dk|=0.119654 |dv|=0.223176
+  timing: ane_fwd=9.5 io_fwd=0.0 rms=0.5 ane_bwd=9.5 io_bwd=0.0 silu=1.4 rms_bwd=0.7 cls=6.5 cblas_wait=0.0 dw_copy=0.5
+step 500  loss=6.1838  lr=2.99e-04  30.6ms/step  x[-1.96,1.81] dy[-8.639e+00,8.590e+00] thermal=nominal
+  [val] loss=5.7336 (avg of 10 samples from val split)
+  grad_norm=1.0405  attn=0.4358 ffn=0.2156 embed=0.9197
+    L0 sdpa_bwd: |dq|=0.689380 |dk|=0.206761 |dv|=0.619711
+  timing: ane_fwd=8.6 io_fwd=0.0 rms=0.5 ane_bwd=7.0 io_bwd=0.0 silu=1.3 rms_bwd=0.5 cls=7.1 cblas_wait=0.0 dw_copy=0.4
+step 510  loss=5.5252  lr=2.99e-04  29.1ms/step  x[-1.92,1.72] dy[-1.799e+01,2.106e+01] thermal=nominal
+  grad_norm=1.4122  attn=0.8444 ffn=0.2166 embed=1.1106
+    L0 sdpa_bwd: |dq|=0.857795 |dk|=0.180031 |dv|=2.421628
+  timing: ane_fwd=8.7 io_fwd=0.0 rms=0.4 ane_bwd=9.5 io_bwd=0.0 silu=1.6 rms_bwd=0.8 cls=7.9 cblas_wait=0.0 dw_copy=0.5
+step 520  loss=5.7892  lr=2.99e-04  32.3ms/step  x[-1.96,1.69] dy[-5.250e+01,5.354e+01] thermal=nominal
+  grad_norm=1.8024  attn=0.9208 ffn=0.2931 embed=1.5212
+    L0 sdpa_bwd: |dq|=0.374106 |dk|=0.425484 |dv|=0.956581
+  timing: ane_fwd=10.1 io_fwd=0.0 rms=0.5 ane_bwd=8.1 io_bwd=0.0 silu=1.8 rms_bwd=0.6 cls=7.7 cblas_wait=0.0 dw_copy=0.4
+step 530  loss=5.2561  lr=2.99e-04  31.1ms/step  x[-2.20,1.90] dy[-2.406e+01,2.336e+01] thermal=nominal
+  grad_norm=1.6452  attn=0.8661 ffn=0.3918 embed=1.3424
+    L0 sdpa_bwd: |dq|=0.340786 |dk|=0.132378 |dv|=0.784435
+  timing: ane_fwd=5.9 io_fwd=0.0 rms=0.3 ane_bwd=7.9 io_bwd=0.1 silu=1.2 rms_bwd=0.6 cls=5.8 cblas_wait=0.0 dw_copy=0.4
+step 540  loss=5.5664  lr=2.99e-04  23.5ms/step  x[-2.15,1.81] dy[-2.237e+01,2.567e+01] thermal=nominal
+  grad_norm=2.3199  attn=1.6569 ffn=0.3083 embed=1.5934
+    L0 sdpa_bwd: |dq|=0.229948 |dk|=0.104268 |dv|=0.300642
+  timing: ane_fwd=8.7 io_fwd=0.0 rms=0.4 ane_bwd=9.3 io_bwd=0.0 silu=1.6 rms_bwd=0.8 cls=7.8 cblas_wait=0.0 dw_copy=0.5
+step 550  loss=5.1502  lr=2.99e-04  31.6ms/step  x[-2.32,1.90] dy[-7.635e+00,7.175e+00] thermal=nominal
+  grad_norm=1.8570  attn=1.1818 ffn=0.3324 embed=1.3928
+    L0 sdpa_bwd: |dq|=0.434631 |dk|=0.126371 |dv|=0.510640
+  timing: ane_fwd=8.5 io_fwd=0.0 rms=0.4 ane_bwd=9.7 io_bwd=0.0 silu=1.5 rms_bwd=0.7 cls=8.2 cblas_wait=0.0 dw_copy=0.5
+step 560  loss=6.0109  lr=2.99e-04  32.2ms/step  x[-2.09,1.76] dy[-1.459e+01,1.392e+01] thermal=nominal
+  grad_norm=1.2637  attn=0.7089 ffn=0.2378 embed=1.0184
+    L0 sdpa_bwd: |dq|=0.398385 |dk|=0.164303 |dv|=0.488518
+  timing: ane_fwd=7.9 io_fwd=0.0 rms=0.4 ane_bwd=8.3 io_bwd=0.0 silu=2.0 rms_bwd=0.6 cls=7.8 cblas_wait=0.0 dw_copy=0.4
+step 570  loss=5.5524  lr=2.99e-04  29.3ms/step  x[-2.05,1.81] dy[-1.594e+01,1.947e+01] thermal=nominal
+  grad_norm=1.5859  attn=0.9393 ffn=0.5052 embed=1.1725
+    L0 sdpa_bwd: |dq|=0.573542 |dk|=0.322281 |dv|=1.174771
+  timing: ane_fwd=6.9 io_fwd=0.0 rms=0.4 ane_bwd=8.3 io_bwd=0.0 silu=1.9 rms_bwd=0.6 cls=7.9 cblas_wait=0.0 dw_copy=0.4
+step 580  loss=5.6447  lr=2.98e-04  28.0ms/step  x[-1.92,1.97] dy[-2.384e+01,2.410e+01] thermal=nominal
+  grad_norm=1.2943  attn=0.6055 ffn=0.2567 embed=1.1143
+    L0 sdpa_bwd: |dq|=0.345664 |dk|=0.102596 |dv|=0.468040
+  timing: ane_fwd=7.0 io_fwd=0.0 rms=0.3 ane_bwd=7.8 io_bwd=0.0 silu=1.5 rms_bwd=0.6 cls=5.7 cblas_wait=0.0 dw_copy=0.4
+step 590  loss=5.3837  lr=2.98e-04  28.0ms/step  x[-2.10,1.98] dy[-1.209e+01,1.219e+01] thermal=nominal
+  grad_norm=1.2585  attn=0.5412 ffn=0.2829 embed=1.1002
+  [ckpt saved, best_loss=5.2190]
+    L0 sdpa_bwd: |dq|=0.317848 |dk|=0.173128 |dv|=0.860575
+  timing: ane_fwd=7.9 io_fwd=0.0 rms=0.3 ane_bwd=8.4 io_bwd=0.0 silu=1.4 rms_bwd=0.6 cls=7.6 cblas_wait=0.0 dw_copy=0.4
+step 600  loss=5.7782  lr=2.98e-04  31.9ms/step  x[-2.16,1.98] dy[-1.725e+01,1.475e+01] thermal=nominal
+  [val] loss=5.5573 (avg of 10 samples from val split)
+  grad_norm=1.4598  attn=0.7795 ffn=0.4034 embed=1.1662
+    L0 sdpa_bwd: |dq|=0.301865 |dk|=0.118309 |dv|=0.423840
+  timing: ane_fwd=9.7 io_fwd=0.0 rms=0.5 ane_bwd=8.0 io_bwd=0.1 silu=2.0 rms_bwd=0.7 cls=7.7 cblas_wait=0.0 dw_copy=0.5
+step 610  loss=5.5220  lr=2.98e-04  30.9ms/step  x[-1.98,1.98] dy[-8.888e+00,8.896e+00] thermal=nominal
+  grad_norm=1.1157  attn=0.4398 ffn=0.2390 embed=0.9967
+    L0 sdpa_bwd: |dq|=0.936006 |dk|=0.178744 |dv|=0.411479
+  timing: ane_fwd=9.4 io_fwd=0.0 rms=0.5 ane_bwd=8.1 io_bwd=0.0 silu=1.9 rms_bwd=0.7 cls=7.7 cblas_wait=0.0 dw_copy=0.5
+step 620  loss=6.0557  lr=2.98e-04  30.2ms/step  x[-2.16,1.99] dy[-2.511e+01,2.442e+01] thermal=nominal
+  grad_norm=1.3998  attn=0.6969 ffn=0.3333 embed=1.1667
+    L0 sdpa_bwd: |dq|=0.336627 |dk|=0.143228 |dv|=0.401976
+  timing: ane_fwd=9.3 io_fwd=0.0 rms=0.4 ane_bwd=9.6 io_bwd=0.1 silu=1.6 rms_bwd=0.8 cls=7.7 cblas_wait=0.0 dw_copy=0.5
+step 630  loss=5.6821  lr=2.98e-04  32.1ms/step  x[-2.08,1.99] dy[-1.163e+01,1.083e+01] thermal=nominal
+  grad_norm=2.2527  attn=1.3408 ffn=0.4520 embed=1.7525
+    L0 sdpa_bwd: |dq|=0.346912 |dk|=0.121277 |dv|=0.330267
+  timing: ane_fwd=9.0 io_fwd=0.0 rms=0.4 ane_bwd=8.1 io_bwd=0.0 silu=1.8 rms_bwd=0.6 cls=7.6 cblas_wait=0.0 dw_copy=0.4
+step 640  loss=5.1731  lr=2.98e-04  29.9ms/step  x[-2.08,1.99] dy[-1.133e+01,1.105e+01] thermal=nominal
+  grad_norm=1.1672  attn=0.6046 ffn=0.2674 embed=0.9616
+    L0 sdpa_bwd: |dq|=0.168488 |dk|=0.105360 |dv|=0.297959
+  timing: ane_fwd=7.6 io_fwd=0.0 rms=0.4 ane_bwd=8.5 io_bwd=0.1 silu=1.6 rms_bwd=0.7 cls=8.6 cblas_wait=0.0 dw_copy=0.5
+step 650  loss=5.6544  lr=2.98e-04  30.7ms/step  x[-2.00,1.88] dy[-7.545e+00,6.927e+00] thermal=nominal
+  grad_norm=1.4060  attn=0.8422 ffn=0.3026 embed=1.0841
+    L0 sdpa_bwd: |dq|=0.290204 |dk|=0.174453 |dv|=0.356678
+  timing: ane_fwd=8.1 io_fwd=0.0 rms=0.4 ane_bwd=9.5 io_bwd=0.0 silu=1.8 rms_bwd=0.8 cls=7.9 cblas_wait=0.0 dw_copy=0.6
+step 660  loss=5.8869  lr=2.98e-04  31.4ms/step  x[-1.85,1.88] dy[-1.130e+01,1.173e+01] thermal=nominal
+  grad_norm=1.1253  attn=0.4721 ffn=0.2552 embed=0.9888
+    L0 sdpa_bwd: |dq|=0.202006 |dk|=0.127730 |dv|=1.283391
+  timing: ane_fwd=9.4 io_fwd=0.0 rms=0.4 ane_bwd=11.1 io_bwd=0.1 silu=1.9 rms_bwd=0.7 cls=7.4 cblas_wait=0.0 dw_copy=0.5
+step 670  loss=5.6441  lr=2.98e-04  33.6ms/step  x[-1.82,1.91] dy[-3.504e+01,3.345e+01] thermal=nominal
+  grad_norm=1.7194  attn=1.1086 ffn=0.4874 embed=1.2196
+    L0 sdpa_bwd: |dq|=0.857356 |dk|=1.056045 |dv|=1.287213
+  timing: ane_fwd=9.4 io_fwd=0.0 rms=0.4 ane_bwd=8.1 io_bwd=0.0 silu=1.8 rms_bwd=0.6 cls=7.7 cblas_wait=0.0 dw_copy=0.4
+step 680  loss=5.5817  lr=2.98e-04  30.9ms/step  x[-1.83,1.88] dy[-3.003e+01,2.969e+01] thermal=nominal
+  grad_norm=1.1939  attn=0.5731 ffn=0.2884 embed=1.0062
+    L0 sdpa_bwd: |dq|=0.276156 |dk|=0.129195 |dv|=0.354014
+  timing: ane_fwd=9.9 io_fwd=0.0 rms=0.5 ane_bwd=8.2 io_bwd=0.0 silu=2.1 rms_bwd=0.8 cls=7.6 cblas_wait=0.0 dw_copy=0.6
+step 690  loss=4.9049  lr=2.98e-04  31.6ms/step  x[-1.76,1.95] dy[-1.226e+01,1.250e+01] thermal=nominal
+  grad_norm=1.4566  attn=0.9280 ffn=0.3398 embed=1.0696
+  [ckpt saved, best_loss=5.1777]
+    L0 sdpa_bwd: |dq|=0.381646 |dk|=0.240479 |dv|=0.776942
+  timing: ane_fwd=5.8 io_fwd=0.0 rms=0.3 ane_bwd=10.0 io_bwd=0.1 silu=1.9 rms_bwd=0.7 cls=6.1 cblas_wait=0.0 dw_copy=0.5
+step 700  loss=4.8887  lr=2.98e-04  26.8ms/step  x[-1.87,1.93] dy[-1.596e+01,1.829e+01] thermal=nominal
+  [val] loss=5.4101 (avg of 10 samples from val split)
+  grad_norm=1.6496  attn=1.0807 ffn=0.3657 embed=1.1908
+    L0 sdpa_bwd: |dq|=0.484347 |dk|=0.374826 |dv|=0.480908
+  timing: ane_fwd=5.8 io_fwd=0.0 rms=0.3 ane_bwd=9.8 io_bwd=0.0 silu=1.3 rms_bwd=0.8 cls=6.0 cblas_wait=0.0 dw_copy=0.6
+step 710  loss=5.1842  lr=2.97e-04  26.5ms/step  x[-1.79,1.97] dy[-1.769e+01,1.841e+01] thermal=nominal
+  grad_norm=2.0575  attn=1.5265 ffn=0.4728 embed=1.2951
+    L0 sdpa_bwd: |dq|=0.892380 |dk|=0.520803 |dv|=1.012955
+  timing: ane_fwd=8.3 io_fwd=0.0 rms=0.3 ane_bwd=8.0 io_bwd=0.0 silu=1.5 rms_bwd=0.6 cls=9.1 cblas_wait=0.0 dw_copy=0.4
+step 720  loss=5.6709  lr=2.97e-04  31.7ms/step  x[-1.94,2.13] dy[-3.083e+01,3.251e+01] thermal=nominal
+  grad_norm=2.1128  attn=1.5081 ffn=0.4627 embed=1.4050
+    L0 sdpa_bwd: |dq|=0.554120 |dk|=0.309058 |dv|=0.427493
+  timing: ane_fwd=5.7 io_fwd=0.0 rms=0.3 ane_bwd=7.5 io_bwd=0.0 silu=1.8 rms_bwd=0.7 cls=5.6 cblas_wait=0.0 dw_copy=0.5
+step 730  loss=5.3632  lr=2.97e-04  23.5ms/step  x[-1.87,2.10] dy[-1.754e+01,1.817e+01] thermal=nominal
+  grad_norm=2.5632  attn=2.0042 ffn=0.4963 embed=1.5180
+    L0 sdpa_bwd: |dq|=0.738065 |dk|=0.187241 |dv|=0.326045
+  timing: ane_fwd=9.5 io_fwd=0.0 rms=0.5 ane_bwd=8.7 io_bwd=0.1 silu=1.7 rms_bwd=0.8 cls=8.4 cblas_wait=0.0 dw_copy=0.5
+step 740  loss=5.1938  lr=2.97e-04  32.1ms/step  x[-1.85,2.01] dy[-2.401e+01,2.781e+01] thermal=nominal
+  grad_norm=1.5999  attn=1.0008 ffn=0.4091 embed=1.1789
+    L0 sdpa_bwd: |dq|=0.240486 |dk|=0.157542 |dv|=0.394050
+  timing: ane_fwd=5.7 io_fwd=0.0 rms=0.3 ane_bwd=7.5 io_bwd=0.0 silu=1.7 rms_bwd=0.5 cls=5.6 cblas_wait=0.0 dw_copy=0.4
+step 750  loss=5.3774  lr=2.97e-04  23.3ms/step  x[-1.82,1.78] dy[-1.524e+01,1.494e+01] thermal=nominal
+  grad_norm=2.1535  attn=1.6178 ffn=0.4257 embed=1.3554
+    L0 sdpa_bwd: |dq|=0.387176 |dk|=0.243429 |dv|=0.380857
+  timing: ane_fwd=6.0 io_fwd=0.0 rms=0.3 ane_bwd=8.1 io_bwd=0.0 silu=1.4 rms_bwd=0.6 cls=5.6 cblas_wait=0.0 dw_copy=0.4
+step 760  loss=5.2158  lr=2.97e-04  24.2ms/step  x[-1.71,1.83] dy[-1.368e+01,1.590e+01] thermal=nominal
+  grad_norm=1.8950  attn=1.0749 ffn=0.4672 embed=1.4885
+    L0 sdpa_bwd: |dq|=0.599990 |dk|=0.138266 |dv|=0.470760
+  timing: ane_fwd=9.7 io_fwd=0.0 rms=0.4 ane_bwd=10.4 io_bwd=0.1 silu=1.9 rms_bwd=0.8 cls=7.8 cblas_wait=0.0 dw_copy=0.5
+step 770  loss=5.3924  lr=2.97e-04  34.0ms/step  x[-1.77,1.80] dy[-1.996e+01,2.174e+01] thermal=nominal
+  grad_norm=2.1877  attn=1.2686 ffn=0.4489 embed=1.7244
+    L0 sdpa_bwd: |dq|=0.457557 |dk|=0.253998 |dv|=0.382266
+  timing: ane_fwd=10.0 io_fwd=0.0 rms=0.5 ane_bwd=8.8 io_bwd=0.0 silu=1.7 rms_bwd=0.6 cls=7.8 cblas_wait=0.0 dw_copy=0.4
+step 780  loss=4.7130  lr=2.97e-04  31.9ms/step  x[-1.65,1.78] dy[-1.744e+01,2.347e+01] thermal=nominal
+  grad_norm=1.5465  attn=1.0188 ffn=0.4128 embed=1.0872
+    L0 sdpa_bwd: |dq|=0.486008 |dk|=0.265748 |dv|=0.414953
+  timing: ane_fwd=10.9 io_fwd=0.0 rms=0.5 ane_bwd=9.4 io_bwd=0.0 silu=1.6 rms_bwd=0.6 cls=6.7 cblas_wait=0.0 dw_copy=0.4
+step 790  loss=5.2020  lr=2.97e-04  32.7ms/step  x[-1.62,1.79] dy[-1.134e+01,1.529e+01] thermal=nominal
+  grad_norm=1.3367  attn=0.7346 ffn=0.3508 embed=1.0595
+  [ckpt saved, best_loss=4.8480]
+    L0 sdpa_bwd: |dq|=0.353781 |dk|=0.188721 |dv|=0.505360
+  timing: ane_fwd=5.9 io_fwd=0.0 rms=0.3 ane_bwd=9.1 io_bwd=0.1 silu=1.5 rms_bwd=0.7 cls=5.5 cblas_wait=0.0 dw_copy=0.4
+step 800  loss=5.2145  lr=2.97e-04  24.6ms/step  x[-1.59,1.90] dy[-1.578e+01,1.794e+01] thermal=nominal
+  [val] loss=5.1195 (avg of 10 samples from val split)
+  grad_norm=1.3889  attn=0.6466 ffn=0.4086 embed=1.1588
+    L0 sdpa_bwd: |dq|=0.453188 |dk|=0.337845 |dv|=0.823364
+  timing: ane_fwd=7.2 io_fwd=0.0 rms=0.3 ane_bwd=10.4 io_bwd=0.1 silu=1.7 rms_bwd=0.9 cls=6.9 cblas_wait=0.0 dw_copy=0.6
+step 810  loss=5.1793  lr=2.97e-04  30.2ms/step  x[-1.60,1.97] dy[-2.507e+01,2.266e+01] thermal=nominal
+  grad_norm=1.9319  attn=1.2322 ffn=0.4671 embed=1.4123
+    L0 sdpa_bwd: |dq|=0.218277 |dk|=0.227927 |dv|=0.862657
+  timing: ane_fwd=8.2 io_fwd=0.0 rms=0.4 ane_bwd=10.9 io_bwd=0.1 silu=1.6 rms_bwd=0.8 cls=6.7 cblas_wait=0.0 dw_copy=0.6
+step 820  loss=5.0091  lr=2.97e-04  31.3ms/step  x[-1.58,1.93] dy[-1.787e+01,1.836e+01] thermal=nominal
+  grad_norm=1.4703  attn=0.9068 ffn=0.3340 embed=1.1076
+    L0 sdpa_bwd: |dq|=0.733619 |dk|=0.341020 |dv|=0.734008
+  timing: ane_fwd=9.0 io_fwd=0.0 rms=0.5 ane_bwd=8.4 io_bwd=0.0 silu=1.4 rms_bwd=0.5 cls=6.7 cblas_wait=0.0 dw_copy=0.4
+step 830  loss=4.8052  lr=2.96e-04  29.6ms/step  x[-1.58,1.94] dy[-2.480e+01,2.563e+01] thermal=nominal
+  grad_norm=1.7933  attn=1.1124 ffn=0.5246 embed=1.3043
+    L0 sdpa_bwd: |dq|=0.733447 |dk|=0.258180 |dv|=0.504648
+  timing: ane_fwd=6.7 io_fwd=0.0 rms=0.3 ane_bwd=8.0 io_bwd=0.1 silu=1.8 rms_bwd=0.6 cls=6.9 cblas_wait=0.0 dw_copy=0.5
+step 840  loss=4.4024  lr=2.96e-04  26.7ms/step  x[-1.53,1.80] dy[-2.242e+01,2.196e+01] thermal=nominal
+  grad_norm=1.3965  attn=0.8049 ffn=0.3626 embed=1.0816
+    L0 sdpa_bwd: |dq|=0.879601 |dk|=0.437773 |dv|=0.849741
+  timing: ane_fwd=8.3 io_fwd=0.0 rms=0.4 ane_bwd=8.4 io_bwd=0.1 silu=1.9 rms_bwd=0.7 cls=7.6 cblas_wait=0.0 dw_copy=0.5
+step 850  loss=4.9939  lr=2.96e-04  29.7ms/step  x[-1.63,1.96] dy[-2.826e+01,3.212e+01] thermal=nominal
+  grad_norm=1.3089  attn=0.6849 ffn=0.3427 embed=1.0611
+    L0 sdpa_bwd: |dq|=0.663143 |dk|=0.343901 |dv|=0.707941
+  timing: ane_fwd=9.4 io_fwd=0.0 rms=0.4 ane_bwd=9.1 io_bwd=0.1 silu=1.8 rms_bwd=0.7 cls=8.0 cblas_wait=0.0 dw_copy=0.5
+step 860  loss=5.5400  lr=2.96e-04  31.5ms/step  x[-1.56,1.90] dy[-3.297e+01,3.212e+01] thermal=nominal
+  grad_norm=1.7362  attn=1.0772 ffn=0.4651 embed=1.2792
+    L0 sdpa_bwd: |dq|=0.633798 |dk|=0.348547 |dv|=1.341471
+  timing: ane_fwd=9.6 io_fwd=0.0 rms=0.4 ane_bwd=8.4 io_bwd=0.0 silu=1.5 rms_bwd=0.6 cls=8.0 cblas_wait=0.0 dw_copy=0.4
+step 870  loss=5.3244  lr=2.96e-04  32.4ms/step  x[-1.56,1.93] dy[-2.273e+01,2.575e+01] thermal=nominal
+  grad_norm=1.4640  attn=0.8020 ffn=0.3843 embed=1.1625
+    L0 sdpa_bwd: |dq|=0.330964 |dk|=0.163092 |dv|=0.603648
+  timing: ane_fwd=8.0 io_fwd=0.0 rms=0.4 ane_bwd=10.0 io_bwd=0.1 silu=2.0 rms_bwd=0.7 cls=7.3 cblas_wait=0.0 dw_copy=0.5
+step 880  loss=4.5174  lr=2.96e-04  30.6ms/step  x[-1.59,1.98] dy[-2.649e+01,1.955e+01] thermal=nominal
+  grad_norm=1.2484  attn=0.5838 ffn=0.3252 embed=1.0539
+    L0 sdpa_bwd: |dq|=0.363302 |dk|=0.176675 |dv|=0.739078
+  timing: ane_fwd=10.4 io_fwd=0.0 rms=0.5 ane_bwd=9.2 io_bwd=0.0 silu=1.8 rms_bwd=0.8 cls=7.8 cblas_wait=0.0 dw_copy=0.5
+step 890  loss=5.4791  lr=2.96e-04  32.9ms/step  x[-1.58,1.92] dy[-2.214e+01,1.757e+01] thermal=nominal
+  grad_norm=1.7754  attn=1.2147 ffn=0.5278 embed=1.1819
+  [ckpt saved, best_loss=4.2441]
+    L0 sdpa_bwd: |dq|=0.620446 |dk|=0.151848 |dv|=0.662068
+  timing: ane_fwd=8.0 io_fwd=0.0 rms=0.4 ane_bwd=9.6 io_bwd=0.0 silu=1.3 rms_bwd=0.6 cls=6.0 cblas_wait=0.0 dw_copy=0.5
+step 900  loss=5.1976  lr=2.96e-04  29.2ms/step  x[-1.63,2.00] dy[-2.562e+01,2.943e+01] thermal=nominal
+  [val] loss=5.1349 (avg of 10 samples from val split)
+  grad_norm=1.7862  attn=1.1466 ffn=0.4833 embed=1.2806
+    L0 sdpa_bwd: |dq|=0.337098 |dk|=0.169662 |dv|=0.370092
+  timing: ane_fwd=7.9 io_fwd=0.0 rms=0.5 ane_bwd=9.3 io_bwd=0.1 silu=1.7 rms_bwd=0.9 cls=8.0 cblas_wait=0.0 dw_copy=0.5
+step 910  loss=5.3933  lr=2.96e-04  31.6ms/step  x[-1.57,1.98] dy[-1.562e+01,1.688e+01] thermal=nominal
+  grad_norm=1.4918  attn=0.7969 ffn=0.3658 embed=1.2066
+    L0 sdpa_bwd: |dq|=0.423985 |dk|=0.257172 |dv|=0.792536
+  timing: ane_fwd=8.8 io_fwd=0.0 rms=0.4 ane_bwd=8.5 io_bwd=0.0 silu=1.7 rms_bwd=0.7 cls=7.0 cblas_wait=0.0 dw_copy=0.5
+step 920  loss=4.8361  lr=2.95e-04  29.3ms/step  x[-1.56,1.92] dy[-1.753e+01,1.621e+01] thermal=nominal
+  grad_norm=1.4172  attn=0.7529 ffn=0.4204 embed=1.1240
+    L0 sdpa_bwd: |dq|=0.353967 |dk|=0.161889 |dv|=0.634519
+  timing: ane_fwd=6.1 io_fwd=0.0 rms=0.3 ane_bwd=7.3 io_bwd=0.0 silu=1.1 rms_bwd=0.5 cls=6.6 cblas_wait=0.0 dw_copy=0.4
+step 930  loss=5.0211  lr=2.95e-04  26.1ms/step  x[-1.62,2.08] dy[-2.367e+01,2.088e+01] thermal=nominal
+  grad_norm=2.0862  attn=1.2379 ffn=0.5393 embed=1.5898
+    L0 sdpa_bwd: |dq|=0.382840 |dk|=0.292853 |dv|=0.611079
+  timing: ane_fwd=6.1 io_fwd=0.0 rms=0.3 ane_bwd=10.0 io_bwd=0.1 silu=1.5 rms_bwd=0.7 cls=6.1 cblas_wait=0.0 dw_copy=0.5
+step 940  loss=5.5500  lr=2.95e-04  26.9ms/step  x[-1.60,1.95] dy[-2.359e+01,2.200e+01] thermal=nominal
+  grad_norm=1.5387  attn=0.9157 ffn=0.3828 embed=1.1753
+    L0 sdpa_bwd: |dq|=0.455346 |dk|=0.362525 |dv|=0.984497
+  timing: ane_fwd=7.9 io_fwd=0.0 rms=0.5 ane_bwd=8.0 io_bwd=0.0 silu=1.7 rms_bwd=0.6 cls=7.5 cblas_wait=0.0 dw_copy=0.4
+step 950  loss=5.0783  lr=2.95e-04  28.5ms/step  x[-1.67,2.06] dy[-1.839e+01,1.753e+01] thermal=nominal
+  grad_norm=1.5318  attn=0.9051 ffn=0.4064 embed=1.1666
+    L0 sdpa_bwd: |dq|=0.330406 |dk|=0.168584 |dv|=0.633511
+  timing: ane_fwd=6.3 io_fwd=0.0 rms=0.3 ane_bwd=9.3 io_bwd=0.1 silu=1.4 rms_bwd=0.7 cls=6.3 cblas_wait=0.0 dw_copy=0.6
+step 960  loss=5.3858  lr=2.95e-04  26.7ms/step  x[-1.64,2.00] dy[-1.948e+01,2.252e+01] thermal=nominal
+  grad_norm=1.4603  attn=0.7587 ffn=0.4002 embed=1.1813
+    L0 sdpa_bwd: |dq|=0.310310 |dk|=0.151905 |dv|=0.691364
+  timing: ane_fwd=8.5 io_fwd=0.0 rms=0.4 ane_bwd=10.4 io_bwd=0.1 silu=2.0 rms_bwd=0.9 cls=8.1 cblas_wait=0.0 dw_copy=0.6
+step 970  loss=4.6545  lr=2.95e-04  33.5ms/step  x[-1.70,2.03] dy[-1.489e+01,1.301e+01] thermal=nominal
+  grad_norm=1.5880  attn=1.0028 ffn=0.3880 embed=1.1680
+    L0 sdpa_bwd: |dq|=0.194694 |dk|=0.185436 |dv|=0.599046
+  timing: ane_fwd=10.5 io_fwd=0.0 rms=0.5 ane_bwd=7.8 io_bwd=0.0 silu=1.5 rms_bwd=0.6 cls=7.7 cblas_wait=0.0 dw_copy=0.4
+step 980  loss=4.9521  lr=2.95e-04  32.7ms/step  x[-1.73,2.14] dy[-1.183e+01,1.526e+01] thermal=nominal
+  grad_norm=1.5053  attn=0.8261 ffn=0.4118 embed=1.1887
+    L0 sdpa_bwd: |dq|=0.365358 |dk|=0.204831 |dv|=0.790017
+  timing: ane_fwd=9.7 io_fwd=0.0 rms=0.4 ane_bwd=9.0 io_bwd=0.1 silu=1.6 rms_bwd=0.7 cls=6.9 cblas_wait=0.0 dw_copy=0.5
+step 990  loss=5.0136  lr=2.95e-04  31.6ms/step  x[-1.69,2.15] dy[-2.413e+01,2.406e+01] thermal=nominal
+  grad_norm=1.5970  attn=1.0129 ffn=0.3854 embed=1.1723
+    L0 sdpa_bwd: |dq|=0.394255 |dk|=0.243631 |dv|=0.564212
+  timing: ane_fwd=7.8 io_fwd=0.0 rms=0.4 ane_bwd=9.4 io_bwd=0.1 silu=2.2 rms_bwd=0.8 cls=9.5 cblas_wait=0.0 dw_copy=0.5
+step 1000 loss=5.4100  lr=2.95e-04  33.7ms/step  x[-1.74,2.34] dy[-1.810e+01,1.748e+01] thermal=nominal
+  [val] loss=5.1257 (avg of 10 samples from val split)
+  grad_norm=1.3275  attn=0.7079 ffn=0.3712 embed=1.0594
+    L0 sdpa_bwd: |dq|=0.611963 |dk|=0.239374 |dv|=0.394510
+  timing: ane_fwd=10.4 io_fwd=0.0 rms=0.5 ane_bwd=8.8 io_bwd=0.0 silu=1.4 rms_bwd=0.8 cls=7.0 cblas_wait=0.0 dw_copy=0.5
+step 1010 loss=5.4391  lr=2.94e-04  31.1ms/step  x[-1.81,2.30] dy[-1.906e+01,1.881e+01] thermal=nominal
+  grad_norm=1.5394  attn=0.9001 ffn=0.3901 embed=1.1857
+    L0 sdpa_bwd: |dq|=0.456121 |dk|=0.236337 |dv|=0.596362
+  timing: ane_fwd=8.8 io_fwd=0.0 rms=0.4 ane_bwd=8.7 io_bwd=0.0 silu=1.7 rms_bwd=0.6 cls=7.4 cblas_wait=0.0 dw_copy=0.4
+step 1020 loss=5.4433  lr=2.94e-04  31.7ms/step  x[-1.87,2.34] dy[-2.334e+01,2.378e+01] thermal=nominal
+  grad_norm=1.3462  attn=0.7057 ffn=0.3788 embed=1.0814
+    L0 sdpa_bwd: |dq|=0.480708 |dk|=0.241182 |dv|=0.501541
+  timing: ane_fwd=9.3 io_fwd=0.0 rms=0.4 ane_bwd=8.8 io_bwd=0.0 silu=1.6 rms_bwd=0.6 cls=7.4 cblas_wait=0.0 dw_copy=0.4
+step 1030 loss=4.4628  lr=2.94e-04  30.3ms/step  x[-1.80,2.34] dy[-2.656e+01,2.160e+01] thermal=nominal
+  grad_norm=1.3909  attn=0.7621 ffn=0.3806 embed=1.0988
+    L0 sdpa_bwd: |dq|=0.410621 |dk|=0.259863 |dv|=0.663133
+  timing: ane_fwd=6.8 io_fwd=0.0 rms=0.4 ane_bwd=9.3 io_bwd=0.1 silu=1.7 rms_bwd=0.8 cls=7.7 cblas_wait=0.0 dw_copy=0.5
+step 1040 loss=4.8057  lr=2.94e-04  29.3ms/step  x[-1.78,2.27] dy[-2.185e+01,1.859e+01] thermal=nominal
+  grad_norm=1.5278  attn=0.9702 ffn=0.4221 embed=1.1017
+    L0 sdpa_bwd: |dq|=0.605766 |dk|=0.554117 |dv|=1.263129
+  timing: ane_fwd=9.9 io_fwd=0.0 rms=0.5 ane_bwd=8.6 io_bwd=0.0 silu=1.8 rms_bwd=0.6 cls=10.1 cblas_wait=0.0 dw_copy=0.4
+step 1050 loss=4.5321  lr=2.94e-04  35.5ms/step  x[-1.62,2.18] dy[-2.929e+01,2.004e+01] thermal=nominal
+  grad_norm=1.4810  attn=0.9018 ffn=0.3955 embed=1.1055
+    L0 sdpa_bwd: |dq|=0.221516 |dk|=0.188747 |dv|=0.617549
+  timing: ane_fwd=7.9 io_fwd=0.0 rms=0.4 ane_bwd=9.5 io_bwd=0.0 silu=1.6 rms_bwd=0.6 cls=6.8 cblas_wait=0.0 dw_copy=0.4
+step 1060 loss=4.8369  lr=2.94e-04  29.1ms/step  x[-1.65,2.07] dy[-2.267e+01,2.338e+01] thermal=nominal
+  grad_norm=1.7232  attn=0.9817 ffn=0.5096 embed=1.3205
+    L0 sdpa_bwd: |dq|=0.277392 |dk|=0.273763 |dv|=0.699583
+  timing: ane_fwd=9.1 io_fwd=0.0 rms=0.5 ane_bwd=8.1 io_bwd=0.0 silu=1.9 rms_bwd=0.6 cls=8.2 cblas_wait=0.0 dw_copy=0.4
+step 1070 loss=4.6687  lr=2.94e-04  31.5ms/step  x[-1.58,2.09] dy[-1.713e+01,1.822e+01] thermal=nominal
+  grad_norm=1.4590  attn=0.8226 ffn=0.3992 embed=1.1362
+    L0 sdpa_bwd: |dq|=0.640092 |dk|=0.379058 |dv|=1.477506
+  timing: ane_fwd=9.3 io_fwd=0.0 rms=0.5 ane_bwd=9.3 io_bwd=0.1 silu=2.2 rms_bwd=0.8 cls=7.6 cblas_wait=0.0 dw_copy=0.5
+step 1080 loss=4.8327  lr=2.94e-04  31.8ms/step  x[-1.55,2.01] dy[-3.523e+01,3.036e+01] thermal=nominal
+  grad_norm=1.5007  attn=0.8938 ffn=0.4656 embed=1.1115
+    L0 sdpa_bwd: |dq|=0.233933 |dk|=0.122030 |dv|=0.666664
+  timing: ane_fwd=7.9 io_fwd=0.0 rms=0.4 ane_bwd=9.7 io_bwd=0.1 silu=1.6 rms_bwd=0.7 cls=7.2 cblas_wait=0.0 dw_copy=0.5
+step 1090 loss=4.2284  lr=2.93e-04  30.1ms/step  x[-1.60,2.06] dy[-1.640e+01,1.507e+01] thermal=nominal
+  grad_norm=1.3817  attn=0.8251 ffn=0.3554 embed=1.0490
+  [ckpt saved, best_loss=4.1096]
+    L0 sdpa_bwd: |dq|=0.331852 |dk|=0.260065 |dv|=0.926117
+  timing: ane_fwd=7.7 io_fwd=0.0 rms=0.3 ane_bwd=8.6 io_bwd=0.0 silu=1.2 rms_bwd=0.6 cls=7.8 cblas_wait=0.0 dw_copy=0.4
+step 1100 loss=4.8449  lr=2.93e-04  30.9ms/step  x[-1.69,2.11] dy[-1.969e+01,1.977e+01] thermal=nominal
+  [val] loss=4.7679 (avg of 10 samples from val split)
+  grad_norm=1.6181  attn=0.9631 ffn=0.4311 embed=1.2264
+    L0 sdpa_bwd: |dq|=0.258700 |dk|=0.181170 |dv|=0.741034
+  timing: ane_fwd=6.3 io_fwd=0.0 rms=0.3 ane_bwd=7.2 io_bwd=0.0 silu=1.3 rms_bwd=0.5 cls=5.6 cblas_wait=0.0 dw_copy=0.4
+step 1110 loss=5.7994  lr=2.93e-04  23.7ms/step  x[-1.67,2.11] dy[-1.822e+01,2.217e+01] thermal=nominal
+  grad_norm=1.5352  attn=0.8894 ffn=0.4088 embed=1.1821
+    L0 sdpa_bwd: |dq|=0.388519 |dk|=0.327356 |dv|=0.876227
+  timing: ane_fwd=8.9 io_fwd=0.0 rms=0.4 ane_bwd=8.2 io_bwd=0.0 silu=1.9 rms_bwd=0.6 cls=10.6 cblas_wait=0.0 dw_copy=0.5
+step 1120 loss=5.1330  lr=2.93e-04  33.1ms/step  x[-1.60,2.02] dy[-1.898e+01,1.917e+01] thermal=nominal
+  grad_norm=1.7705  attn=1.1240 ffn=0.5460 embed=1.2537
+    L0 sdpa_bwd: |dq|=0.324020 |dk|=0.180798 |dv|=0.754803
+  timing: ane_fwd=9.1 io_fwd=0.0 rms=0.4 ane_bwd=8.3 io_bwd=0.0 silu=1.9 rms_bwd=0.6 cls=7.9 cblas_wait=0.0 dw_copy=0.5
+step 1130 loss=4.6373  lr=2.93e-04  31.4ms/step  x[-1.55,1.92] dy[-1.430e+01,1.392e+01] thermal=nominal
+  grad_norm=1.5855  attn=0.9733 ffn=0.4128 embed=1.1809
+    L0 sdpa_bwd: |dq|=0.598278 |dk|=0.275097 |dv|=0.592888
+  timing: ane_fwd=9.2 io_fwd=0.0 rms=0.4 ane_bwd=9.4 io_bwd=0.1 silu=1.6 rms_bwd=0.8 cls=7.8 cblas_wait=0.0 dw_copy=0.5
+step 1140 loss=4.1832  lr=2.93e-04  31.6ms/step  x[-1.56,1.97] dy[-1.975e+01,1.987e+01] thermal=nominal
+  grad_norm=1.5937  attn=0.9709 ffn=0.4582 embed=1.1772
+    L0 sdpa_bwd: |dq|=0.506328 |dk|=0.167523 |dv|=0.532562
+  timing: ane_fwd=5.8 io_fwd=0.0 rms=0.3 ane_bwd=7.5 io_bwd=0.1 silu=1.1 rms_bwd=0.6 cls=5.4 cblas_wait=0.0 dw_copy=0.5
+step 1150 loss=4.5574  lr=2.93e-04  23.5ms/step  x[-1.51,1.92] dy[-1.947e+01,1.537e+01] thermal=nominal
+  grad_norm=1.5719  attn=0.9499 ffn=0.4696 embed=1.1606
+    L0 sdpa_bwd: |dq|=0.902584 |dk|=0.224583 |dv|=0.518182
+  timing: ane_fwd=8.1 io_fwd=0.0 rms=0.4 ane_bwd=8.0 io_bwd=0.0 silu=1.8 rms_bwd=0.7 cls=7.5 cblas_wait=0.0 dw_copy=0.5
+step 1160 loss=4.8028  lr=2.92e-04  28.8ms/step  x[-1.57,1.86] dy[-3.502e+01,2.869e+01] thermal=nominal
+  grad_norm=1.5544  attn=0.9198 ffn=0.5112 embed=1.1432
+    L0 sdpa_bwd: |dq|=0.478300 |dk|=0.191293 |dv|=1.480851
+  timing: ane_fwd=10.7 io_fwd=0.0 rms=0.5 ane_bwd=8.2 io_bwd=0.0 silu=1.8 rms_bwd=0.6 cls=7.8 cblas_wait=0.0 dw_copy=0.5
+step 1170 loss=5.5949  lr=2.92e-04  32.7ms/step  x[-1.44,1.74] dy[-2.755e+01,2.909e+01] thermal=nominal
+  grad_norm=1.7491  attn=1.1300 ffn=0.4849 embed=1.2432
+    L0 sdpa_bwd: |dq|=0.213870 |dk|=0.282171 |dv|=0.507316
+  timing: ane_fwd=8.3 io_fwd=0.0 rms=0.3 ane_bwd=8.2 io_bwd=0.0 silu=1.3 rms_bwd=0.5 cls=7.0 cblas_wait=0.0 dw_copy=0.4
+step 1180 loss=5.1092  lr=2.92e-04  29.5ms/step  x[-1.41,1.67] dy[-1.877e+01,1.446e+01] thermal=nominal
+  grad_norm=1.3398  attn=0.7641 ffn=0.3804 embed=1.0323
+    L0 sdpa_bwd: |dq|=0.182204 |dk|=0.182912 |dv|=0.487587
+  timing: ane_fwd=7.5 io_fwd=0.0 rms=0.3 ane_bwd=10.3 io_bwd=0.1 silu=1.5 rms_bwd=0.8 cls=6.7 cblas_wait=0.0 dw_copy=0.6
+step 1190 loss=4.8263  lr=2.92e-04  30.9ms/step  x[-1.44,1.68] dy[-1.337e+01,1.580e+01] thermal=nominal
+  grad_norm=1.5143  attn=0.9665 ffn=0.4219 embed=1.0863
+    L0 sdpa_bwd: |dq|=0.323979 |dk|=0.148697 |dv|=0.801180
+  timing: ane_fwd=10.2 io_fwd=0.0 rms=0.5 ane_bwd=8.0 io_bwd=0.0 silu=1.1 rms_bwd=0.5 cls=8.2 cblas_wait=0.0 dw_copy=0.4
+step 1200 loss=5.4530  lr=2.92e-04  30.5ms/step  x[-1.36,1.48] dy[-2.105e+01,2.324e+01] thermal=nominal
+  [val] loss=4.5080 (avg of 10 samples from val split)
+  grad_norm=1.8479  attn=1.3175 ffn=0.5416 embed=1.1765
+    L0 sdpa_bwd: |dq|=0.231740 |dk|=0.144745 |dv|=0.573355
+  timing: ane_fwd=5.8 io_fwd=0.0 rms=0.3 ane_bwd=7.5 io_bwd=0.1 silu=1.4 rms_bwd=0.6 cls=5.4 cblas_wait=0.0 dw_copy=0.5
+step 1210 loss=4.2884  lr=2.92e-04  23.0ms/step  x[-1.32,1.42] dy[-1.888e+01,1.389e+01] thermal=nominal
+  grad_norm=1.4186  attn=0.8304 ffn=0.4330 embed=1.0651
+    L0 sdpa_bwd: |dq|=0.333897 |dk|=0.169963 |dv|=0.467985
+  timing: ane_fwd=6.5 io_fwd=0.0 rms=0.4 ane_bwd=10.0 io_bwd=0.1 silu=1.6 rms_bwd=0.8 cls=7.7 cblas_wait=0.0 dw_copy=0.5
+step 1220 loss=4.6437  lr=2.92e-04  29.9ms/step  x[-1.37,1.66] dy[-1.885e+01,1.663e+01] thermal=nominal
+  grad_norm=1.6149  attn=0.9901 ffn=0.5019 embed=1.1723
+    L0 sdpa_bwd: |dq|=0.229858 |dk|=0.426766 |dv|=0.725089
+  timing: ane_fwd=8.2 io_fwd=0.0 rms=0.4 ane_bwd=8.2 io_bwd=0.0 silu=1.8 rms_bwd=0.6 cls=8.0 cblas_wait=0.0 dw_copy=0.4
+step 1230 loss=4.6907  lr=2.91e-04  29.5ms/step  x[-1.44,1.72] dy[-1.605e+01,1.854e+01] thermal=nominal
+  grad_norm=1.4098  attn=0.7894 ffn=0.4418 embed=1.0804
+    L0 sdpa_bwd: |dq|=0.209039 |dk|=0.191346 |dv|=0.928908
+  timing: ane_fwd=8.0 io_fwd=0.0 rms=0.4 ane_bwd=7.8 io_bwd=0.0 silu=1.5 rms_bwd=0.6 cls=9.2 cblas_wait=0.0 dw_copy=0.4
+step 1240 loss=4.0248  lr=2.91e-04  33.0ms/step  x[-1.42,1.76] dy[-1.378e+01,1.330e+01] thermal=nominal
+  grad_norm=1.5015  attn=0.8610 ffn=0.4381 embed=1.1491
+    L0 sdpa_bwd: |dq|=0.296299 |dk|=0.200267 |dv|=0.500310
+  timing: ane_fwd=8.7 io_fwd=0.0 rms=0.4 ane_bwd=9.5 io_bwd=0.0 silu=1.6 rms_bwd=0.8 cls=7.8 cblas_wait=0.0 dw_copy=0.5
+step 1250 loss=4.7998  lr=2.91e-04  32.0ms/step  x[-1.44,1.63] dy[-1.724e+01,1.780e+01] thermal=nominal
+  grad_norm=1.6278  attn=0.9984 ffn=0.4865 embed=1.1896
+    L0 sdpa_bwd: |dq|=0.507415 |dk|=0.348350 |dv|=0.765554
+  timing: ane_fwd=10.2 io_fwd=0.0 rms=0.5 ane_bwd=7.9 io_bwd=0.0 silu=1.8 rms_bwd=0.6 cls=7.6 cblas_wait=0.0 dw_copy=0.4
+step 1260 loss=5.1360  lr=2.91e-04  31.1ms/step  x[-1.45,1.73] dy[-2.390e+01,2.158e+01] thermal=nominal
+  grad_norm=1.5666  attn=0.9940 ffn=0.4159 embed=1.1367
+    L0 sdpa_bwd: |dq|=0.459065 |dk|=0.196604 |dv|=0.633103
+  timing: ane_fwd=5.9 io_fwd=0.0 rms=0.3 ane_bwd=8.1 io_bwd=0.0 silu=1.6 rms_bwd=0.7 cls=5.9 cblas_wait=0.0 dw_copy=0.5
+step 1270 loss=4.9760  lr=2.91e-04  24.5ms/step  x[-1.44,1.67] dy[-1.603e+01,1.552e+01] thermal=nominal
+  grad_norm=1.9981  attn=1.3276 ffn=0.5976 embed=1.3677
+    L0 sdpa_bwd: |dq|=0.436941 |dk|=0.200088 |dv|=0.865779
+  timing: ane_fwd=8.8 io_fwd=0.0 rms=0.4 ane_bwd=9.5 io_bwd=0.0 silu=1.8 rms_bwd=0.8 cls=7.0 cblas_wait=0.0 dw_copy=0.5
+step 1280 loss=4.8048  lr=2.91e-04  31.5ms/step  x[-1.45,1.67] dy[-2.366e+01,1.644e+01] thermal=nominal
+  grad_norm=1.5501  attn=0.8980 ffn=0.4675 embed=1.1732
+    L0 sdpa_bwd: |dq|=0.377397 |dk|=0.287447 |dv|=1.417393
+  timing: ane_fwd=9.0 io_fwd=0.0 rms=0.4 ane_bwd=8.2 io_bwd=0.0 silu=1.6 rms_bwd=0.6 cls=7.6 cblas_wait=0.0 dw_copy=0.5
+step 1290 loss=4.6452  lr=2.91e-04  29.9ms/step  x[-1.49,1.74] dy[-2.511e+01,1.951e+01] thermal=nominal
+  grad_norm=1.3970  attn=0.7550 ffn=0.3977 embed=1.1057
+    L0 sdpa_bwd: |dq|=0.418554 |dk|=0.227821 |dv|=0.710142
+  timing: ane_fwd=10.1 io_fwd=0.0 rms=0.4 ane_bwd=9.9 io_bwd=0.1 silu=2.1 rms_bwd=0.8 cls=8.4 cblas_wait=0.0 dw_copy=0.5
+step 1300 loss=5.1698  lr=2.90e-04  34.1ms/step  x[-1.49,1.74] dy[-1.833e+01,1.727e+01] thermal=nominal
+  [val] loss=4.4445 (avg of 10 samples from val split)
+  grad_norm=1.5726  attn=1.0252 ffn=0.4286 embed=1.1124
+    L0 sdpa_bwd: |dq|=0.439634 |dk|=0.327168 |dv|=1.261529
+  timing: ane_fwd=5.8 io_fwd=0.0 rms=0.3 ane_bwd=7.7 io_bwd=0.1 silu=2.0 rms_bwd=0.6 cls=5.6 cblas_wait=0.0 dw_copy=0.5
+step 1310 loss=4.7770  lr=2.90e-04  24.2ms/step  x[-1.45,1.73] dy[-3.049e+01,2.895e+01] thermal=nominal
+  grad_norm=1.4270  attn=0.8202 ffn=0.4318 embed=1.0845
+    L0 sdpa_bwd: |dq|=0.314390 |dk|=0.513354 |dv|=0.611793
+  timing: ane_fwd=8.6 io_fwd=0.0 rms=0.5 ane_bwd=8.2 io_bwd=0.0 silu=1.6 rms_bwd=0.6 cls=8.0 cblas_wait=0.0 dw_copy=0.5
+step 1320 loss=4.0598  lr=2.90e-04  30.7ms/step  x[-1.50,1.82] dy[-2.508e+01,2.452e+01] thermal=nominal
+  grad_norm=1.6266  attn=0.9711 ffn=0.5034 embed=1.2033
+    L0 sdpa_bwd: |dq|=0.232463 |dk|=0.344754 |dv|=0.526572
+  timing: ane_fwd=9.9 io_fwd=0.0 rms=0.4 ane_bwd=9.5 io_bwd=0.1 silu=1.7 rms_bwd=0.8 cls=9.7 cblas_wait=0.0 dw_copy=0.5
+step 1330 loss=3.6194  lr=2.90e-04  35.2ms/step  x[-1.51,1.75] dy[-1.991e+01,1.567e+01] thermal=nominal
+  grad_norm=1.6037  attn=1.0184 ffn=0.4578 embed=1.1504
+    L0 sdpa_bwd: |dq|=0.388165 |dk|=0.273605 |dv|=0.697701
+  timing: ane_fwd=7.0 io_fwd=0.0 rms=0.4 ane_bwd=9.6 io_bwd=0.1 silu=1.7 rms_bwd=0.8 cls=7.6 cblas_wait=0.0 dw_copy=0.5
+step 1340 loss=4.5534  lr=2.90e-04  30.0ms/step  x[-1.52,1.67] dy[-2.729e+01,2.135e+01] thermal=nominal
+  grad_norm=1.4400  attn=0.8292 ffn=0.4275 embed=1.0963
+    L0 sdpa_bwd: |dq|=0.467264 |dk|=0.358042 |dv|=1.314953
+  timing: ane_fwd=10.0 io_fwd=0.0 rms=0.5 ane_bwd=9.6 io_bwd=0.0 silu=1.8 rms_bwd=0.8 cls=7.7 cblas_wait=0.0 dw_copy=0.5
+step 1350 loss=3.8752  lr=2.90e-04  33.8ms/step  x[-1.51,1.67] dy[-2.005e+01,1.867e+01] thermal=nominal
+  grad_norm=1.4507  attn=0.8180 ffn=0.4167 embed=1.1226
+    L0 sdpa_bwd: |dq|=0.210986 |dk|=0.198377 |dv|=0.795534
+  timing: ane_fwd=9.5 io_fwd=0.0 rms=0.5 ane_bwd=9.3 io_bwd=0.0 silu=2.0 rms_bwd=0.7 cls=7.8 cblas_wait=0.0 dw_copy=0.5
+step 1360 loss=5.4063  lr=2.89e-04  32.5ms/step  x[-1.49,1.62] dy[-1.698e+01,1.544e+01] thermal=nominal
+  grad_norm=1.5212  attn=0.9967 ffn=0.4526 embed=1.0558
+    L0 sdpa_bwd: |dq|=0.253856 |dk|=0.199288 |dv|=0.657605
+  timing: ane_fwd=6.8 io_fwd=0.0 rms=0.3 ane_bwd=9.5 io_bwd=0.1 silu=2.1 rms_bwd=0.8 cls=7.5 cblas_wait=0.0 dw_copy=0.5
+step 1370 loss=3.8201  lr=2.89e-04  29.3ms/step  x[-1.44,1.57] dy[-1.301e+01,1.804e+01] thermal=nominal
+  grad_norm=1.7776  attn=1.1802 ffn=0.5147 embed=1.2248
+    L0 sdpa_bwd: |dq|=0.296072 |dk|=0.209939 |dv|=1.240891
+  timing: ane_fwd=7.9 io_fwd=0.0 rms=0.4 ane_bwd=8.1 io_bwd=0.0 silu=1.6 rms_bwd=0.6 cls=6.6 cblas_wait=0.0 dw_copy=0.4
+step 1380 loss=3.8932  lr=2.89e-04  27.5ms/step  x[-1.49,1.59] dy[-3.047e+01,2.800e+01] thermal=nominal
+  grad_norm=1.6929  attn=1.0404 ffn=0.4888 embed=1.2421
+    L0 sdpa_bwd: |dq|=0.307082 |dk|=0.161212 |dv|=0.867167
+  timing: ane_fwd=8.2 io_fwd=0.0 rms=0.5 ane_bwd=9.1 io_bwd=0.1 silu=1.4 rms_bwd=0.8 cls=7.6 cblas_wait=0.0 dw_copy=0.5
+step 1390 loss=5.0286  lr=2.89e-04  30.1ms/step  x[-1.48,1.61] dy[-1.792e+01,1.536e+01] thermal=nominal
+  grad_norm=1.7329  attn=1.1396 ffn=0.4820 embed=1.2127
+    L0 sdpa_bwd: |dq|=0.379745 |dk|=0.309563 |dv|=0.570696
+  timing: ane_fwd=9.6 io_fwd=0.0 rms=0.4 ane_bwd=9.3 io_bwd=0.1 silu=2.1 rms_bwd=0.7 cls=7.7 cblas_wait=0.0 dw_copy=0.5
+step 1400 loss=4.5251  lr=2.89e-04  32.0ms/step  x[-1.48,1.67] dy[-2.129e+01,2.149e+01] thermal=nominal
+  [val] loss=4.4659 (avg of 10 samples from val split)
+  grad_norm=1.9219  attn=1.3748 ffn=0.4549 embed=1.2628
+    L0 sdpa_bwd: |dq|=0.958972 |dk|=0.342756 |dv|=1.703936
+  timing: ane_fwd=8.2 io_fwd=0.0 rms=0.4 ane_bwd=9.3 io_bwd=0.0 silu=1.8 rms_bwd=0.8 cls=7.0 cblas_wait=0.0 dw_copy=0.5
+step 1410 loss=4.3658  lr=2.89e-04  30.5ms/step  x[-1.47,1.62] dy[-3.707e+01,3.290e+01] thermal=nominal
+  grad_norm=1.5000  attn=0.7784 ffn=0.4600 embed=1.1961
+    L0 sdpa_bwd: |dq|=0.313817 |dk|=0.185970 |dv|=0.602235
+  timing: ane_fwd=9.7 io_fwd=0.0 rms=0.4 ane_bwd=7.9 io_bwd=0.0 silu=1.5 rms_bwd=0.5 cls=7.9 cblas_wait=0.0 dw_copy=0.4
+step 1420 loss=4.0847  lr=2.88e-04  33.2ms/step  x[-1.40,1.65] dy[-1.387e+01,1.670e+01] thermal=nominal
+  grad_norm=1.7299  attn=1.1179 ffn=0.5205 embed=1.2124
+    L0 sdpa_bwd: |dq|=0.454493 |dk|=0.366060 |dv|=0.937096
+  timing: ane_fwd=9.7 io_fwd=0.0 rms=0.4 ane_bwd=8.2 io_bwd=0.0 silu=2.2 rms_bwd=0.7 cls=8.4 cblas_wait=0.0 dw_copy=0.5
+step 1430 loss=4.0587  lr=2.88e-04  32.8ms/step  x[-1.45,1.57] dy[-2.601e+01,2.552e+01] thermal=nominal
+  grad_norm=1.4614  attn=0.9223 ffn=0.3989 embed=1.0605
+    L0 sdpa_bwd: |dq|=0.680895 |dk|=0.313735 |dv|=0.799126
+  timing: ane_fwd=8.2 io_fwd=0.0 rms=0.4 ane_bwd=9.4 io_bwd=0.1 silu=1.8 rms_bwd=0.8 cls=7.7 cblas_wait=0.0 dw_copy=0.5
+step 1440 loss=4.8619  lr=2.88e-04  31.4ms/step  x[-1.45,1.59] dy[-2.076e+01,2.014e+01] thermal=nominal
+  grad_norm=1.3408  attn=0.7114 ffn=0.4038 embed=1.0621
+    L0 sdpa_bwd: |dq|=0.366135 |dk|=0.376237 |dv|=1.049772
+  timing: ane_fwd=7.9 io_fwd=0.0 rms=0.4 ane_bwd=8.5 io_bwd=0.0 silu=1.6 rms_bwd=0.6 cls=8.2 cblas_wait=0.0 dw_copy=0.4
+step 1450 loss=5.1263  lr=2.88e-04  32.7ms/step  x[-1.37,1.52] dy[-2.487e+01,2.425e+01] thermal=nominal
+  grad_norm=1.4686  attn=0.8382 ffn=0.4417 embed=1.1215
+    L0 sdpa_bwd: |dq|=0.583046 |dk|=0.249478 |dv|=0.768719
+  timing: ane_fwd=8.1 io_fwd=0.0 rms=0.4 ane_bwd=7.6 io_bwd=0.0 silu=2.1 rms_bwd=0.6 cls=7.8 cblas_wait=0.0 dw_copy=0.5
+step 1460 loss=5.3300  lr=2.88e-04  28.5ms/step  x[-1.54,1.54] dy[-2.110e+01,2.149e+01] thermal=nominal
+  grad_norm=1.7319  attn=1.1212 ffn=0.5074 embed=1.2181
+    L0 sdpa_bwd: |dq|=0.338660 |dk|=0.276969 |dv|=0.558391
+  timing: ane_fwd=9.2 io_fwd=0.0 rms=0.5 ane_bwd=9.5 io_bwd=0.0 silu=1.5 rms_bwd=0.8 cls=7.8 cblas_wait=0.0 dw_copy=0.5
+step 1470 loss=4.2332  lr=2.87e-04  32.1ms/step  x[-1.39,1.37] dy[-1.599e+01,2.050e+01] thermal=nominal
+  grad_norm=1.6579  attn=0.9995 ffn=0.4947 embed=1.2261
+    L0 sdpa_bwd: |dq|=0.435667 |dk|=0.350350 |dv|=0.800385
+  timing: ane_fwd=8.7 io_fwd=0.0 rms=0.4 ane_bwd=8.3 io_bwd=0.1 silu=1.7 rms_bwd=0.8 cls=7.6 cblas_wait=0.0 dw_copy=0.5
+step 1480 loss=5.0237  lr=2.87e-04  29.5ms/step  x[-1.46,1.36] dy[-2.025e+01,1.845e+01] thermal=nominal
+  grad_norm=1.3365  attn=0.7266 ffn=0.4054 embed=1.0456
+    L0 sdpa_bwd: |dq|=0.411398 |dk|=0.326524 |dv|=0.777394
+  timing: ane_fwd=5.8 io_fwd=0.0 rms=0.3 ane_bwd=7.4 io_bwd=0.1 silu=1.9 rms_bwd=0.7 cls=5.9 cblas_wait=0.0 dw_copy=0.5
+step 1490 loss=4.4974  lr=2.87e-04  24.0ms/step  x[-1.50,1.39] dy[-2.224e+01,1.502e+01] thermal=nominal
+  grad_norm=1.5762  attn=0.9784 ffn=0.4581 embed=1.1472
+    L0 sdpa_bwd: |dq|=0.274688 |dk|=0.251799 |dv|=0.967028
+  timing: ane_fwd=8.5 io_fwd=0.0 rms=0.4 ane_bwd=9.8 io_bwd=0.1 silu=2.2 rms_bwd=0.8 cls=8.5 cblas_wait=0.0 dw_copy=0.5
+step 1500 loss=4.8644  lr=2.87e-04  32.9ms/step  x[-1.43,1.29] dy[-1.880e+01,1.648e+01] thermal=nominal
+  [val] loss=4.6220 (avg of 10 samples from val split)
+  grad_norm=1.7268  attn=1.1284 ffn=0.5048 embed=1.2053
+    L0 sdpa_bwd: |dq|=0.222136 |dk|=0.318040 |dv|=0.490608
+  timing: ane_fwd=9.1 io_fwd=0.0 rms=0.4 ane_bwd=8.1 io_bwd=0.0 silu=1.8 rms_bwd=0.6 cls=6.7 cblas_wait=0.0 dw_copy=0.4
+step 1510 loss=3.7507  lr=2.87e-04  29.2ms/step  x[-1.40,1.32] dy[-1.489e+01,1.570e+01] thermal=nominal
+  grad_norm=1.3562  attn=0.7320 ffn=0.4093 embed=1.0654
+    L0 sdpa_bwd: |dq|=0.607629 |dk|=0.295097 |dv|=1.007446
+  timing: ane_fwd=7.3 io_fwd=0.0 rms=0.4 ane_bwd=9.2 io_bwd=0.0 silu=1.7 rms_bwd=0.8 cls=7.3 cblas_wait=0.0 dw_copy=0.5
+step 1520 loss=4.6781  lr=2.87e-04  29.4ms/step  x[-1.33,1.23] dy[-3.732e+01,3.168e+01] thermal=nominal
+  grad_norm=1.5318  attn=0.8804 ffn=0.4623 embed=1.1646
+    L0 sdpa_bwd: |dq|=0.365396 |dk|=0.288604 |dv|=0.782110
+  timing: ane_fwd=8.1 io_fwd=0.0 rms=0.3 ane_bwd=8.6 io_bwd=0.1 silu=2.3 rms_bwd=0.7 cls=6.4 cblas_wait=0.0 dw_copy=0.5
+step 1530 loss=4.4977  lr=2.86e-04  28.3ms/step  x[-1.40,1.36] dy[-2.112e+01,2.119e+01] thermal=nominal
+  grad_norm=1.4720  attn=0.8343 ffn=0.4757 embed=1.1152
+    L0 sdpa_bwd: |dq|=0.350675 |dk|=0.223692 |dv|=0.779231
+  timing: ane_fwd=9.7 io_fwd=0.0 rms=0.4 ane_bwd=9.2 io_bwd=0.1 silu=1.6 rms_bwd=0.7 cls=7.8 cblas_wait=0.0 dw_copy=0.5
+step 1540 loss=4.1265  lr=2.86e-04  32.2ms/step  x[-1.35,1.28] dy[-1.849e+01,2.053e+01] thermal=nominal
+  grad_norm=1.4816  attn=0.9243 ffn=0.4903 embed=1.0482
+    L0 sdpa_bwd: |dq|=0.411485 |dk|=0.243548 |dv|=0.929066
+  timing: ane_fwd=6.6 io_fwd=0.0 rms=0.3 ane_bwd=8.8 io_bwd=0.0 silu=1.6 rms_bwd=0.6 cls=6.4 cblas_wait=0.0 dw_copy=0.4
+step 1550 loss=4.0789  lr=2.86e-04  27.2ms/step  x[-1.33,1.29] dy[-3.183e+01,2.333e+01] thermal=nominal
+  grad_norm=1.5902  attn=0.9900 ffn=0.4781 embed=1.1481
+    L0 sdpa_bwd: |dq|=0.535177 |dk|=0.647022 |dv|=0.861396
+  timing: ane_fwd=8.0 io_fwd=0.0 rms=0.4 ane_bwd=9.0 io_bwd=0.1 silu=1.9 rms_bwd=0.7 cls=8.4 cblas_wait=0.0 dw_copy=0.5
+step 1560 loss=4.3161  lr=2.86e-04  31.2ms/step  x[-1.38,1.20] dy[-2.059e+01,2.024e+01] thermal=nominal
+  grad_norm=1.5467  attn=0.9222 ffn=0.5045 embed=1.1339
+    L0 sdpa_bwd: |dq|=0.353429 |dk|=0.278401 |dv|=0.872101
+  timing: ane_fwd=8.5 io_fwd=0.0 rms=0.4 ane_bwd=8.8 io_bwd=0.0 silu=1.7 rms_bwd=0.6 cls=6.1 cblas_wait=0.0 dw_copy=0.5
+step 1570 loss=3.7085  lr=2.86e-04  28.2ms/step  x[-1.24,1.14] dy[-2.057e+01,2.435e+01] thermal=nominal
+  grad_norm=1.4778  attn=0.8191 ffn=0.4646 embed=1.1383
+    L0 sdpa_bwd: |dq|=0.630869 |dk|=0.321268 |dv|=0.667285
+  timing: ane_fwd=8.2 io_fwd=0.0 rms=0.4 ane_bwd=7.8 io_bwd=0.0 silu=1.3 rms_bwd=0.6 cls=7.5 cblas_wait=0.0 dw_copy=0.4
+step 1580 loss=4.8457  lr=2.85e-04  30.8ms/step  x[-1.32,1.24] dy[-2.127e+01,2.103e+01] thermal=nominal
+  grad_norm=1.3516  attn=0.7529 ffn=0.4543 embed=1.0259
+    L0 sdpa_bwd: |dq|=0.296885 |dk|=0.408344 |dv|=0.856161
+  timing: ane_fwd=10.0 io_fwd=0.0 rms=0.5 ane_bwd=10.1 io_bwd=0.1 silu=1.5 rms_bwd=0.8 cls=9.2 cblas_wait=0.0 dw_copy=0.6
+step 1590 loss=4.3268  lr=2.85e-04  34.4ms/step  x[-1.31,1.29] dy[-1.713e+01,2.015e+01] thermal=nominal
+  grad_norm=1.5832  attn=0.9553 ffn=0.5020 embed=1.1577
+    L0 sdpa_bwd: |dq|=0.296949 |dk|=0.321766 |dv|=0.688162
+  timing: ane_fwd=9.1 io_fwd=0.0 rms=0.5 ane_bwd=9.7 io_bwd=0.0 silu=1.4 rms_bwd=0.7 cls=7.9 cblas_wait=0.0 dw_copy=0.5
+step 1600 loss=4.9674  lr=2.85e-04  32.0ms/step  x[-1.25,1.20] dy[-1.683e+01,1.687e+01] thermal=nominal
+  [val] loss=4.1986 (avg of 10 samples from val split)
+  grad_norm=1.3618  attn=0.7705 ffn=0.4375 embed=1.0337
+    L0 sdpa_bwd: |dq|=0.503247 |dk|=0.400704 |dv|=0.536756
+  timing: ane_fwd=9.2 io_fwd=0.0 rms=0.5 ane_bwd=9.9 io_bwd=0.1 silu=2.0 rms_bwd=0.8 cls=8.2 cblas_wait=0.0 dw_copy=0.5
+step 1610 loss=4.4478  lr=2.85e-04  32.8ms/step  x[-1.49,1.40] dy[-2.112e+01,1.953e+01] thermal=nominal
+  grad_norm=1.4531  attn=0.7923 ffn=0.4360 embed=1.1370
+    L0 sdpa_bwd: |dq|=0.196456 |dk|=0.310832 |dv|=0.763819
+  timing: ane_fwd=9.2 io_fwd=0.0 rms=0.4 ane_bwd=10.4 io_bwd=0.1 silu=1.7 rms_bwd=0.8 cls=7.2 cblas_wait=0.0 dw_copy=0.5
+step 1620 loss=4.0576  lr=2.85e-04  32.6ms/step  x[-1.24,1.29] dy[-2.172e+01,1.802e+01] thermal=nominal
+  grad_norm=1.5139  attn=0.9167 ffn=0.5052 embed=1.0933
+    L0 sdpa_bwd: |dq|=0.256011 |dk|=0.234494 |dv|=0.731211
+  timing: ane_fwd=7.6 io_fwd=0.0 rms=0.3 ane_bwd=9.9 io_bwd=0.1 silu=1.5 rms_bwd=0.8 cls=8.7 cblas_wait=0.0 dw_copy=0.5
+step 1630 loss=3.7567  lr=2.84e-04  31.6ms/step  x[-1.33,1.43] dy[-2.144e+01,2.259e+01] thermal=nominal
+  grad_norm=1.4038  attn=0.8432 ffn=0.4559 embed=1.0253
+    L0 sdpa_bwd: |dq|=0.418557 |dk|=0.347739 |dv|=0.865439
+  timing: ane_fwd=9.4 io_fwd=0.0 rms=0.5 ane_bwd=8.0 io_bwd=0.0 silu=1.9 rms_bwd=0.6 cls=7.7 cblas_wait=0.0 dw_copy=0.4
+step 1640 loss=3.8519  lr=2.84e-04  30.5ms/step  x[-1.23,1.40] dy[-2.688e+01,2.171e+01] thermal=nominal
+  grad_norm=1.5007  attn=0.8778 ffn=0.4558 embed=1.1281
+    L0 sdpa_bwd: |dq|=0.561851 |dk|=0.276064 |dv|=0.842825
+  timing: ane_fwd=8.9 io_fwd=0.0 rms=0.3 ane_bwd=9.4 io_bwd=0.0 silu=1.8 rms_bwd=0.7 cls=7.4 cblas_wait=0.0 dw_copy=0.5
+step 1650 loss=4.3246  lr=2.84e-04  31.3ms/step  x[-1.34,1.57] dy[-2.691e+01,1.942e+01] thermal=nominal
+  grad_norm=1.4383  attn=0.8236 ffn=0.4589 embed=1.0859
+    L0 sdpa_bwd: |dq|=0.321880 |dk|=0.210264 |dv|=0.775384
+  timing: ane_fwd=10.0 io_fwd=0.0 rms=0.4 ane_bwd=8.6 io_bwd=0.0 silu=1.5 rms_bwd=0.6 cls=6.8 cblas_wait=0.0 dw_copy=0.5
+step 1660 loss=4.6616  lr=2.84e-04  30.8ms/step  x[-1.31,1.43] dy[-1.918e+01,1.987e+01] thermal=nominal
+  grad_norm=1.4480  attn=0.8039 ffn=0.4906 embed=1.0996
+    L0 sdpa_bwd: |dq|=0.583162 |dk|=0.709890 |dv|=2.014438
+  timing: ane_fwd=9.5 io_fwd=0.0 rms=0.4 ane_bwd=9.8 io_bwd=0.0 silu=1.4 rms_bwd=0.6 cls=7.1 cblas_wait=0.0 dw_copy=0.4
+step 1670 loss=3.8045  lr=2.84e-04  31.1ms/step  x[-1.25,1.36] dy[-4.761e+01,4.968e+01] thermal=nominal
+  grad_norm=1.4267  attn=0.8118 ffn=0.4827 embed=1.0687
+    L0 sdpa_bwd: |dq|=0.193664 |dk|=0.309371 |dv|=1.028769
+  timing: ane_fwd=6.5 io_fwd=0.0 rms=0.3 ane_bwd=8.4 io_bwd=0.0 silu=1.6 rms_bwd=0.6 cls=5.8 cblas_wait=0.0 dw_copy=0.4
+step 1680 loss=3.7132  lr=2.83e-04  25.6ms/step  x[-1.17,1.04] dy[-1.234e+01,1.280e+01] thermal=nominal
+  grad_norm=1.4821  attn=0.8527 ffn=0.4725 embed=1.1159
+    L0 sdpa_bwd: |dq|=0.234712 |dk|=0.322427 |dv|=0.897968
+  timing: ane_fwd=7.5 io_fwd=0.0 rms=0.4 ane_bwd=8.0 io_bwd=0.0 silu=1.8 rms_bwd=0.6 cls=6.4 cblas_wait=0.0 dw_copy=0.4
+step 1690 loss=4.0134  lr=2.83e-04  27.1ms/step  x[-1.24,1.34] dy[-1.603e+01,1.405e+01] thermal=nominal
+  grad_norm=1.4214  attn=0.8319 ffn=0.4720 embed=1.0511
+    L0 sdpa_bwd: |dq|=0.234094 |dk|=0.482002 |dv|=0.687400
+  timing: ane_fwd=10.1 io_fwd=0.0 rms=0.4 ane_bwd=8.4 io_bwd=0.0 silu=1.9 rms_bwd=0.6 cls=6.0 cblas_wait=0.0 dw_copy=0.4
+step 1700 loss=4.3168  lr=2.83e-04  29.6ms/step  x[-1.20,1.22] dy[-1.800e+01,1.751e+01] thermal=nominal
+  [val] loss=4.2654 (avg of 10 samples from val split)
+  grad_norm=1.3282  attn=0.7938 ffn=0.4240 embed=0.9765
+    L0 sdpa_bwd: |dq|=0.544097 |dk|=0.348548 |dv|=1.545980
+  timing: ane_fwd=8.7 io_fwd=0.0 rms=0.5 ane_bwd=8.8 io_bwd=0.0 silu=1.6 rms_bwd=0.6 cls=8.0 cblas_wait=0.0 dw_copy=0.4
+step 1710 loss=4.7727  lr=2.83e-04  30.2ms/step  x[-1.19,1.27] dy[-3.078e+01,3.600e+01] thermal=nominal
+  grad_norm=1.4763  attn=0.9006 ffn=0.4792 embed=1.0667
+    L0 sdpa_bwd: |dq|=0.454109 |dk|=0.638423 |dv|=0.889092
+  timing: ane_fwd=8.1 io_fwd=0.0 rms=0.5 ane_bwd=8.7 io_bwd=0.0 silu=1.2 rms_bwd=0.6 cls=6.8 cblas_wait=0.0 dw_copy=0.4
+step 1720 loss=3.3666  lr=2.83e-04  28.7ms/step  x[-1.20,1.25] dy[-1.622e+01,2.233e+01] thermal=nominal
+  grad_norm=1.5856  attn=1.0192 ffn=0.5095 embed=1.1021
+    L0 sdpa_bwd: |dq|=0.273184 |dk|=0.348044 |dv|=0.743575
+  timing: ane_fwd=7.5 io_fwd=0.0 rms=0.3 ane_bwd=7.8 io_bwd=0.1 silu=1.9 rms_bwd=0.6 cls=8.0 cblas_wait=0.0 dw_copy=0.5
+step 1730 loss=3.6306  lr=2.82e-04  28.3ms/step  x[-1.22,1.26] dy[-1.957e+01,2.679e+01] thermal=nominal
+  grad_norm=1.2779  attn=0.7178 ffn=0.4232 embed=0.9684
+    L0 sdpa_bwd: |dq|=0.233856 |dk|=0.326276 |dv|=0.934396
+  timing: ane_fwd=7.9 io_fwd=0.0 rms=0.4 ane_bwd=10.4 io_bwd=0.1 silu=1.8 rms_bwd=0.7 cls=8.2 cblas_wait=0.0 dw_copy=0.5
+step 1740 loss=3.8983  lr=2.82e-04  31.9ms/step  x[-1.24,1.32] dy[-1.615e+01,1.517e+01] thermal=nominal
+  grad_norm=1.3070  attn=0.7390 ffn=0.4404 embed=0.9835
+    L0 sdpa_bwd: |dq|=0.441123 |dk|=0.265327 |dv|=0.725790
+  timing: ane_fwd=7.2 io_fwd=0.0 rms=0.4 ane_bwd=8.1 io_bwd=0.0 silu=1.5 rms_bwd=0.7 cls=6.6 cblas_wait=0.0 dw_copy=0.5
+step 1750 loss=4.7998  lr=2.82e-04  27.1ms/step  x[-1.25,1.36] dy[-2.094e+01,2.625e+01] thermal=nominal
+  grad_norm=1.8670  attn=1.2332 ffn=0.5962 embed=1.2681
+    L0 sdpa_bwd: |dq|=0.323527 |dk|=0.338378 |dv|=0.595790
+  timing: ane_fwd=7.0 io_fwd=0.0 rms=0.4 ane_bwd=9.7 io_bwd=0.0 silu=1.6 rms_bwd=0.7 cls=7.9 cblas_wait=0.0 dw_copy=0.5
+step 1760 loss=4.3534  lr=2.82e-04  29.9ms/step  x[-1.33,1.35] dy[-1.732e+01,1.477e+01] thermal=nominal
+  grad_norm=1.4679  attn=0.8305 ffn=0.4963 embed=1.1036
+    L0 sdpa_bwd: |dq|=0.399011 |dk|=0.219748 |dv|=0.790067
+  timing: ane_fwd=8.2 io_fwd=0.0 rms=0.4 ane_bwd=8.1 io_bwd=0.0 silu=2.1 rms_bwd=0.7 cls=6.6 cblas_wait=0.0 dw_copy=0.5
+step 1770 loss=5.0043  lr=2.82e-04  29.3ms/step  x[-1.23,1.27] dy[-2.101e+01,2.212e+01] thermal=nominal
+  grad_norm=1.8323  attn=1.0658 ffn=0.6086 embed=1.3601
+    L0 sdpa_bwd: |dq|=0.695374 |dk|=0.590012 |dv|=0.793475
+  timing: ane_fwd=9.3 io_fwd=0.0 rms=0.5 ane_bwd=7.7 io_bwd=0.0 silu=1.5 rms_bwd=0.5 cls=8.0 cblas_wait=0.0 dw_copy=0.4
+step 1780 loss=4.1561  lr=2.81e-04  33.7ms/step  x[-1.25,1.29] dy[-4.047e+01,2.551e+01] thermal=nominal
+  grad_norm=1.6464  attn=1.0098 ffn=0.5411 embed=1.1822
+    L0 sdpa_bwd: |dq|=0.650685 |dk|=0.434056 |dv|=0.942792
+  timing: ane_fwd=10.0 io_fwd=0.0 rms=0.5 ane_bwd=9.0 io_bwd=0.0 silu=1.4 rms_bwd=0.6 cls=7.4 cblas_wait=0.0 dw_copy=0.4
+step 1790 loss=5.7706  lr=2.81e-04  31.2ms/step  x[-1.27,1.27] dy[-2.886e+01,2.553e+01] thermal=nominal
+  grad_norm=1.4810  attn=0.8528 ffn=0.4950 embed=1.1044
+    L0 sdpa_bwd: |dq|=0.296275 |dk|=0.305775 |dv|=0.802891
+  timing: ane_fwd=7.4 io_fwd=0.0 rms=0.4 ane_bwd=8.8 io_bwd=0.0 silu=1.6 rms_bwd=0.7 cls=7.6 cblas_wait=0.0 dw_copy=0.5
+step 1800 loss=4.0334  lr=2.81e-04  29.5ms/step  x[-1.13,1.39] dy[-2.056e+01,2.290e+01] thermal=nominal
+  [val] loss=4.2259 (avg of 10 samples from val split)
+  grad_norm=1.4298  attn=0.8164 ffn=0.4834 embed=1.0689
+    L0 sdpa_bwd: |dq|=0.455996 |dk|=0.393215 |dv|=1.000118
+  timing: ane_fwd=7.5 io_fwd=0.0 rms=0.3 ane_bwd=8.2 io_bwd=0.0 silu=1.6 rms_bwd=0.7 cls=5.6 cblas_wait=0.0 dw_copy=0.5
+step 1810 loss=4.2284  lr=2.81e-04  26.2ms/step  x[-1.15,1.32] dy[-2.477e+01,2.153e+01] thermal=nominal
+  grad_norm=1.4141  attn=0.8446 ffn=0.5196 embed=1.0075
+    L0 sdpa_bwd: |dq|=0.344052 |dk|=0.497671 |dv|=0.906483
+  timing: ane_fwd=8.9 io_fwd=0.0 rms=0.5 ane_bwd=9.4 io_bwd=0.1 silu=1.5 rms_bwd=0.8 cls=8.5 cblas_wait=0.0 dw_copy=0.6
+step 1820 loss=4.9980  lr=2.80e-04  32.2ms/step  x[-1.17,1.30] dy[-2.091e+01,2.227e+01] thermal=nominal
+  grad_norm=1.6033  attn=0.9492 ffn=0.5103 embed=1.1867
+    L0 sdpa_bwd: |dq|=0.288858 |dk|=0.239457 |dv|=0.687750
+  timing: ane_fwd=10.6 io_fwd=0.0 rms=0.6 ane_bwd=8.3 io_bwd=0.1 silu=1.7 rms_bwd=0.7 cls=7.8 cblas_wait=0.0 dw_copy=0.5
+step 1830 loss=4.4006  lr=2.80e-04  31.8ms/step  x[-1.24,1.35] dy[-3.093e+01,4.475e+01] thermal=nominal
+  grad_norm=1.7434  attn=1.0959 ffn=0.5436 embed=1.2416
+    L0 sdpa_bwd: |dq|=0.255253 |dk|=0.345762 |dv|=0.717481
+  timing: ane_fwd=7.9 io_fwd=0.0 rms=0.4 ane_bwd=9.6 io_bwd=0.1 silu=1.9 rms_bwd=0.8 cls=7.9 cblas_wait=0.0 dw_copy=0.5
+step 1840 loss=3.7916  lr=2.80e-04  31.0ms/step  x[-1.24,1.32] dy[-1.609e+01,1.811e+01] thermal=nominal
+  grad_norm=1.7746  attn=1.2137 ffn=0.5339 embed=1.1789
+    L0 sdpa_bwd: |dq|=0.278121 |dk|=0.502608 |dv|=0.576516
+  timing: ane_fwd=10.6 io_fwd=0.0 rms=0.5 ane_bwd=8.6 io_bwd=0.0 silu=2.0 rms_bwd=0.6 cls=8.0 cblas_wait=0.0 dw_copy=0.4
+step 1850 loss=3.9026  lr=2.80e-04  33.6ms/step  x[-1.24,1.30] dy[-1.964e+01,1.497e+01] thermal=nominal
+  grad_norm=1.5204  attn=0.9503 ffn=0.4892 embed=1.0808
+    L0 sdpa_bwd: |dq|=0.302919 |dk|=0.298252 |dv|=1.415038
+  timing: ane_fwd=9.6 io_fwd=0.0 rms=0.4 ane_bwd=8.9 io_bwd=0.1 silu=1.6 rms_bwd=0.6 cls=8.1 cblas_wait=0.0 dw_copy=0.5
+step 1860 loss=5.1134  lr=2.80e-04  31.7ms/step  x[-1.17,1.18] dy[-2.947e+01,3.877e+01] thermal=nominal
+  grad_norm=1.5738  attn=0.9457 ffn=0.4874 embed=1.1593
+    L0 sdpa_bwd: |dq|=0.298830 |dk|=0.282623 |dv|=1.239841
+  timing: ane_fwd=7.9 io_fwd=0.0 rms=0.4 ane_bwd=10.1 io_bwd=0.1 silu=2.2 rms_bwd=0.8 cls=5.4 cblas_wait=0.0 dw_copy=0.6
+step 1870 loss=4.1965  lr=2.79e-04  29.6ms/step  x[-1.34,1.26] dy[-2.549e+01,2.125e+01] thermal=nominal
+  grad_norm=1.4512  attn=0.8167 ffn=0.4935 embed=1.0929
+    L0 sdpa_bwd: |dq|=0.453107 |dk|=0.256740 |dv|=0.800778
+  timing: ane_fwd=6.3 io_fwd=0.0 rms=0.3 ane_bwd=7.6 io_bwd=0.0 silu=1.1 rms_bwd=0.7 cls=5.5 cblas_wait=0.0 dw_copy=0.4
+step 1880 loss=4.4098  lr=2.79e-04  23.6ms/step  x[-1.29,1.28] dy[-1.746e+01,2.155e+01] thermal=nominal
+  grad_norm=1.3787  attn=0.7921 ffn=0.4769 embed=1.0221
+    L0 sdpa_bwd: |dq|=0.245155 |dk|=0.333340 |dv|=0.698545
+  timing: ane_fwd=8.2 io_fwd=0.0 rms=0.4 ane_bwd=8.5 io_bwd=0.1 silu=1.7 rms_bwd=0.8 cls=7.6 cblas_wait=0.0 dw_copy=0.6
+step 1890 loss=3.8489  lr=2.79e-04  29.8ms/step  x[-1.15,1.05] dy[-1.591e+01,1.618e+01] thermal=nominal
+  grad_norm=1.3083  attn=0.7239 ffn=0.4284 embed=1.0013
+  [ckpt saved, best_loss=3.7600]
+    L0 sdpa_bwd: |dq|=0.287717 |dk|=0.565300 |dv|=1.578801
+  timing: ane_fwd=6.0 io_fwd=0.0 rms=0.3 ane_bwd=7.3 io_bwd=0.0 silu=1.2 rms_bwd=0.5 cls=5.8 cblas_wait=0.0 dw_copy=0.4
+step 1900 loss=4.6370  lr=2.79e-04  23.2ms/step  x[-1.25,1.28] dy[-2.611e+01,3.018e+01] thermal=nominal
+  [val] loss=3.8130 (avg of 10 samples from val split)
+  grad_norm=1.4621  attn=0.8754 ffn=0.4735 embed=1.0705
+    L0 sdpa_bwd: |dq|=0.308893 |dk|=0.357872 |dv|=0.770472
+  timing: ane_fwd=7.4 io_fwd=0.0 rms=0.3 ane_bwd=7.8 io_bwd=0.0 silu=1.6 rms_bwd=0.6 cls=8.0 cblas_wait=0.0 dw_copy=0.4
+step 1910 loss=4.0787  lr=2.78e-04  27.6ms/step  x[-1.33,1.30] dy[-2.247e+01,2.226e+01] thermal=nominal
+  grad_norm=1.5453  attn=0.8890 ffn=0.5018 embed=1.1597
+    L0 sdpa_bwd: |dq|=0.526008 |dk|=0.709619 |dv|=1.169314
+  timing: ane_fwd=8.0 io_fwd=0.0 rms=0.4 ane_bwd=10.4 io_bwd=0.1 silu=1.7 rms_bwd=0.9 cls=6.7 cblas_wait=0.0 dw_copy=0.6
+step 1920 loss=4.2500  lr=2.78e-04  31.1ms/step  x[-1.05,0.99] dy[-3.596e+01,2.958e+01] thermal=nominal
+  grad_norm=1.6866  attn=0.9866 ffn=0.5967 embed=1.2307
+    L0 sdpa_bwd: |dq|=0.649831 |dk|=0.268793 |dv|=0.733777
+  timing: ane_fwd=9.1 io_fwd=0.0 rms=0.5 ane_bwd=8.9 io_bwd=0.1 silu=2.1 rms_bwd=0.8 cls=8.0 cblas_wait=0.0 dw_copy=0.5
+step 1930 loss=4.0636  lr=2.78e-04  31.8ms/step  x[-1.30,1.29] dy[-3.538e+01,3.446e+01] thermal=nominal
+  grad_norm=1.6523  attn=0.9719 ffn=0.5754 embed=1.2054
+    L0 sdpa_bwd: |dq|=0.549483 |dk|=0.250990 |dv|=1.785246
+  timing: ane_fwd=9.5 io_fwd=0.0 rms=0.5 ane_bwd=9.7 io_bwd=0.1 silu=1.9 rms_bwd=0.8 cls=8.4 cblas_wait=0.0 dw_copy=0.5
+step 1940 loss=3.6857  lr=2.78e-04  34.1ms/step  x[-1.37,1.35] dy[-1.917e+01,2.108e+01] thermal=nominal
+  grad_norm=1.5806  attn=0.9805 ffn=0.5514 embed=1.1094
+    L0 sdpa_bwd: |dq|=0.269624 |dk|=0.236275 |dv|=0.861811
+  timing: ane_fwd=5.7 io_fwd=0.0 rms=0.3 ane_bwd=7.4 io_bwd=0.0 silu=2.0 rms_bwd=0.6 cls=5.7 cblas_wait=0.0 dw_copy=0.5
+step 1950 loss=4.1615  lr=2.77e-04  23.5ms/step  x[-1.30,1.29] dy[-2.314e+01,2.525e+01] thermal=nominal
+  grad_norm=1.5904  attn=1.0287 ffn=0.5319 embed=1.0894
+    L0 sdpa_bwd: |dq|=0.387123 |dk|=0.307264 |dv|=1.401860
+  timing: ane_fwd=7.5 io_fwd=0.0 rms=0.4 ane_bwd=7.8 io_bwd=0.0 silu=1.6 rms_bwd=0.7 cls=7.7 cblas_wait=0.0 dw_copy=0.5
+step 1960 loss=4.6923  lr=2.77e-04  28.3ms/step  x[-1.40,1.40] dy[-3.209e+01,3.201e+01] thermal=nominal
+  grad_norm=1.3377  attn=0.7443 ffn=0.4475 embed=1.0169
+    L0 sdpa_bwd: |dq|=0.317035 |dk|=0.311916 |dv|=1.398430
+  timing: ane_fwd=9.9 io_fwd=0.0 rms=0.5 ane_bwd=9.3 io_bwd=0.0 silu=1.9 rms_bwd=0.7 cls=5.6 cblas_wait=0.0 dw_copy=0.5
+step 1970 loss=4.2076  lr=2.77e-04  30.3ms/step  x[-1.32,1.33] dy[-2.077e+01,2.114e+01] thermal=nominal
+  grad_norm=1.5016  attn=0.8721 ffn=0.5015 embed=1.1143
+    L0 sdpa_bwd: |dq|=0.260065 |dk|=0.351604 |dv|=0.921736
+  timing: ane_fwd=7.3 io_fwd=0.0 rms=0.4 ane_bwd=9.4 io_bwd=0.1 silu=1.6 rms_bwd=0.8 cls=7.7 cblas_wait=0.0 dw_copy=0.5
+step 1980 loss=3.9557  lr=2.77e-04  29.5ms/step  x[-1.11,1.26] dy[-1.477e+01,1.564e+01] thermal=nominal
+  grad_norm=1.4610  attn=0.9116 ffn=0.4795 embed=1.0357
+    L0 sdpa_bwd: |dq|=0.308098 |dk|=0.310524 |dv|=1.024471
+  timing: ane_fwd=8.1 io_fwd=0.0 rms=0.5 ane_bwd=8.1 io_bwd=0.0 silu=1.6 rms_bwd=0.5 cls=6.9 cblas_wait=0.0 dw_copy=0.3
+step 1990 loss=4.0398  lr=2.76e-04  28.0ms/step  x[-1.40,1.29] dy[-1.603e+01,1.802e+01] thermal=nominal
+  grad_norm=1.5323  attn=0.8631 ffn=0.5037 embed=1.1612
+    L0 sdpa_bwd: |dq|=0.245622 |dk|=0.248231 |dv|=0.707517
+  timing: ane_fwd=9.0 io_fwd=0.0 rms=0.4 ane_bwd=7.9 io_bwd=0.0 silu=1.5 rms_bwd=0.6 cls=6.0 cblas_wait=0.0 dw_copy=0.4
+step 2000 loss=3.5463  lr=2.76e-04  29.2ms/step  x[-1.39,1.33] dy[-1.500e+01,1.381e+01] thermal=nominal
+  [val] loss=4.2386 (avg of 10 samples from val split)
+  grad_norm=1.4689  attn=0.9076 ffn=0.4918 embed=1.0445
+    L0 sdpa_bwd: |dq|=0.776310 |dk|=0.367765 |dv|=1.483351
+  timing: ane_fwd=5.9 io_fwd=0.0 rms=0.3 ane_bwd=8.3 io_bwd=0.1 silu=1.9 rms_bwd=0.7 cls=5.5 cblas_wait=0.0 dw_copy=0.6
+step 2010 loss=3.2235  lr=2.76e-04  24.5ms/step  x[-1.25,1.16] dy[-2.727e+01,3.024e+01] thermal=nominal
+  grad_norm=1.3363  attn=0.7299 ffn=0.4634 embed=1.0184
+    L0 sdpa_bwd: |dq|=0.353726 |dk|=0.343158 |dv|=0.531272
+  timing: ane_fwd=7.6 io_fwd=0.0 rms=0.4 ane_bwd=8.0 io_bwd=0.0 silu=1.9 rms_bwd=0.6 cls=7.6 cblas_wait=0.0 dw_copy=0.4
+step 2020 loss=3.7769  lr=2.76e-04  28.5ms/step  x[-1.31,1.19] dy[-1.292e+01,1.224e+01] thermal=nominal
+  grad_norm=1.4840  attn=0.8588 ffn=0.4853 embed=1.1082
+    L0 sdpa_bwd: |dq|=0.280911 |dk|=0.287117 |dv|=1.127655
+  timing: ane_fwd=6.7 io_fwd=0.0 rms=0.3 ane_bwd=8.8 io_bwd=0.1 silu=1.7 rms_bwd=0.8 cls=7.2 cblas_wait=0.0 dw_copy=0.6
+step 2030 loss=4.2863  lr=2.75e-04  28.8ms/step  x[-1.43,1.20] dy[-2.240e+01,1.947e+01] thermal=nominal
+  grad_norm=1.4654  attn=0.8947 ffn=0.4512 embed=1.0688
+    L0 sdpa_bwd: |dq|=0.249848 |dk|=0.385195 |dv|=1.427778
+  timing: ane_fwd=7.0 io_fwd=0.0 rms=0.3 ane_bwd=8.1 io_bwd=0.0 silu=1.9 rms_bwd=0.6 cls=7.8 cblas_wait=0.0 dw_copy=0.4
+step 2040 loss=4.4600  lr=2.75e-04  28.1ms/step  x[-1.25,1.28] dy[-1.713e+01,1.840e+01] thermal=nominal
+  grad_norm=1.5622  attn=0.9438 ffn=0.5454 embed=1.1187
+    L0 sdpa_bwd: |dq|=0.681234 |dk|=0.244145 |dv|=1.297905
+  timing: ane_fwd=6.9 io_fwd=0.0 rms=0.4 ane_bwd=10.3 io_bwd=0.1 silu=1.8 rms_bwd=0.9 cls=8.4 cblas_wait=0.0 dw_copy=0.6
+step 2050 loss=4.2079  lr=2.75e-04  32.5ms/step  x[-1.42,1.24] dy[-2.117e+01,2.221e+01] thermal=nominal
+  grad_norm=1.5546  attn=0.9503 ffn=0.5592 embed=1.0954
+    L0 sdpa_bwd: |dq|=0.295005 |dk|=0.343163 |dv|=0.894391
+  timing: ane_fwd=8.0 io_fwd=0.0 rms=0.3 ane_bwd=8.0 io_bwd=0.0 silu=1.6 rms_bwd=0.6 cls=7.9 cblas_wait=0.0 dw_copy=0.5
+step 2060 loss=4.0179  lr=2.75e-04  29.6ms/step  x[-1.37,1.20] dy[-2.410e+01,2.487e+01] thermal=nominal
+  grad_norm=1.5966  attn=1.0032 ffn=0.5088 embed=1.1325
+    L0 sdpa_bwd: |dq|=0.524478 |dk|=0.447559 |dv|=0.750016
+  timing: ane_fwd=9.3 io_fwd=0.0 rms=0.5 ane_bwd=8.3 io_bwd=0.0 silu=2.0 rms_bwd=0.7 cls=7.6 cblas_wait=0.0 dw_copy=0.5
+step 2070 loss=4.3805  lr=2.74e-04  30.8ms/step  x[-1.38,1.22] dy[-3.095e+01,2.741e+01] thermal=nominal
+  grad_norm=1.8103  attn=1.2123 ffn=0.5811 embed=1.2116
+    L0 sdpa_bwd: |dq|=0.401994 |dk|=0.594960 |dv|=1.419330
+  timing: ane_fwd=9.7 io_fwd=0.0 rms=0.4 ane_bwd=8.3 io_bwd=0.0 silu=1.9 rms_bwd=0.7 cls=9.3 cblas_wait=0.0 dw_copy=0.5
+step 2080 loss=3.5197  lr=2.74e-04  32.2ms/step  x[-1.39,1.21] dy[-4.467e+01,4.022e+01] thermal=nominal
+  grad_norm=1.5151  attn=0.9026 ffn=0.5017 embed=1.1082
+    L0 sdpa_bwd: |dq|=0.263212 |dk|=0.273434 |dv|=1.151325
+  timing: ane_fwd=5.7 io_fwd=0.0 rms=0.3 ane_bwd=7.9 io_bwd=0.0 silu=2.0 rms_bwd=0.7 cls=5.4 cblas_wait=0.0 dw_copy=0.5
+step 2090 loss=3.3914  lr=2.74e-04  24.1ms/step  x[-1.34,1.17] dy[-2.765e+01,2.665e+01] thermal=nominal
+  grad_norm=1.4733  attn=0.8727 ffn=0.5105 embed=1.0714
+  [ckpt saved, best_loss=3.4698]
+    L0 sdpa_bwd: |dq|=0.475081 |dk|=0.335855 |dv|=1.066224
+  timing: ane_fwd=7.7 io_fwd=0.0 rms=0.3 ane_bwd=8.9 io_bwd=0.1 silu=1.6 rms_bwd=0.6 cls=6.3 cblas_wait=0.0 dw_copy=0.5
+step 2100 loss=4.0825  lr=2.74e-04  27.5ms/step  x[-1.35,1.20] dy[-1.897e+01,2.118e+01] thermal=nominal
+  [val] loss=4.0972 (avg of 10 samples from val split)
+  grad_norm=1.7085  attn=1.0639 ffn=0.5785 embed=1.2047
+    L0 sdpa_bwd: |dq|=0.372549 |dk|=0.330794 |dv|=1.171874
+  timing: ane_fwd=6.2 io_fwd=0.0 rms=0.3 ane_bwd=7.7 io_bwd=0.0 silu=1.6 rms_bwd=0.7 cls=7.9 cblas_wait=0.0 dw_copy=0.5
+step 2110 loss=3.7384  lr=2.73e-04  26.4ms/step  x[-1.32,1.17] dy[-1.720e+01,1.784e+01] thermal=nominal
+  grad_norm=1.3893  attn=0.7875 ffn=0.4842 embed=1.0366
+    L0 sdpa_bwd: |dq|=0.214491 |dk|=0.236522 |dv|=0.590906
+  timing: ane_fwd=8.3 io_fwd=0.0 rms=0.4 ane_bwd=9.1 io_bwd=0.0 silu=1.7 rms_bwd=0.6 cls=7.5 cblas_wait=0.0 dw_copy=0.4
+step 2120 loss=3.5124  lr=2.73e-04  30.6ms/step  x[-1.31,1.18] dy[-1.395e+01,1.308e+01] thermal=nominal
+  grad_norm=1.5318  attn=0.9642 ffn=0.5005 embed=1.0793
+    L0 sdpa_bwd: |dq|=0.478821 |dk|=0.242231 |dv|=0.711865
+  timing: ane_fwd=7.0 io_fwd=0.0 rms=0.3 ane_bwd=10.4 io_bwd=0.1 silu=1.8 rms_bwd=0.8 cls=8.8 cblas_wait=0.0 dw_copy=0.5
+step 2130 loss=4.4207  lr=2.73e-04  31.6ms/step  x[-1.38,1.27] dy[-1.658e+01,1.692e+01] thermal=nominal
+  grad_norm=1.5323  attn=0.9374 ffn=0.5242 embed=1.0922
+    L0 sdpa_bwd: |dq|=0.346273 |dk|=0.352575 |dv|=0.706199
+  timing: ane_fwd=8.7 io_fwd=0.0 rms=0.4 ane_bwd=8.3 io_bwd=0.0 silu=1.2 rms_bwd=0.7 cls=10.9 cblas_wait=0.0 dw_copy=0.5
+step 2140 loss=3.8219  lr=2.73e-04  32.8ms/step  x[-1.28,1.29] dy[-1.565e+01,1.617e+01] thermal=nominal
+  grad_norm=1.4649  attn=0.8688 ffn=0.5210 embed=1.0575
+    L0 sdpa_bwd: |dq|=0.479650 |dk|=0.364174 |dv|=1.356537
+  timing: ane_fwd=8.3 io_fwd=0.0 rms=0.4 ane_bwd=8.7 io_bwd=0.1 silu=2.0 rms_bwd=0.7 cls=7.8 cblas_wait=0.0 dw_copy=0.5
+step 2150 loss=3.4020  lr=2.72e-04  30.1ms/step  x[-1.37,1.26] dy[-3.938e+01,2.845e+01] thermal=nominal
+  grad_norm=1.5789  attn=0.9197 ffn=0.5317 embed=1.1675
+    L0 sdpa_bwd: |dq|=0.710918 |dk|=0.694365 |dv|=0.983504
+  timing: ane_fwd=5.9 io_fwd=0.0 rms=0.3 ane_bwd=9.7 io_bwd=0.0 silu=2.0 rms_bwd=0.6 cls=7.3 cblas_wait=0.0 dw_copy=0.5
+step 2160 loss=4.0463  lr=2.72e-04  28.9ms/step  x[-1.31,1.22] dy[-2.818e+01,2.702e+01] thermal=nominal
+  grad_norm=1.5601  attn=0.9944 ffn=0.5461 embed=1.0707
+    L0 sdpa_bwd: |dq|=2.379205 |dk|=0.439088 |dv|=0.863727
+  timing: ane_fwd=7.6 io_fwd=0.0 rms=0.3 ane_bwd=9.3 io_bwd=0.1 silu=1.6 rms_bwd=0.8 cls=8.3 cblas_wait=0.0 dw_copy=0.5
+step 2170 loss=3.1939  lr=2.72e-04  30.6ms/step  x[-1.22,1.18] dy[-9.786e+01,9.676e+01] thermal=nominal
+  grad_norm=1.6581  attn=1.0104 ffn=0.5736 embed=1.1826
+    L0 sdpa_bwd: |dq|=0.891769 |dk|=0.307019 |dv|=0.744325
+  timing: ane_fwd=9.0 io_fwd=0.0 rms=0.4 ane_bwd=9.3 io_bwd=0.0 silu=1.6 rms_bwd=0.7 cls=6.8 cblas_wait=0.0 dw_copy=0.5
+step 2180 loss=3.9073  lr=2.72e-04  30.1ms/step  x[-1.23,1.15] dy[-6.862e+01,5.173e+01] thermal=nominal
+  grad_norm=1.5665  attn=0.9147 ffn=0.5559 embed=1.1434
+    L0 sdpa_bwd: |dq|=0.540742 |dk|=0.392400 |dv|=0.793340
+  timing: ane_fwd=9.3 io_fwd=0.0 rms=0.4 ane_bwd=7.2 io_bwd=0.1 silu=2.4 rms_bwd=0.6 cls=7.7 cblas_wait=0.0 dw_copy=0.6
+step 2190 loss=3.6725  lr=2.71e-04  29.9ms/step  x[-1.17,1.15] dy[-1.417e+01,1.788e+01] thermal=nominal
+  grad_norm=1.3582  attn=0.7804 ffn=0.4944 embed=0.9953
+    L0 sdpa_bwd: |dq|=0.632381 |dk|=0.578420 |dv|=0.741633
+  timing: ane_fwd=10.9 io_fwd=0.0 rms=0.5 ane_bwd=8.2 io_bwd=0.0 silu=1.6 rms_bwd=0.6 cls=11.1 cblas_wait=0.0 dw_copy=0.5
+step 2200 loss=4.4857  lr=2.71e-04  35.4ms/step  x[-1.29,1.20] dy[-1.768e+01,2.119e+01] thermal=nominal
+  [val] loss=4.0022 (avg of 10 samples from val split)
+  grad_norm=1.4572  attn=0.8698 ffn=0.5117 embed=1.0505
+    L0 sdpa_bwd: |dq|=0.498129 |dk|=0.640164 |dv|=1.961608
+  timing: ane_fwd=5.9 io_fwd=0.0 rms=0.3 ane_bwd=7.9 io_bwd=0.1 silu=1.5 rms_bwd=0.6 cls=5.6 cblas_wait=0.0 dw_copy=0.5
+step 2210 loss=3.9286  lr=2.71e-04  24.0ms/step  x[-1.30,1.15] dy[-4.259e+01,3.751e+01] thermal=nominal
+  grad_norm=1.7267  attn=1.0675 ffn=0.6529 embed=1.1892
+    L0 sdpa_bwd: |dq|=0.843719 |dk|=0.983600 |dv|=0.814719
+  timing: ane_fwd=6.2 io_fwd=0.0 rms=0.3 ane_bwd=7.6 io_bwd=0.0 silu=1.4 rms_bwd=0.5 cls=6.1 cblas_wait=0.0 dw_copy=0.5
+step 2220 loss=3.7246  lr=2.71e-04  24.3ms/step  x[-1.31,1.21] dy[-3.048e+01,2.931e+01] thermal=nominal
+  grad_norm=1.6230  attn=0.8734 ffn=0.5817 embed=1.2377
+    L0 sdpa_bwd: |dq|=0.250263 |dk|=0.254439 |dv|=0.783092
+  timing: ane_fwd=9.8 io_fwd=0.0 rms=0.5 ane_bwd=7.8 io_bwd=0.0 silu=1.1 rms_bwd=0.5 cls=11.3 cblas_wait=0.0 dw_copy=0.4
+step 2230 loss=4.1045  lr=2.70e-04  35.0ms/step  x[-1.19,1.20] dy[-1.548e+01,1.756e+01] thermal=nominal
+  grad_norm=1.5108  attn=0.8922 ffn=0.5312 embed=1.0971
+    L0 sdpa_bwd: |dq|=0.312185 |dk|=0.439877 |dv|=0.847098
+  timing: ane_fwd=10.5 io_fwd=0.0 rms=0.5 ane_bwd=7.9 io_bwd=0.1 silu=1.3 rms_bwd=0.6 cls=8.8 cblas_wait=0.0 dw_copy=0.5
+step 2240 loss=4.3558  lr=2.70e-04  31.6ms/step  x[-1.15,1.15] dy[-2.038e+01,1.842e+01] thermal=nominal
+  grad_norm=1.4518  attn=0.8645 ffn=0.5120 embed=1.0475
+    L0 sdpa_bwd: |dq|=0.606581 |dk|=0.309678 |dv|=0.924311
+  timing: ane_fwd=9.1 io_fwd=0.0 rms=0.4 ane_bwd=9.4 io_bwd=0.1 silu=1.7 rms_bwd=0.8 cls=7.9 cblas_wait=0.0 dw_copy=0.5
+step 2250 loss=5.1293  lr=2.70e-04  32.7ms/step  x[-1.15,1.12] dy[-2.464e+01,2.859e+01] thermal=nominal
+  grad_norm=1.6381  attn=0.9636 ffn=0.6122 embed=1.1745
+    L0 sdpa_bwd: |dq|=0.434131 |dk|=0.543498 |dv|=1.881899
+  timing: ane_fwd=10.0 io_fwd=0.0 rms=0.5 ane_bwd=8.1 io_bwd=0.0 silu=1.9 rms_bwd=0.6 cls=8.9 cblas_wait=0.0 dw_copy=0.4
+step 2260 loss=4.1898  lr=2.70e-04  33.0ms/step  x[-1.16,1.16] dy[-2.969e+01,3.446e+01] thermal=nominal
+  grad_norm=1.5864  attn=0.9471 ffn=0.5233 embed=1.1594
+    L0 sdpa_bwd: |dq|=0.329564 |dk|=0.352243 |dv|=0.786093
+  timing: ane_fwd=8.2 io_fwd=0.0 rms=0.4 ane_bwd=10.3 io_bwd=0.1 silu=1.7 rms_bwd=0.9 cls=7.7 cblas_wait=0.0 dw_copy=0.6
+step 2270 loss=4.2850  lr=2.69e-04  32.4ms/step  x[-1.09,1.12] dy[-1.662e+01,1.980e+01] thermal=nominal
+  grad_norm=1.5790  attn=0.9807 ffn=0.5650 embed=1.1003
+    L0 sdpa_bwd: |dq|=0.343935 |dk|=0.354477 |dv|=1.034603
+  timing: ane_fwd=10.3 io_fwd=0.0 rms=0.5 ane_bwd=9.0 io_bwd=0.0 silu=1.4 rms_bwd=0.6 cls=8.2 cblas_wait=0.0 dw_copy=0.4
+step 2280 loss=3.5894  lr=2.69e-04  32.9ms/step  x[-1.16,1.15] dy[-2.090e+01,2.317e+01] thermal=nominal
+  grad_norm=1.5968  attn=1.0275 ffn=0.5405 embed=1.0956
+    L0 sdpa_bwd: |dq|=0.916697 |dk|=0.532354 |dv|=1.151967
+  timing: ane_fwd=8.2 io_fwd=0.0 rms=0.4 ane_bwd=9.4 io_bwd=0.0 silu=1.7 rms_bwd=0.8 cls=7.7 cblas_wait=0.0 dw_copy=0.5
+step 2290 loss=4.1296  lr=2.69e-04  31.5ms/step  x[-1.14,1.15] dy[-3.337e+01,3.023e+01] thermal=nominal
+  grad_norm=1.4468  attn=0.8653 ffn=0.4987 embed=1.0463
+    L0 sdpa_bwd: |dq|=0.453693 |dk|=0.495053 |dv|=1.061978
+  timing: ane_fwd=9.3 io_fwd=0.0 rms=0.4 ane_bwd=8.7 io_bwd=0.1 silu=1.8 rms_bwd=0.8 cls=7.8 cblas_wait=0.0 dw_copy=0.6
+step 2300 loss=4.7868  lr=2.68e-04  31.1ms/step  x[-1.15,1.15] dy[-1.881e+01,1.709e+01] thermal=nominal
+  [val] loss=4.0269 (avg of 10 samples from val split)
+  grad_norm=1.5045  attn=0.9151 ffn=0.5502 embed=1.0596
+    L0 sdpa_bwd: |dq|=0.265457 |dk|=0.434489 |dv|=1.174905
+  timing: ane_fwd=8.6 io_fwd=0.0 rms=0.4 ane_bwd=8.6 io_bwd=0.1 silu=2.0 rms_bwd=0.8 cls=8.8 cblas_wait=0.0 dw_copy=0.5
+step 2310 loss=4.7037  lr=2.68e-04  31.4ms/step  x[-1.17,1.20] dy[-1.911e+01,2.276e+01] thermal=nominal
+  grad_norm=1.4495  attn=0.8905 ffn=0.4942 embed=1.0311
+    L0 sdpa_bwd: |dq|=0.579726 |dk|=0.439235 |dv|=1.213274
+  timing: ane_fwd=9.0 io_fwd=0.0 rms=0.5 ane_bwd=8.1 io_bwd=0.0 silu=1.9 rms_bwd=0.6 cls=7.9 cblas_wait=0.0 dw_copy=0.4
+step 2320 loss=3.1689  lr=2.68e-04  30.4ms/step  x[-1.12,1.12] dy[-4.083e+01,3.667e+01] thermal=nominal
+  grad_norm=1.4047  attn=0.8464 ffn=0.4635 embed=1.0203
+    L0 sdpa_bwd: |dq|=0.690673 |dk|=0.224758 |dv|=1.004848
+  timing: ane_fwd=8.7 io_fwd=0.0 rms=0.4 ane_bwd=9.7 io_bwd=0.0 silu=1.7 rms_bwd=0.8 cls=7.9 cblas_wait=0.0 dw_copy=0.5
+step 2330 loss=3.5337  lr=2.68e-04  32.7ms/step  x[-1.22,1.24] dy[-3.040e+01,2.335e+01] thermal=nominal
+  grad_norm=1.3159  attn=0.7492 ffn=0.4463 embed=0.9851
+    L0 sdpa_bwd: |dq|=0.375950 |dk|=0.423402 |dv|=1.546597
+  timing: ane_fwd=7.4 io_fwd=0.0 rms=0.4 ane_bwd=9.6 io_bwd=0.0 silu=1.8 rms_bwd=0.8 cls=7.7 cblas_wait=0.0 dw_copy=0.5
+step 2340 loss=3.3997  lr=2.67e-04  31.2ms/step  x[-1.25,1.27] dy[-2.753e+01,2.779e+01] thermal=nominal
+  grad_norm=1.6448  attn=1.0168 ffn=0.5622 embed=1.1637
+    L0 sdpa_bwd: |dq|=0.509161 |dk|=0.216911 |dv|=0.783102
+  timing: ane_fwd=9.1 io_fwd=0.0 rms=0.4 ane_bwd=8.0 io_bwd=0.0 silu=1.6 rms_bwd=0.9 cls=7.6 cblas_wait=0.0 dw_copy=0.6
+step 2350 loss=4.6166  lr=2.67e-04  30.0ms/step  x[-1.23,1.23] dy[-1.996e+01,2.808e+01] thermal=nominal
+  grad_norm=1.4532  attn=0.8579 ffn=0.5043 embed=1.0586
+    L0 sdpa_bwd: |dq|=0.263737 |dk|=0.235135 |dv|=1.287431
+  timing: ane_fwd=7.6 io_fwd=0.0 rms=0.4 ane_bwd=9.4 io_bwd=0.0 silu=1.8 rms_bwd=0.8 cls=7.9 cblas_wait=0.0 dw_copy=0.5
+step 2360 loss=3.6201  lr=2.67e-04  31.2ms/step  x[-1.17,1.27] dy[-2.453e+01,2.044e+01] thermal=nominal
+  grad_norm=1.5470  attn=0.9319 ffn=0.5152 embed=1.1219
+    L0 sdpa_bwd: |dq|=0.490307 |dk|=0.344667 |dv|=1.068321
+  timing: ane_fwd=9.2 io_fwd=0.0 rms=0.5 ane_bwd=9.6 io_bwd=0.1 silu=1.8 rms_bwd=0.8 cls=8.3 cblas_wait=0.0 dw_copy=0.5
+step 2370 loss=4.7210  lr=2.66e-04  32.8ms/step  x[-1.24,1.33] dy[-2.292e+01,2.444e+01] thermal=nominal
+  grad_norm=1.5699  attn=0.9753 ffn=0.5549 embed=1.0975
+    L0 sdpa_bwd: |dq|=0.795086 |dk|=0.934965 |dv|=1.456171
+  timing: ane_fwd=10.5 io_fwd=0.0 rms=0.5 ane_bwd=8.8 io_bwd=0.0 silu=1.6 rms_bwd=0.7 cls=7.3 cblas_wait=0.0 dw_copy=0.5
+step 2380 loss=4.3257  lr=2.66e-04  31.8ms/step  x[-1.30,1.40] dy[-3.497e+01,2.891e+01] thermal=nominal
+  grad_norm=1.7590  attn=1.0836 ffn=0.5860 embed=1.2552
+    L0 sdpa_bwd: |dq|=0.677365 |dk|=0.722258 |dv|=1.513530
+  timing: ane_fwd=5.8 io_fwd=0.0 rms=0.3 ane_bwd=8.9 io_bwd=0.0 silu=1.9 rms_bwd=0.6 cls=6.2 cblas_wait=0.0 dw_copy=0.5
+step 2390 loss=4.8534  lr=2.66e-04  25.8ms/step  x[-1.14,1.34] dy[-3.645e+01,3.000e+01] thermal=nominal
+  grad_norm=1.6226  attn=1.0110 ffn=0.5640 embed=1.1364
+    L0 sdpa_bwd: |dq|=0.322275 |dk|=0.442582 |dv|=0.801596
+  timing: ane_fwd=9.1 io_fwd=0.0 rms=0.5 ane_bwd=9.1 io_bwd=0.1 silu=2.0 rms_bwd=0.7 cls=7.8 cblas_wait=0.0 dw_copy=0.5
+step 2400 loss=3.7729  lr=2.66e-04  32.3ms/step  x[-1.19,1.23] dy[-1.821e+01,2.530e+01] thermal=nominal
+  [val] loss=3.8338 (avg of 10 samples from val split)
+  grad_norm=1.5825  attn=1.0201 ffn=0.6219 embed=1.0371
+    L0 sdpa_bwd: |dq|=0.550435 |dk|=0.575067 |dv|=1.214198
+  timing: ane_fwd=9.6 io_fwd=0.0 rms=0.5 ane_bwd=8.8 io_bwd=0.0 silu=1.6 rms_bwd=0.6 cls=6.6 cblas_wait=0.0 dw_copy=0.4
+step 2410 loss=3.8894  lr=2.65e-04  30.0ms/step  x[-1.20,1.18] dy[-2.732e+01,2.889e+01] thermal=nominal
+  grad_norm=1.4087  attn=0.8092 ffn=0.5022 embed=1.0376
+    L0 sdpa_bwd: |dq|=0.260583 |dk|=0.350673 |dv|=0.918066
+  timing: ane_fwd=7.7 io_fwd=0.0 rms=0.4 ane_bwd=9.1 io_bwd=0.0 silu=1.6 rms_bwd=0.7 cls=6.8 cblas_wait=0.0 dw_copy=0.5
+step 2420 loss=3.8449  lr=2.65e-04  28.6ms/step  x[-1.28,1.30] dy[-1.747e+01,1.837e+01] thermal=nominal
+  grad_norm=1.5950  attn=1.0640 ffn=0.5278 embed=1.0640
+    L0 sdpa_bwd: |dq|=0.364677 |dk|=0.366019 |dv|=0.969574
+  timing: ane_fwd=7.6 io_fwd=0.0 rms=0.4 ane_bwd=8.0 io_bwd=0.1 silu=1.9 rms_bwd=0.6 cls=7.6 cblas_wait=0.0 dw_copy=0.6
+step 2430 loss=4.0523  lr=2.65e-04  28.4ms/step  x[-1.26,1.34] dy[-1.852e+01,2.028e+01] thermal=nominal
+  grad_norm=1.4450  attn=0.8502 ffn=0.5176 embed=1.0472
+    L0 sdpa_bwd: |dq|=0.377467 |dk|=0.278474 |dv|=0.701960
+  timing: ane_fwd=9.9 io_fwd=0.0 rms=0.5 ane_bwd=8.4 io_bwd=0.0 silu=1.6 rms_bwd=0.6 cls=6.6 cblas_wait=0.0 dw_copy=0.4
+step 2440 loss=4.3317  lr=2.64e-04  30.3ms/step  x[-1.19,1.21] dy[-1.838e+01,1.968e+01] thermal=nominal
+  grad_norm=1.6832  attn=1.0641 ffn=0.5485 embed=1.1828
+    L0 sdpa_bwd: |dq|=0.640619 |dk|=0.402471 |dv|=1.111657
+  timing: ane_fwd=8.7 io_fwd=0.0 rms=0.5 ane_bwd=9.2 io_bwd=0.0 silu=1.8 rms_bwd=0.6 cls=5.7 cblas_wait=0.0 dw_copy=0.4
+step 2450 loss=3.7906  lr=2.64e-04  29.1ms/step  x[-1.19,1.28] dy[-3.047e+01,2.515e+01] thermal=nominal
+  grad_norm=1.6253  attn=1.0304 ffn=0.5666 embed=1.1216
+    L0 sdpa_bwd: |dq|=0.352695 |dk|=0.495942 |dv|=2.153804
+  timing: ane_fwd=10.0 io_fwd=0.0 rms=0.5 ane_bwd=7.8 io_bwd=0.0 silu=1.2 rms_bwd=0.5 cls=11.1 cblas_wait=0.0 dw_copy=0.4
+step 2460 loss=4.8163  lr=2.64e-04  34.3ms/step  x[-1.23,1.33] dy[-4.092e+01,4.417e+01] thermal=nominal
+  grad_norm=1.7189  attn=1.1399 ffn=0.5747 embed=1.1505
+    L0 sdpa_bwd: |dq|=0.263148 |dk|=0.270305 |dv|=0.827557
+  timing: ane_fwd=10.4 io_fwd=0.0 rms=0.5 ane_bwd=9.5 io_bwd=0.1 silu=1.3 rms_bwd=0.8 cls=9.3 cblas_wait=0.0 dw_copy=0.5
+step 2470 loss=3.6361  lr=2.64e-04  34.5ms/step  x[-1.19,1.31] dy[-1.943e+01,1.391e+01] thermal=nominal
+  grad_norm=1.4571  attn=0.8838 ffn=0.5365 embed=1.0263
+    L0 sdpa_bwd: |dq|=0.411337 |dk|=0.361221 |dv|=1.019803
+  timing: ane_fwd=7.8 io_fwd=0.0 rms=0.4 ane_bwd=9.6 io_bwd=0.0 silu=1.8 rms_bwd=0.8 cls=8.3 cblas_wait=0.0 dw_copy=0.5
+step 2480 loss=3.5267  lr=2.63e-04  32.1ms/step  x[-1.22,1.29] dy[-2.716e+01,2.621e+01] thermal=nominal
+  grad_norm=1.5171  attn=0.9415 ffn=0.5228 embed=1.0682
+    L0 sdpa_bwd: |dq|=0.262903 |dk|=0.361789 |dv|=1.071394
+  timing: ane_fwd=8.8 io_fwd=0.0 rms=0.5 ane_bwd=8.2 io_bwd=0.0 silu=2.0 rms_bwd=0.6 cls=8.2 cblas_wait=0.0 dw_copy=0.4
+step 2490 loss=3.8414  lr=2.63e-04  30.4ms/step  x[-1.11,1.26] dy[-1.688e+01,1.736e+01] thermal=nominal
+  grad_norm=1.5864  attn=0.9853 ffn=0.5644 embed=1.1074
+    L0 sdpa_bwd: |dq|=0.342764 |dk|=0.435355 |dv|=0.811768
+  timing: ane_fwd=7.2 io_fwd=0.0 rms=0.3 ane_bwd=7.9 io_bwd=0.1 silu=1.1 rms_bwd=0.5 cls=5.5 cblas_wait=0.0 dw_copy=0.4
+step 2500 loss=3.6454  lr=2.63e-04  26.0ms/step  x[-1.22,1.18] dy[-2.285e+01,2.435e+01] thermal=nominal
+  [val] loss=4.0012 (avg of 10 samples from val split)
+  grad_norm=1.4216  attn=0.8439 ffn=0.4939 embed=1.0313
+    L0 sdpa_bwd: |dq|=0.341384 |dk|=0.321468 |dv|=1.020291
+  timing: ane_fwd=9.0 io_fwd=0.0 rms=0.5 ane_bwd=7.8 io_bwd=0.1 silu=2.0 rms_bwd=0.6 cls=7.6 cblas_wait=0.0 dw_copy=0.5
+step 2510 loss=3.8700  lr=2.62e-04  29.7ms/step  x[-1.12,1.21] dy[-3.173e+01,2.706e+01] thermal=nominal
+  grad_norm=1.4223  attn=0.8539 ffn=0.5089 embed=1.0167
+    L0 sdpa_bwd: |dq|=0.442372 |dk|=0.270893 |dv|=0.565815
+  timing: ane_fwd=9.0 io_fwd=0.0 rms=0.4 ane_bwd=9.1 io_bwd=0.1 silu=2.2 rms_bwd=0.8 cls=8.2 cblas_wait=0.0 dw_copy=0.5
+step 2520 loss=3.5505  lr=2.62e-04  32.2ms/step  x[-1.31,1.19] dy[-2.782e+01,2.600e+01] thermal=nominal
+  grad_norm=1.6374  attn=1.0964 ffn=0.5869 embed=1.0647
+    L0 sdpa_bwd: |dq|=0.337517 |dk|=0.500452 |dv|=1.565940
+  timing: ane_fwd=9.3 io_fwd=0.0 rms=0.4 ane_bwd=8.1 io_bwd=0.0 silu=1.9 rms_bwd=0.6 cls=7.8 cblas_wait=0.0 dw_copy=0.4
+step 2530 loss=4.6757  lr=2.62e-04  31.0ms/step  x[-1.09,1.10] dy[-2.602e+01,2.398e+01] thermal=nominal
+  grad_norm=1.5864  attn=0.9614 ffn=0.5451 embed=1.1377
+    L0 sdpa_bwd: |dq|=0.205685 |dk|=0.210867 |dv|=0.977046
+  timing: ane_fwd=7.8 io_fwd=0.0 rms=0.4 ane_bwd=7.6 io_bwd=0.1 silu=2.1 rms_bwd=0.6 cls=6.6 cblas_wait=0.0 dw_copy=0.6
+step 2540 loss=4.3752  lr=2.62e-04  27.3ms/step  x[-1.12,1.20] dy[-1.589e+01,1.657e+01] thermal=nominal
+  grad_norm=1.3891  attn=0.8148 ffn=0.4844 embed=1.0148
+    L0 sdpa_bwd: |dq|=0.347921 |dk|=0.686670 |dv|=1.148278
+  timing: ane_fwd=8.5 io_fwd=0.0 rms=0.4 ane_bwd=8.1 io_bwd=0.0 silu=1.9 rms_bwd=0.6 cls=7.8 cblas_wait=0.0 dw_copy=0.4
+step 2550 loss=4.2556  lr=2.61e-04  30.5ms/step  x[-1.06,1.27] dy[-1.870e+01,1.786e+01] thermal=nominal
+  grad_norm=1.5449  attn=0.9015 ffn=0.5566 embed=1.1238
+    L0 sdpa_bwd: |dq|=0.312211 |dk|=0.401649 |dv|=0.768625
+  timing: ane_fwd=9.1 io_fwd=0.0 rms=0.4 ane_bwd=9.6 io_bwd=0.1 silu=1.7 rms_bwd=0.7 cls=6.9 cblas_wait=0.0 dw_copy=0.5
+step 2560 loss=3.7320  lr=2.61e-04  31.0ms/step  x[-1.20,1.17] dy[-1.748e+01,1.769e+01] thermal=nominal
+  grad_norm=1.6683  attn=1.0348 ffn=0.5966 embed=1.1640
+    L0 sdpa_bwd: |dq|=1.140952 |dk|=0.736632 |dv|=2.077663
+  timing: ane_fwd=7.1 io_fwd=0.0 rms=0.4 ane_bwd=9.6 io_bwd=0.0 silu=1.6 rms_bwd=0.8 cls=7.9 cblas_wait=0.0 dw_copy=0.5
+step 2570 loss=4.0153  lr=2.61e-04  30.8ms/step  x[-1.09,1.06] dy[-3.546e+01,5.078e+01] thermal=nominal
+  grad_norm=1.6802  attn=1.0055 ffn=0.6199 embed=1.1944
+    L0 sdpa_bwd: |dq|=0.354820 |dk|=0.372499 |dv|=0.960076
+  timing: ane_fwd=9.3 io_fwd=0.0 rms=0.5 ane_bwd=8.2 io_bwd=0.0 silu=1.7 rms_bwd=0.6 cls=7.8 cblas_wait=0.0 dw_copy=0.4
+step 2580 loss=4.1133  lr=2.60e-04  30.4ms/step  x[-1.17,1.26] dy[-2.449e+01,2.475e+01] thermal=nominal
+  grad_norm=1.4383  attn=0.8339 ffn=0.5524 embed=1.0329
+    L0 sdpa_bwd: |dq|=0.292098 |dk|=0.482521 |dv|=0.819530
+  timing: ane_fwd=9.4 io_fwd=0.0 rms=0.5 ane_bwd=8.2 io_bwd=0.0 silu=2.2 rms_bwd=0.7 cls=7.6 cblas_wait=0.0 dw_copy=0.5
+step 2590 loss=3.7635  lr=2.60e-04  31.1ms/step  x[-1.25,1.15] dy[-1.882e+01,1.672e+01] thermal=nominal
+  grad_norm=1.6475  attn=1.0769 ffn=0.5710 embed=1.1079
+    L0 sdpa_bwd: |dq|=0.299081 |dk|=0.275670 |dv|=1.019289
+  timing: ane_fwd=9.8 io_fwd=0.0 rms=0.5 ane_bwd=8.2 io_bwd=0.0 silu=1.5 rms_bwd=0.6 cls=7.8 cblas_wait=0.0 dw_copy=0.5
+step 2600 loss=4.9332  lr=2.60e-04  31.5ms/step  x[-1.17,1.13] dy[-2.155e+01,1.913e+01] thermal=nominal
+  [val] loss=3.9939 (avg of 10 samples from val split)
+  grad_norm=1.7096  attn=1.1000 ffn=0.6200 embed=1.1521
+    L0 sdpa_bwd: |dq|=0.343259 |dk|=0.424051 |dv|=0.869642
+  timing: ane_fwd=7.9 io_fwd=0.0 rms=0.4 ane_bwd=9.6 io_bwd=0.1 silu=1.7 rms_bwd=0.8 cls=6.9 cblas_wait=0.0 dw_copy=0.5
+step 2610 loss=4.4772  lr=2.59e-04  30.4ms/step  x[-1.41,1.18] dy[-1.863e+01,1.818e+01] thermal=nominal
+  grad_norm=1.5037  attn=0.8919 ffn=0.5679 embed=1.0688
+    L0 sdpa_bwd: |dq|=0.293209 |dk|=0.403293 |dv|=0.812320
+  timing: ane_fwd=8.0 io_fwd=0.0 rms=0.4 ane_bwd=8.7 io_bwd=0.0 silu=1.4 rms_bwd=0.6 cls=7.4 cblas_wait=0.0 dw_copy=0.5
+step 2620 loss=3.8608  lr=2.59e-04  29.5ms/step  x[-1.22,1.17] dy[-1.633e+01,1.654e+01] thermal=nominal
+  grad_norm=1.4477  attn=0.8575 ffn=0.5254 embed=1.0410
+    L0 sdpa_bwd: |dq|=0.442067 |dk|=0.937481 |dv|=1.289367
+  timing: ane_fwd=7.0 io_fwd=0.0 rms=0.4 ane_bwd=9.8 io_bwd=0.1 silu=1.5 rms_bwd=0.8 cls=6.4 cblas_wait=0.0 dw_copy=0.5
+step 2630 loss=3.7315  lr=2.59e-04  29.0ms/step  x[-1.17,1.15] dy[-1.856e+01,1.913e+01] thermal=nominal
+  grad_norm=1.4984  attn=0.9484 ffn=0.5269 embed=1.0330
+    L0 sdpa_bwd: |dq|=0.310352 |dk|=0.428676 |dv|=0.917968
+  timing: ane_fwd=8.5 io_fwd=0.0 rms=0.4 ane_bwd=7.4 io_bwd=0.1 silu=2.0 rms_bwd=0.7 cls=5.5 cblas_wait=0.0 dw_copy=0.5
+step 2640 loss=4.1761  lr=2.59e-04  26.5ms/step  x[-1.18,1.11] dy[-1.638e+01,1.709e+01] thermal=nominal
+  grad_norm=1.6690  attn=1.0394 ffn=0.5781 embed=1.1705
+    L0 sdpa_bwd: |dq|=0.300813 |dk|=0.404950 |dv|=1.288539
+  timing: ane_fwd=9.5 io_fwd=0.0 rms=0.4 ane_bwd=8.3 io_bwd=0.0 silu=1.7 rms_bwd=0.5 cls=6.7 cblas_wait=0.0 dw_copy=0.4
+step 2650 loss=3.5389  lr=2.58e-04  31.2ms/step  x[-1.17,1.23] dy[-2.606e+01,2.327e+01] thermal=nominal
+  grad_norm=1.6859  attn=1.0909 ffn=0.5702 embed=1.1515
+    L0 sdpa_bwd: |dq|=0.459223 |dk|=0.368467 |dv|=0.834015
+  timing: ane_fwd=8.0 io_fwd=0.0 rms=0.5 ane_bwd=8.2 io_bwd=0.0 silu=1.6 rms_bwd=0.8 cls=7.6 cblas_wait=0.0 dw_copy=0.5
+step 2660 loss=3.6599  lr=2.58e-04  28.9ms/step  x[-1.10,1.24] dy[-2.369e+01,2.233e+01] thermal=nominal
+  grad_norm=1.5969  attn=1.0200 ffn=0.5574 embed=1.0946
+    L0 sdpa_bwd: |dq|=0.260234 |dk|=0.361268 |dv|=0.816453
+  timing: ane_fwd=8.5 io_fwd=0.0 rms=0.4 ane_bwd=9.4 io_bwd=0.0 silu=1.6 rms_bwd=0.6 cls=8.0 cblas_wait=0.0 dw_copy=0.5
+step 2670 loss=3.0285  lr=2.58e-04  31.2ms/step  x[-1.11,0.99] dy[-1.686e+01,1.274e+01] thermal=nominal
+  grad_norm=1.3867  attn=0.8139 ffn=0.4947 embed=1.0075
+    L0 sdpa_bwd: |dq|=0.470276 |dk|=0.445325 |dv|=1.136529
+  timing: ane_fwd=9.5 io_fwd=0.0 rms=0.5 ane_bwd=9.6 io_bwd=0.1 silu=1.3 rms_bwd=0.7 cls=5.6 cblas_wait=0.0 dw_copy=0.5
+step 2680 loss=3.3518  lr=2.57e-04  29.6ms/step  x[-1.06,1.22] dy[-1.898e+01,2.346e+01] thermal=nominal
+  grad_norm=1.4961  attn=0.8896 ffn=0.5387 embed=1.0751
+    L0 sdpa_bwd: |dq|=0.326155 |dk|=0.581005 |dv|=1.154642
+  timing: ane_fwd=8.7 io_fwd=0.0 rms=0.4 ane_bwd=9.5 io_bwd=0.0 silu=1.6 rms_bwd=0.8 cls=8.1 cblas_wait=0.0 dw_copy=0.5
+step 2690 loss=3.0897  lr=2.57e-04  32.4ms/step  x[-1.15,1.11] dy[-1.936e+01,1.866e+01] thermal=nominal
+  grad_norm=1.4624  attn=0.8928 ffn=0.5135 embed=1.0377
+    L0 sdpa_bwd: |dq|=0.265324 |dk|=0.412219 |dv|=1.196006
+  timing: ane_fwd=8.4 io_fwd=0.0 rms=0.4 ane_bwd=8.5 io_bwd=0.0 silu=1.5 rms_bwd=0.7 cls=8.1 cblas_wait=0.0 dw_copy=0.5
+step 2700 loss=3.6462  lr=2.57e-04  32.3ms/step  x[-1.01,1.19] dy[-2.114e+01,1.782e+01] thermal=nominal
+  [val] loss=3.7896 (avg of 10 samples from val split)
+  grad_norm=1.5824  attn=0.9653 ffn=0.5547 embed=1.1239
+    L0 sdpa_bwd: |dq|=0.504703 |dk|=0.441013 |dv|=1.794409
+  timing: ane_fwd=10.6 io_fwd=0.0 rms=0.5 ane_bwd=7.3 io_bwd=0.0 silu=2.3 rms_bwd=0.6 cls=9.9 cblas_wait=0.0 dw_copy=0.5
+step 2710 loss=4.4980  lr=2.56e-04  33.3ms/step  x[-1.04,1.12] dy[-3.243e+01,2.890e+01] thermal=nominal
+  grad_norm=1.4899  attn=0.9024 ffn=0.5215 embed=1.0642
+    L0 sdpa_bwd: |dq|=0.810106 |dk|=0.502291 |dv|=0.985297
+  timing: ane_fwd=9.4 io_fwd=0.0 rms=0.6 ane_bwd=8.4 io_bwd=0.0 silu=2.1 rms_bwd=0.7 cls=7.7 cblas_wait=0.0 dw_copy=0.5
+step 2720 loss=3.4958  lr=2.56e-04  31.3ms/step  x[-1.07,1.12] dy[-2.826e+01,2.355e+01] thermal=nominal
+  grad_norm=1.5899  attn=0.9965 ffn=0.5611 embed=1.1038
+    L0 sdpa_bwd: |dq|=0.527189 |dk|=0.440798 |dv|=0.727317
+  timing: ane_fwd=9.5 io_fwd=0.0 rms=0.5 ane_bwd=9.5 io_bwd=0.0 silu=1.9 rms_bwd=0.8 cls=6.6 cblas_wait=0.0 dw_copy=0.5
+step 2730 loss=4.4424  lr=2.56e-04  31.6ms/step  x[-1.21,1.09] dy[-2.165e+01,2.346e+01] thermal=nominal
+  grad_norm=1.5016  attn=0.8925 ffn=0.5301 embed=1.0846
+    L0 sdpa_bwd: |dq|=0.313487 |dk|=0.357319 |dv|=1.058453
+  timing: ane_fwd=9.5 io_fwd=0.0 rms=0.4 ane_bwd=8.9 io_bwd=0.0 silu=1.7 rms_bwd=0.6 cls=10.7 cblas_wait=0.0 dw_copy=0.4
+step 2740 loss=4.4349  lr=2.55e-04  34.3ms/step  x[-1.11,1.34] dy[-1.841e+01,2.201e+01] thermal=nominal
+  grad_norm=1.4347  attn=0.8779 ffn=0.5095 embed=1.0134
+    L0 sdpa_bwd: |dq|=0.600856 |dk|=0.761470 |dv|=0.760007
+  timing: ane_fwd=5.9 io_fwd=0.0 rms=0.3 ane_bwd=9.7 io_bwd=0.1 silu=1.7 rms_bwd=0.9 cls=6.9 cblas_wait=0.0 dw_copy=0.6
+step 2750 loss=3.5091  lr=2.55e-04  27.8ms/step  x[-1.17,1.16] dy[-1.471e+01,1.489e+01] thermal=nominal
+  grad_norm=1.3963  attn=0.8519 ffn=0.4952 embed=0.9888
+    L0 sdpa_bwd: |dq|=0.432024 |dk|=0.444924 |dv|=1.151463
+  timing: ane_fwd=7.8 io_fwd=0.0 rms=0.3 ane_bwd=8.0 io_bwd=0.0 silu=1.8 rms_bwd=0.6 cls=7.7 cblas_wait=0.0 dw_copy=0.4
+step 2760 loss=3.7582  lr=2.55e-04  28.9ms/step  x[-1.15,1.10] dy[-1.794e+01,2.030e+01] thermal=nominal
+  grad_norm=1.4290  attn=0.8570 ffn=0.4959 embed=1.0299
+    L0 sdpa_bwd: |dq|=0.785690 |dk|=0.625323 |dv|=1.179991
+  timing: ane_fwd=7.1 io_fwd=0.0 rms=0.4 ane_bwd=9.5 io_bwd=0.1 silu=1.8 rms_bwd=0.8 cls=7.5 cblas_wait=0.0 dw_copy=0.5
+step 2770 loss=4.0662  lr=2.54e-04  30.2ms/step  x[-1.20,1.15] dy[-2.634e+01,2.366e+01] thermal=nominal
+  grad_norm=1.5497  attn=0.9665 ffn=0.5596 embed=1.0740
+    L0 sdpa_bwd: |dq|=0.531691 |dk|=0.396843 |dv|=0.734902
+  timing: ane_fwd=9.5 io_fwd=0.0 rms=0.4 ane_bwd=9.3 io_bwd=0.1 silu=1.9 rms_bwd=0.8 cls=7.8 cblas_wait=0.0 dw_copy=0.5
+step 2780 loss=3.8925  lr=2.54e-04  32.1ms/step  x[-1.27,1.15] dy[-2.969e+01,2.315e+01] thermal=nominal
+  grad_norm=1.3716  attn=0.8117 ffn=0.4943 embed=0.9887
+    L0 sdpa_bwd: |dq|=0.717861 |dk|=0.358869 |dv|=0.933358
+  timing: ane_fwd=7.3 io_fwd=0.0 rms=0.4 ane_bwd=7.7 io_bwd=0.0 silu=1.2 rms_bwd=0.5 cls=5.6 cblas_wait=0.0 dw_copy=0.4
+step 2790 loss=3.7709  lr=2.54e-04  24.7ms/step  x[-1.19,1.22] dy[-2.334e+01,2.851e+01] thermal=nominal
+  grad_norm=1.4394  attn=0.8845 ffn=0.5314 embed=1.0032
+    L0 sdpa_bwd: |dq|=0.240480 |dk|=0.324088 |dv|=1.115974
+  timing: ane_fwd=8.5 io_fwd=0.0 rms=0.4 ane_bwd=8.2 io_bwd=0.1 silu=1.1 rms_bwd=0.6 cls=10.0 cblas_wait=0.0 dw_copy=0.5
+step 2800 loss=3.5047  lr=2.53e-04  31.3ms/step  x[-1.18,1.13] dy[-2.865e+01,3.016e+01] thermal=nominal
+  [val] loss=3.4280 (avg of 10 samples from val split)
+  grad_norm=1.4793  attn=0.8772 ffn=0.5333 embed=1.0648
+    L0 sdpa_bwd: |dq|=0.588616 |dk|=0.394248 |dv|=1.998762
+  timing: ane_fwd=9.6 io_fwd=0.0 rms=0.4 ane_bwd=8.4 io_bwd=0.0 silu=1.9 rms_bwd=0.6 cls=9.4 cblas_wait=0.0 dw_copy=0.5
+step 2810 loss=3.9139  lr=2.53e-04  32.9ms/step  x[-1.28,1.16] dy[-4.267e+01,3.694e+01] thermal=nominal
+  grad_norm=1.5290  attn=0.9188 ffn=0.5549 embed=1.0884
+    L0 sdpa_bwd: |dq|=0.238747 |dk|=0.343404 |dv|=1.013035
+  timing: ane_fwd=8.3 io_fwd=0.0 rms=0.4 ane_bwd=8.7 io_bwd=0.1 silu=2.0 rms_bwd=0.7 cls=8.0 cblas_wait=0.0 dw_copy=0.5
+step 2820 loss=4.2471  lr=2.53e-04  30.2ms/step  x[-1.13,1.07] dy[-2.661e+01,2.651e+01] thermal=nominal
+  grad_norm=1.3982  attn=0.8242 ffn=0.5293 embed=0.9972
+    L0 sdpa_bwd: |dq|=0.445149 |dk|=0.758094 |dv|=0.884138
+  timing: ane_fwd=8.8 io_fwd=0.0 rms=0.4 ane_bwd=9.3 io_bwd=0.1 silu=1.8 rms_bwd=0.7 cls=7.7 cblas_wait=0.0 dw_copy=0.5
+step 2830 loss=3.9715  lr=2.52e-04  32.7ms/step  x[-1.11,1.09] dy[-2.610e+01,2.374e+01] thermal=nominal
+  grad_norm=1.5545  attn=0.9704 ffn=0.5594 embed=1.0773
+    L0 sdpa_bwd: |dq|=0.324545 |dk|=0.415240 |dv|=0.615649
+  timing: ane_fwd=7.5 io_fwd=0.0 rms=0.4 ane_bwd=8.2 io_bwd=0.1 silu=1.1 rms_bwd=0.7 cls=11.2 cblas_wait=0.0 dw_copy=0.6
+step 2840 loss=3.6905  lr=2.52e-04  31.6ms/step  x[-1.19,1.15] dy[-2.468e+01,2.140e+01] thermal=nominal
+  grad_norm=1.4078  attn=0.8303 ffn=0.5192 embed=1.0111
+    L0 sdpa_bwd: |dq|=0.556124 |dk|=0.850949 |dv|=0.997903
+  timing: ane_fwd=8.2 io_fwd=0.0 rms=0.4 ane_bwd=9.6 io_bwd=0.1 silu=1.7 rms_bwd=0.9 cls=7.8 cblas_wait=0.0 dw_copy=0.6
+step 2850 loss=4.5439  lr=2.52e-04  31.4ms/step  x[-1.22,1.18] dy[-3.301e+01,2.654e+01] thermal=nominal
+  grad_norm=1.4621  attn=0.8840 ffn=0.5223 embed=1.0406
+    L0 sdpa_bwd: |dq|=0.447084 |dk|=0.342680 |dv|=0.757765
+  timing: ane_fwd=6.9 io_fwd=0.0 rms=0.3 ane_bwd=7.6 io_bwd=0.0 silu=1.1 rms_bwd=0.5 cls=6.8 cblas_wait=0.0 dw_copy=0.4
+step 2860 loss=3.1875  lr=2.51e-04  27.7ms/step  x[-1.27,1.11] dy[-2.128e+01,2.297e+01] thermal=nominal
+  grad_norm=1.5767  attn=0.9190 ffn=0.5650 embed=1.1493
+    L0 sdpa_bwd: |dq|=0.374101 |dk|=0.450719 |dv|=0.738835
+  timing: ane_fwd=9.0 io_fwd=0.0 rms=0.4 ane_bwd=10.1 io_bwd=0.0 silu=1.6 rms_bwd=0.7 cls=8.2 cblas_wait=0.0 dw_copy=0.6
+step 2870 loss=3.8064  lr=2.51e-04  33.0ms/step  x[-1.15,1.08] dy[-1.706e+01,1.760e+01] thermal=nominal
+  grad_norm=1.5863  attn=0.9795 ffn=0.5993 embed=1.0939
+    L0 sdpa_bwd: |dq|=0.584026 |dk|=0.484967 |dv|=0.935514
+  timing: ane_fwd=7.5 io_fwd=0.0 rms=0.3 ane_bwd=9.8 io_bwd=0.1 silu=1.5 rms_bwd=0.8 cls=7.9 cblas_wait=0.0 dw_copy=0.6
+step 2880 loss=3.1786  lr=2.51e-04  30.0ms/step  x[-1.18,1.10] dy[-2.367e+01,2.094e+01] thermal=nominal
+  grad_norm=1.5315  attn=0.9572 ffn=0.5863 embed=1.0415
+    L0 sdpa_bwd: |dq|=0.265160 |dk|=0.558439 |dv|=1.001486
+  timing: ane_fwd=10.6 io_fwd=0.0 rms=0.4 ane_bwd=8.6 io_bwd=0.0 silu=2.2 rms_bwd=0.7 cls=8.9 cblas_wait=0.0 dw_copy=0.6
+step 2890 loss=3.7634  lr=2.50e-04  33.5ms/step  x[-1.19,1.18] dy[-2.212e+01,2.182e+01] thermal=nominal
+  grad_norm=1.4563  attn=0.8647 ffn=0.5384 embed=1.0401
+  [ckpt saved, best_loss=3.0609]
+    L0 sdpa_bwd: |dq|=0.390500 |dk|=0.465693 |dv|=0.564320
+  timing: ane_fwd=8.6 io_fwd=0.0 rms=0.4 ane_bwd=9.5 io_bwd=0.0 silu=1.6 rms_bwd=0.7 cls=6.7 cblas_wait=0.0 dw_copy=0.5
+step 2900 loss=3.3012  lr=2.50e-04  30.3ms/step  x[-1.12,1.12] dy[-1.917e+01,1.736e+01] thermal=nominal
+  [val] loss=3.5808 (avg of 10 samples from val split)
+  grad_norm=1.5045  attn=0.9147 ffn=0.5503 embed=1.0598
+    L0 sdpa_bwd: |dq|=0.288476 |dk|=0.476658 |dv|=1.202040
+  timing: ane_fwd=7.3 io_fwd=0.0 rms=0.3 ane_bwd=8.5 io_bwd=0.0 silu=1.6 rms_bwd=0.6 cls=7.6 cblas_wait=0.0 dw_copy=0.5
+step 2910 loss=3.8799  lr=2.50e-04  28.3ms/step  x[-1.07,1.07] dy[-1.930e+01,2.225e+01] thermal=nominal
+  grad_norm=1.5987  attn=1.0233 ffn=0.5652 embed=1.0901
+    L0 sdpa_bwd: |dq|=0.418305 |dk|=0.583334 |dv|=1.216430
+  timing: ane_fwd=8.3 io_fwd=0.0 rms=0.4 ane_bwd=9.7 io_bwd=0.1 silu=1.7 rms_bwd=0.8 cls=8.5 cblas_wait=0.0 dw_copy=0.5
+step 2920 loss=4.0795  lr=2.49e-04  33.2ms/step  x[-1.03,1.07] dy[-3.154e+01,2.466e+01] thermal=nominal
+  grad_norm=1.4825  attn=0.9102 ffn=0.5484 embed=1.0333
+    L0 sdpa_bwd: |dq|=0.353181 |dk|=0.648836 |dv|=1.089732
+  timing: ane_fwd=10.8 io_fwd=0.0 rms=0.5 ane_bwd=7.6 io_bwd=0.0 silu=1.6 rms_bwd=0.5 cls=11.2 cblas_wait=0.0 dw_copy=0.5
+step 2930 loss=3.6987  lr=2.49e-04  34.6ms/step  x[-1.01,1.10] dy[-1.977e+01,1.744e+01] thermal=nominal
+  grad_norm=1.5602  attn=1.0102 ffn=0.5642 embed=1.0460
+    L0 sdpa_bwd: |dq|=0.446567 |dk|=0.635548 |dv|=0.644029
+  timing: ane_fwd=8.0 io_fwd=0.0 rms=0.4 ane_bwd=8.0 io_bwd=0.0 silu=1.5 rms_bwd=0.5 cls=7.3 cblas_wait=0.0 dw_copy=0.4
+step 2940 loss=3.7915  lr=2.49e-04  31.3ms/step  x[-1.06,1.28] dy[-1.591e+01,1.504e+01] thermal=nominal
+  grad_norm=1.6565  attn=1.0557 ffn=0.5743 embed=1.1395
+    L0 sdpa_bwd: |dq|=0.321758 |dk|=0.413936 |dv|=0.892011
+  timing: ane_fwd=8.4 io_fwd=0.0 rms=0.4 ane_bwd=8.1 io_bwd=0.0 silu=1.8 rms_bwd=0.6 cls=7.7 cblas_wait=0.0 dw_copy=0.5
+step 2950 loss=3.8335  lr=2.48e-04  29.8ms/step  x[-1.16,1.31] dy[-1.740e+01,2.033e+01] thermal=nominal
+  grad_norm=1.3801  attn=0.8220 ffn=0.5179 embed=0.9798
+    L0 sdpa_bwd: |dq|=0.389883 |dk|=0.314006 |dv|=0.920028
+  timing: ane_fwd=8.3 io_fwd=0.0 rms=0.4 ane_bwd=8.1 io_bwd=0.0 silu=1.9 rms_bwd=0.6 cls=7.9 cblas_wait=0.0 dw_copy=0.4
+step 2960 loss=3.5996  lr=2.48e-04  30.2ms/step  x[-1.13,1.07] dy[-2.697e+01,2.861e+01] thermal=nominal
+  grad_norm=1.3648  attn=0.8212 ffn=0.4994 embed=0.9686
+    L0 sdpa_bwd: |dq|=0.773033 |dk|=0.868730 |dv|=1.348654
+  timing: ane_fwd=7.9 io_fwd=0.0 rms=0.4 ane_bwd=10.1 io_bwd=0.1 silu=2.1 rms_bwd=0.8 cls=8.4 cblas_wait=0.0 dw_copy=0.6
+step 2970 loss=3.3015  lr=2.48e-04  32.5ms/step  x[-1.15,1.12] dy[-2.895e+01,3.249e+01] thermal=nominal
+  grad_norm=1.6314  attn=0.9913 ffn=0.6033 embed=1.1464
+    L0 sdpa_bwd: |dq|=0.470071 |dk|=0.522349 |dv|=0.751834
+  timing: ane_fwd=10.1 io_fwd=0.0 rms=0.5 ane_bwd=8.4 io_bwd=0.0 silu=1.6 rms_bwd=0.7 cls=7.9 cblas_wait=0.0 dw_copy=0.5
+step 2980 loss=3.8983  lr=2.47e-04  31.2ms/step  x[-1.19,1.13] dy[-1.737e+01,1.474e+01] thermal=nominal
+  grad_norm=1.4716  attn=0.9019 ffn=0.5365 embed=1.0313
+    L0 sdpa_bwd: |dq|=0.644735 |dk|=0.302422 |dv|=1.051158
+  timing: ane_fwd=5.8 io_fwd=0.0 rms=0.3 ane_bwd=7.6 io_bwd=0.0 silu=1.1 rms_bwd=0.5 cls=5.6 cblas_wait=0.0 dw_copy=0.4
+step 2990 loss=4.4936  lr=2.47e-04  23.0ms/step  x[-1.20,1.21] dy[-3.874e+01,3.040e+01] thermal=nominal
+  grad_norm=1.6455  attn=1.0645 ffn=0.5894 embed=1.1074
+    L0 sdpa_bwd: |dq|=0.304176 |dk|=0.378936 |dv|=1.049850
+  timing: ane_fwd=36.8 io_fwd=0.0 rms=0.6 ane_bwd=30.8 io_bwd=0.1 silu=4.0 rms_bwd=1.7 cls=22.9 cblas_wait=0.0 dw_copy=2.3
+step 3000 loss=3.6100  lr=2.47e-04  106.3ms/step  x[-1.14,1.12] dy[-2.366e+01,2.193e+01] thermal=nominal
+  [val] loss=3.9984 (avg of 10 samples from val split)
+  grad_norm=1.3797  attn=0.7896 ffn=0.5103 embed=1.0095
+    L0 sdpa_bwd: |dq|=0.446970 |dk|=0.498772 |dv|=1.072719
+  timing: ane_fwd=8.6 io_fwd=0.0 rms=0.4 ane_bwd=8.5 io_bwd=0.0 silu=1.9 rms_bwd=0.6 cls=8.6 cblas_wait=0.0 dw_copy=0.4
+step 3010 loss=3.9901  lr=2.46e-04  34.2ms/step  x[-0.98,1.06] dy[-2.178e+01,2.466e+01] thermal=nominal
+Time budget 120s reached at step 3015 (120.0s elapsed)
+
+=== Efficiency Report ===
+Total steps:  3015
+Train time:   92518ms (30.7ms/step)
+Wall time:    120.0s
+
+---
+final_loss:       3.618795
+val_loss:         3.998414
+training_seconds: 92.5
+total_seconds:    120.0
+total_tokens_M:   0.4
+num_steps:        3015
+num_params_M:     36.4
+depth:            4
+mode:             cpu-only
