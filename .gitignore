@@ -34,3 +34,9 @@ run.log
 
 # Temporary files
 *.tmp
+
+# GGUF exports
+*.gguf
+
+# Skill artifacts
+docs/superpowers/

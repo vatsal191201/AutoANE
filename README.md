@@ -2,7 +2,7 @@
 
 **Training transformers on Apple's Neural Engine: an empirical study**
 
-AutoANE is an open-source system for training Llama-family transformers on Apple Silicon, including the first full forward/backward pass on the Neural Engine (ANE) via reverse-engineered private APIs. It pairs a compiled Objective-C training binary (1571 lines) with an autonomous hyperparameter search loop adapted from [karpathy/autoresearch](https://github.com/karpathy/autoresearch).
+AutoANE is an open-source system for training Llama-family transformers on Apple Silicon, building on [maderix/ANE](https://github.com/maderix/ANE)'s pioneering reverse engineering of the Neural Engine's private APIs. It adds systematic ANE vs CPU benchmarking, power measurement, and an autonomous hyperparameter search loop adapted from [karpathy/autoresearch](https://github.com/karpathy/autoresearch). The training loop is a compiled Objective-C binary (1571 lines).
 
 43 controlled experiments, a 100-experiment autonomous search, and first-principles verification produced three central findings:
 
@@ -10,7 +10,7 @@ AutoANE is an open-source system for training Llama-family transformers on Apple
 
 2. **ANE does not save power.** Direct measurement via `powermetrics` shows package power of 13.3W (CPU-only), 12.6W (ANE matmul), and 12.7W (ANE full). This is the first published power measurement of ANE training workloads.
 
-3. **In a fixed time window, more optimizer steps beats more parameters.** 512d/4L (36M params, 4074 steps at 120s) achieves val_loss 3.51 while 1024d/4L (95M params, 1050 steps) achieves 4.30. This confirms Kaplan et al.'s observation that the data scaling exponent (0.095) exceeds the parameter exponent (0.076) in the severely data-constrained regime.
+3. **In a fixed time window, more optimizer steps beats more parameters.** 512d/4L (36M params, ~4300 steps at 120s) achieves val_loss ~3.5 while 1024d/4L (95M params, ~1050 steps) achieves ~4.3. This confirms Kaplan et al.'s observation that the data scaling exponent (0.095) exceeds the parameter exponent (0.076) in the severely data-constrained regime.
 
 Full experiment log: [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) | Verification report: [docs/VERIFICATION.md](docs/VERIFICATION.md) | Assumption registry: [docs/ASSUMPTIONS.md](docs/ASSUMPTIONS.md) | Technical report: [docs/TECHNICAL_REPORT.md](docs/TECHNICAL_REPORT.md)
 
@@ -26,22 +26,21 @@ git clone https://github.com/vatsal191201/AutoANE.git && cd AutoANE
 # Download training data (TinyStories, 40MB, 20M tokens, SmolLM2 BPE tokenizer)
 bash tools/download_data.sh
 
-# Train from scratch (120s, CPU-only, best known config)
+# Train from scratch (120s, CPU-only)
 cd training && python3 train.py
 
-# Expected output (autosearch config, LR=6.34e-4, ACCUM=7):
-#   val_loss:  ~3.8     (typical single run; run-to-run variance ~0.3 nats)
+# Expected output:
+#   val_loss:  ~3.8     (run-to-run variance ~0.3 nats from random init)
 #   num_steps: ~4100-4200 (on clean system; step time 22-24ms)
 #   36.4M params, 512d/4L, SEQ=128
-#
-# For the more reliable baseline config (LR=4e-4, ACCUM=10, as used by demo.sh):
-#   val_loss:  ~3.5     (typical single run)
-#   bash demo.sh        (runs with LR=4e-4, trains + generates text)
+
+# Or use demo.sh for the baseline config (LR=4e-4, typically val_loss ~3.5):
+cd .. && bash demo.sh
 
 # Generate text from trained checkpoint
-cd .. && python3 generate.py --prompt "Once upon a time" --tokens 200
+python3 generate.py --prompt "Once upon a time" --tokens 200
 
-# Run autonomous hyperparameter search (88 experiments, ~3 hours)
+# Run autonomous hyperparameter search (~3 hours)
 cd training && python3 run_autosearch.py --experiments 100
 ```
 
@@ -73,7 +72,7 @@ We distinguish what is novel from what is adapted from prior work.
 
 ### Finding 1: Step count dominates model capacity at fixed time budgets
 
-At 120s on Apple Silicon (M4), 512d/4L (36.4M params) gets 2542 steps at 42ms/step, achieving val_loss 3.54. Meanwhile 1024d/4L (95.4M params) gets only 1050 steps at 99ms/step, achieving val_loss 4.30. The smaller model gets 2.4x more gradient updates and wins by 0.76 nats.
+At 120s on Apple Silicon (M2 Pro), 512d/4L (36.4M params) gets ~2500 steps at 42ms/step, achieving val_loss ~3.5. Meanwhile 1024d/4L (95.4M params) gets only ~1050 steps at ~100ms/step, achieving val_loss ~4.3. The smaller model gets ~2.4x more gradient updates and wins by ~0.8 nats.
 
 This advantage **widens** at longer budgets:
 
