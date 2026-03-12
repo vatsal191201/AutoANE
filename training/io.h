@@ -13,7 +13,7 @@ static IOSurfaceRef make_surface(size_t bytes) {
 // Blob builders for const weights (mask, rms)
 static NSData *build_blob(const float *w, int rows, int cols) {
     int ws=rows*cols*2, tot=128+ws;
-    uint8_t *b=(uint8_t*)calloc(tot,1);
+    uint8_t *b=(uint8_t*)safe_calloc(tot,1);
     b[0]=1;b[4]=2;b[64]=0xEF;b[65]=0xBE;b[66]=0xAD;b[67]=0xDE;b[68]=1;
     *(uint32_t*)(b+72)=ws;*(uint32_t*)(b+80)=128;
     _Float16 *fp16=(_Float16*)(b+128);
@@ -22,7 +22,7 @@ static NSData *build_blob(const float *w, int rows, int cols) {
 }
 static NSData *build_blob_fp16(_Float16 *d, int cnt) {
     int ws=cnt*2, tot=128+ws;
-    uint8_t *b=(uint8_t*)calloc(tot,1);
+    uint8_t *b=(uint8_t*)safe_calloc(tot,1);
     b[0]=1;b[4]=2;b[64]=0xEF;b[65]=0xBE;b[66]=0xAD;b[67]=0xDE;b[68]=1;
     *(uint32_t*)(b+72)=ws;*(uint32_t*)(b+80)=128;
     memcpy(b+128,d,ws);
@@ -111,6 +111,7 @@ static Kern *compile_kern_mil_w(NSString *mil, NSDictionary *weights, int ic_byt
     id desc = ((id(*)(Class,SEL,id,id,id))objc_msgSend)(g_D, @selector(modelWithMILText:weights:optionsPlist:), md, weights, nil);
     if (!desc) { printf("  [compile] desc=NULL\n"); return NULL; }
     id mdl = ((id(*)(Class,SEL,id))objc_msgSend)(g_I, @selector(inMemoryModelWithDescriptor:), desc);
+    if (!mdl) { printf("  [compile] model=NULL\n"); return NULL; }
     id hx = ((id(*)(id,SEL))objc_msgSend)(mdl, @selector(hexStringIdentifier));
     NSString *td = [NSTemporaryDirectory() stringByAppendingPathComponent:hx];
     [[NSFileManager defaultManager] createDirectoryAtPath:[td stringByAppendingPathComponent:@"weights"] withIntermediateDirectories:YES attributes:nil error:nil];
@@ -127,7 +128,7 @@ static Kern *compile_kern_mil_w(NSString *mil, NSDictionary *weights, int ic_byt
         printf("  [compile] load FAIL\n"); return NULL;
     }
     __sync_fetch_and_add(&g_compile_count, 1);
-    Kern *k = (Kern*)calloc(1, sizeof(Kern));
+    Kern *k = (Kern*)safe_calloc(1, sizeof(Kern));
     k->model = (void*)CFBridgingRetain(mdl);
     k->ioIn = make_surface(ic_bytes);
     k->ioOut = make_surface(oc_bytes);
