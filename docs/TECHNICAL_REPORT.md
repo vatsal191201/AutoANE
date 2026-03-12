@@ -6,7 +6,7 @@
 
 ## Abstract
 
-We present AutoANE, the first open-source system for training Llama-family transformers on Apple's Neural Engine (ANE) via reverse-engineered private APIs. Through 43 controlled experiments and a 100-experiment autonomous hyperparameter search, we characterize the ANE compute/precision/power tradeoff for training workloads. Our central finding is negative: **CPU-only training dominates ANE at every tested model size (36M-281M params), in both throughput and energy efficiency.** ANE achieves 2.5x faster matmuls but IOSurface weight-staging overhead and irreducible fp16 precision loss negate this advantage. Direct power measurement via `powermetrics` shows identical package power (~12.5-13.3W) across all training modes, disproving prior estimates of ANE power efficiency gains. We additionally demonstrate that in a fixed time window on Apple Silicon, more optimizer steps beats more parameters — a regime-specific manifestation of Kaplan et al.'s data scaling exponent exceeding the parameter exponent.
+We present AutoANE, the first open-source system for training Llama-family transformers on Apple's Neural Engine (ANE) via reverse-engineered private APIs. Through 43 controlled experiments and a 100-experiment autonomous hyperparameter search, we characterize the ANE compute/precision/power tradeoff for training workloads. Our central finding is negative: **CPU-only training dominates ANE at every tested model size (36M-281M params), in both throughput and energy efficiency.** ANE achieves 2.5x faster matmuls but IOSurface weight-staging overhead and irreducible fp16 precision loss negate this advantage. Direct power measurement via `powermetrics` shows identical package power (~12.5-13.3W) across all training modes, contradicting assumptions of ANE power efficiency gains for training. We additionally demonstrate that in a fixed time window on Apple Silicon, more optimizer steps beats more parameters — a regime-specific manifestation of Kaplan et al.'s data scaling exponent exceeding the parameter exponent.
 
 ---
 
@@ -15,8 +15,8 @@ We present AutoANE, the first open-source system for training Llama-family trans
 Apple's Neural Engine (ANE) is a dedicated neural network accelerator present in all Apple Silicon chips since M1 (2020). ANE claims 15.8 TFLOPS (FP16) on M4, compared to ~2 TFLOPS (FP32) for the CPU's AMX coprocessor and ~4 TFLOPS (FP32) for the integrated GPU. Despite this raw advantage, ANE has seen almost no use for training — CoreML and coremltools target inference only, and the training APIs are private.
 
 Two prior works have explored ANE training:
-- **maderix/ANE** (Singh, 2025): Reverse-engineered `_ANEClient` and `_ANECompiler` to implement forward and backward passes for Llama-family transformers. Achieved training on the Stories110M architecture (12L, dim=768, 109M params). Demonstrated three pipeline approaches: static (const weights, recompile every N steps), dynamic (IOSurface weight staging, compile once), and grouped convolution.
-- **Orion** (arXiv:2603.06728): Claimed delta compilation (unload, patch weights, reload without recompile) at 8ms/kernel vs 70ms for full compilation. Reported 94% ANE utilization via deep graph fusion.
+- **maderix/ANE** (maderix, 2025): Reverse-engineered `_ANEClient`, `_ANECompiler`, and `_ANEInMemoryModelDescriptor` to implement forward and backward passes for Llama-family transformers. Achieved training on Stories110M (12L, dim=768, 109M params) and Qwen3-0.6B (28L, dim=1024, 596M params). Two pipeline approaches: static (const weights, recompile every N steps) and dynamic (IOSurface weight staging, compile once). Uses loss scaling of `256 * NLAYERS`.
+- **Orion** (Murai Labs, [github.com/mechramc/Orion](https://github.com/mechramc/Orion)): ANE training/inference runtime. Claims 8.5x faster weight reload vs full compilation (494ms for 60 kernels vs ~4200ms). Verified 1000-step training stability with zero NaN. Documents ~20 ANE hardware constraints including ~119 compile limit per process.
 
 Neither work compared ANE training to a proper CPU baseline on the same architecture, nor measured actual power consumption. AutoANE fills these gaps.
 
@@ -182,7 +182,7 @@ Fusing non-linear ops into fp16 causes a train/val distribution shift (overfitti
 
 Training adds ~4.8W above idle (CPU-only: 13.3 - 8.5 = 4.8W). ANE modes shift ~1.1-1.4W from CPU to ANE subsystem, but total package power is unchanged.
 
-CPU-only achieves the lowest energy per step (9.2 mJ) because it completes more steps at the same total power draw. This result contradicts Orion's estimate of "~2x ANE power efficiency" — that figure likely applies to inference workloads with static compiled models, not training with per-step weight staging.
+CPU-only achieves the lowest energy per step (9.2 mJ) because it completes more steps at the same total power draw. Orion emphasizes ANE as "dedicated silicon that's idle in most workloads" but does not quantify training power efficiency. Our data shows no power benefit for training with dynamic weight staging.
 
 The lack of power savings is consistent with the IOSurface overhead story: even in ANE modes, the CPU is active ~38% of step time (RMSNorm, SiLU, classifier, AdamW), preventing it from entering low-power states.
 
@@ -312,7 +312,7 @@ Lesson: the Karpathy keep/revert protocol requires that ALL mutable state be com
 
 ### 9.1 Motivation
 
-The Orion paper reports delta compilation: unload model, write new weight BLOBFILEs to tmpDir, reload — at 8ms/kernel vs 70ms full compilation. If achievable, this would enable the static compilation approach (const() weights, conv 1x1) which is 1.5-2.8x faster per kernel, without the recompilation penalty.
+Orion reports 8.5x faster weight reload vs full compilation: unload each program, update weight files on disk, reload (494ms for 60 kernels vs ~4200ms full compile). If achievable, this would enable the static compilation approach (const() weights) without the recompilation penalty.
 
 ### 9.2 Results
 
@@ -404,7 +404,7 @@ The autonomous hyperparameter search demonstrates that even within a constrained
 4. Karpathy, A. (2025). autoresearch. *GitHub: karpathy/autoresearch*.
 5. Muennighoff, N. et al. (2023). Scaling Data-Constrained Language Models. *arXiv:2305.16264*.
 6. Nguyen, T.Q. & Salazar, J. (2019). Transformers without Tears: Improving the Normalization of Self-Attention. *arXiv:1910.05895*.
-7. Singh, M. (2025). ANE: Training on Apple Neural Engine. *GitHub: maderix/ANE*.
+7. maderix (2025). ANE: Training on Apple Neural Engine. *GitHub: [maderix/ANE](https://github.com/maderix/ANE)*.
 8. Smith, S.L. et al. (2018). Don't Decay the Learning Rate, Increase the Batch Size. *arXiv:1711.00489*.
 9. Wang, H. et al. (2022). DeepNet: Scaling Transformers to 1,000 Layers. *arXiv:2203.00555*.
-10. Orion (2026). End-to-end ANE LLM Training and Inference. *arXiv:2603.06728*.
+10. Murai Labs (2026). Orion: ANE Training and Inference Runtime. *GitHub: [mechramc/Orion](https://github.com/mechramc/Orion)*.

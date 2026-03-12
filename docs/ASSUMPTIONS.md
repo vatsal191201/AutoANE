@@ -51,7 +51,7 @@
 
 | ID | Assumption | Source | Risk |
 |----|-----------|--------|------|
-| U1 | ~~ANE power draw is ~2.8W at peak~~ | **CORRECTED (2026-03-12)**: Actual ANE peak is ~1.2W (from ane_full mode), not 2.8W. Average 765 mW, peak 1200 mW. The Orion paper's estimate was for a different workload. Moved to CORRECTED status. | CORRECTED |
+| U1 | ~~ANE power draw is ~2.8W at peak~~ | **CORRECTED (2026-03-12)**: Actual ANE peak is ~1.2W (from ane_full mode), not 2.8W. Average 765 mW, peak 1200 mW. The 2.8W estimate was extrapolated, not from Orion. Moved to CORRECTED status. | CORRECTED |
 | U2 | Deep graph compilation achieves 94% ANE utilization | Orion + maderix (not our test) | MEDIUM |
 | U3 | INT8 provides no compute speedup over fp16 | maderix blog + Orion paper: ANE dequantizes INT8→FP16 before compute. INT8 saves only memory bandwidth (1.88x throughput from smaller weight loads), not compute cycles. True peak is 19 TFLOPS FP16 regardless. | CONFIRMED (literature) |
 | U4 | SRAM is ~32MB with 30% cliff above | maderix Part 2: 2048x2048 (24MB) gets 5.7 TFLOPS, 4096x4096 (96MB) drops to 4.0 TFLOPS (30% drop). **E38 corroboration**: our W1 surface at DIM=2048 is 24MB — right at the cliff edge. | CONFIRMED (literature + E38) |
@@ -80,7 +80,7 @@
 | D5 | Delta compilation works via _ANEInMemoryModel reload | Exp 10, 17: output unchanged |
 | D6 | ANE→CPU mid-training would improve over pure modes | E29: adaptive 4.507 vs pure ANE 4.354 vs pure CPU 3.897. fp16 damage is cumulative in weights. |
 | D7 | ANE becomes advantageous at larger model dimensions | E38: tested DIM=1024/1536/2048. ANE never faster. At DIM=2048, ANE 2x SLOWER due to IOSurface memory pressure (379MB wired memory causes cache thrashing). |
-| D8 | ANE is ~2x more energy efficient than CPU for training | Powermetrics measurement (2026-03-12): CPU-only 13273 mW, ANE matmul 12568 mW, ANE full 12664 mW. Package power nearly identical. CPU-only is actually most energy-efficient per step. Orion paper's estimate was for inference, not training. |
+| D8 | ANE is ~2x more energy efficient than CPU for training | Powermetrics measurement (2026-03-12): CPU-only 13273 mW, ANE matmul 12568 mW, ANE full 12664 mW. Package power nearly identical. CPU-only is actually most energy-efficient per step. Orion does not quantify training power efficiency; this assumption was extrapolated from general ANE claims. |
 
 ---
 

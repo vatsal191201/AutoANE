@@ -57,9 +57,9 @@ We distinguish what is novel from what is adapted from prior work.
 - Lossless weight conversion pipeline: HuggingFace <-> ANE checkpoint <-> GGUF (verified bit-perfect on 272-tensor round-trip)
 
 **Adapted from prior work:**
-- ANE forward/backward pass via `_ANEClient`/`_ANECompiler` — adapted from [maderix/ANE](https://github.com/maderix/ANE) (Manjeet Singh)
+- ANE forward/backward pass via `_ANEClient`/`_ANECompiler` — adapted from [maderix/ANE](https://github.com/maderix/ANE)
 - MIL kernel generation and IOSurface spatial packing — line-for-line adaptation from maderix
-- Delta compilation investigation — inspired by [Orion](https://arxiv.org/abs/2603.06728) (arXiv:2603.06728)
+- Delta compilation investigation — inspired by [Orion](https://github.com/mechramc/Orion) (Murai Labs)
 - Keep/revert experiment protocol — adapted from [karpathy/autoresearch](https://github.com/karpathy/autoresearch)
 - DeepNet scaling (`res_alpha = 1/sqrt(2N)`) — from [Wang et al. (2022)](https://arxiv.org/abs/2203.00555)
 
@@ -120,7 +120,7 @@ Measured via `sudo powermetrics --samplers cpu_power,gpu_power,ane_power` for 60
 
 Package power is ~12.5-13.3W across all modes. ANE shifts ~1.4W from CPU to ANE subsystem, but total power is unchanged. CPU-only achieves the lowest energy per step (9.2 mJ) because it completes more steps in the same time at the same power draw.
 
-This contradicts Orion's estimate of "~2x ANE power efficiency" — their figure appears to be for inference, not training.
+Orion emphasizes ANE as "dedicated silicon that's idle in most workloads" but does not quantify power efficiency for training. Our measurement shows no power benefit for training workloads.
 
 Experiment: E12.
 
@@ -162,7 +162,7 @@ Tested 5 approaches to avoid recompiling ANE kernels when weights change:
 4. _ANEInMemoryModel reload: **API not functional**
 5. Fresh recompile with cached graph: ~60ms/kernel (too expensive)
 
-ANE loads from an inaccessible memory-mapped compiled binary, not from the source BLOBFILE. The Orion paper's delta compilation claim could not be reproduced.
+ANE loads from an inaccessible memory-mapped compiled binary, not from the source BLOBFILE. Orion claims 8.5x faster recompilation via unload/reload (494ms for 60 kernels vs 4200ms full compile). We could not reproduce this — our reload attempts returned unchanged outputs.
 
 Experiments: E10, E17 (5 approaches, all fail), E34 (re-confirmed with newer APIs).
 
@@ -347,9 +347,9 @@ MLX is better for: raw GPU throughput on large models, broader ecosystem, rapid 
 
 ## Credits
 
-- **[Manjeet Singh (maderix)](https://github.com/maderix)** — [ANE](https://github.com/maderix/ANE): original reverse engineering of Apple's Neural Engine private APIs and first-ever training on ANE hardware. AutoANE's bridge, IOSurface code, and MIL generation are direct adaptations.
-- **[Andrej Karpathy](https://github.com/karpathy)** — [autoresearch](https://github.com/karpathy/autoresearch): the autonomous keep/revert experiment protocol.
-- **Orion** — [arXiv:2603.06728](https://arxiv.org/abs/2603.06728): end-to-end ANE LLM training system. Delta compilation findings from Orion motivated our investigation (which could not reproduce their results).
+- **[maderix](https://github.com/maderix)** — [ANE](https://github.com/maderix/ANE): original reverse engineering of Apple's Neural Engine private APIs and first-ever training on ANE hardware. AutoANE's bridge, IOSurface code, and MIL generation are direct adaptations.
+- **[Andrej Karpathy](https://github.com/karpathy)** — [autoresearch](https://github.com/karpathy/autoresearch): the autonomous keep/revert experiment protocol. Agent edits a single `train.py` containing the full model, optimizer (Muon + AdamW), and training loop.
+- **[Orion](https://github.com/mechramc/Orion)** (Murai Labs): ANE training/inference runtime. Claims 8.5x faster weight reload vs full compilation. Delta compilation findings from Orion motivated our investigation (which could not reproduce their reload mechanism).
 
 ## License
 

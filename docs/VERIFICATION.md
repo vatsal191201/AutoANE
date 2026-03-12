@@ -570,7 +570,7 @@ Sample output: *"Once upon a time, there was a little girl named Timmy. Timmy ha
 
 ## 16. Cross-Reference: maderix/ANE (2026-03-11)
 
-Comparison with the original ANE reverse engineering work by Manjeet Singh ([maderix/ANE](https://github.com/maderix/ANE)).
+Comparison with the original ANE reverse engineering work by [maderix/ANE](https://github.com/maderix/ANE).
 
 ### 16.1 Code Provenance
 
@@ -586,9 +586,11 @@ Comparison with the original ANE reverse engineering work by Manjeet Singh ([mad
 | Aspect | maderix/ANE | AutoANE |
 |--------|-------------|---------|
 | Focus | ANE-first (maximize ANE use) | Practical (CPU-only recommended) |
-| Training modes | ANE only | CPU-only, ANE matmul, ANE full |
+| Training modes | ANE only (static + dynamic pipelines) | CPU-only, ANE matmul, ANE full |
+| Models tested | Stories110M (12L), Qwen3-0.6B (28L) | Autoresearch (4L), SmolLM2-135M/360M |
+| Loss scaling | `256 * NLAYERS` | Fixed `256.0` |
 | Optimizer | Adam | AdamW + cosine LR + clipping |
-| Unique features | INT8, SRAM probing, GPU-ANE zero-copy, async cblas | Autonomous research, LoRA, weight import/export, time budgets |
+| Unique features | INT8 W8A8, SRAM probing, GPU-ANE zero-copy, async cblas | Autonomous research, LoRA, weight import/export, time budgets |
 
 ### 16.3 Potential Improvements from maderix
 

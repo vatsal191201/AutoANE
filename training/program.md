@@ -191,7 +191,7 @@ Read `docs/ASSUMPTIONS.md` for the full registry. Critical findings:
 | Metric | val_bpb (bits per byte) | val_loss (cross-entropy in nats) |
 | Budget | 5 min (GPU) | 2 min default (CPU, configurable) |
 | Optimizer | Muon + AdamW | AdamW only |
-| Data | FineWeb-Edu (10B tokens) | TinyStories (20M tokens) |
+| Data | Not specified in README (large-scale) | TinyStories (20M tokens) |
 | Scope of changes | Arbitrary code modifications | Hyperparameter + architecture search |
 
 The core protocol (modify → commit → train → keep/revert) is identical. The scope of modification is narrower because our training binary is compiled C, not interpreted Python.

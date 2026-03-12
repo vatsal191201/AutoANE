@@ -12,9 +12,9 @@
 2. `sdpaBwd`: softmax probs (~1/256) * tiny da → underflows to zero
 3. `qBwd`/`kvBwd`: zero dq/dk/dv → zero dx, blocking gradient flow through residual stream
 
-**The bug**: We had `loss_scale = 1.0` instead of the original `loss_scale = 256.0`. Loss scaling multiplies all gradients by 256 during backward (keeping them above fp16 precision), then divides by 256 before Adam update. Without it, ANE fp16 gradients underflowed to zero.
+**The bug**: We had `loss_scale = 1.0` instead of a proper scaling value. Loss scaling multiplies all gradients by a constant during backward (keeping them above fp16 precision), then divides before Adam update. Without it, ANE fp16 gradients underflowed to zero.
 
-**Fix applied**: Restored `loss_scale = 256.0` (matching original maderix/ANE).
+**Fix applied**: Set `loss_scale = 256.0`. **Note**: maderix/ANE uses `256 * NLAYERS` (i.e., 1024 for 4L, 7680 for 30L), not a fixed 256. Our choice of a fixed 256.0 works for shallow models but may be insufficient for very deep ANE models. All AutoANE experiments use 256.0.
 
 **Initial (buggy) A/B Comparison** (SmolLM2-360M, loss_scale=1.0, 5-minute budget):
 

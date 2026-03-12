@@ -100,7 +100,7 @@ Source: https://github.com/maderix/ANE
 
 **ASSUMPTION A2**: The 20% per-step speedup from conv 1x1 (not 3x) needs verification with a microbenchmark on our specific model dimensions. The Orion paper claims 3x raw throughput -- the discrepancy may be because only linear projections use conv (attention still uses matmul), and IO overhead dominates.
 
-### 3.2 Orion Paper (arxiv 2603.06728)
+### 3.2 Orion (github.com/mechramc/Orion, Murai Labs)
 
 **Delta compilation algorithm:**
 1. Unload: _ANEModel.unloadWithQoS(21)
@@ -228,7 +228,7 @@ By switching from matmul (runtime weights via IOSurface) to conv 1x1 (baked weig
 - **CPU-only**: 13273 mW package, 13241 mW CPU, 9 mW ANE
 - **ANE matmul**: 12568 mW package, 12132 mW CPU, 384 mW ANE
 - **ANE full**: 12664 mW package, 11821 mW CPU, 765 mW ANE
-- **NOTE**: The Orion estimate of "ANE ~2x more energy efficient" is **DISPROVED** by our data — package power is nearly identical across all modes (~12.5-13.3W). ANE shifts ~1.4W from CPU to ANE but total consumption is the same. CPU-only is most energy-efficient per step (9.2 mW/step vs 10.9 for ANE matmul).
+- **NOTE**: The assumption that ANE is more energy efficient for training is **DISPROVED** by our data — package power is nearly identical across all modes (~12.5-13.3W). ANE shifts ~1.4W from CPU to ANE but total consumption is the same. CPU-only is most energy-efficient per step (9.2 mW/step vs 10.9 for ANE matmul). Orion does not quantify training power; this was our own extrapolation.
 
 **7.1.2 CPU/GPU Freedom** — VALIDATED by timing data
 - During ANE training: CPU handles RMSNorm (3.1ms), SiLU (5.8ms), classifier (15.2ms) = 24.1ms of CPU work per 63.2ms tracked = **CPU ~62% idle**
@@ -421,7 +421,7 @@ Rewrote `training/program.md` to implement the [karpathy/autoresearch](https://g
 - **Scope**: Agent modifies hyperparameters + architecture config, not model/optimizer code
 - **Metric**: val_loss (cross-entropy) instead of val_bpb (bits per byte)
 - **Budget**: 2 minutes (CPU-bound) vs 5 minutes (GPU-bound)
-- **Data**: 20M token TinyStories vs 10B token FineWeb-Edu
+- **Data**: 20M token TinyStories vs large-scale data (not specified in autoresearch README)
 
 **Two modes available:**
 1. **Agent loop** (`program.md` + `train.py`): Karpathy-style autonomous keep/revert
