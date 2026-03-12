@@ -15,7 +15,7 @@ E36 (120s) showed ane-matmul-only gets 130 steps vs CPU-only's 550 — a 4.2x th
 
 Literature review revealed several critical facts that reframe the hypothesis:
 
-1. **ANE is unlikely the thermal bottleneck**: ANE peak power is ~2.8W (vs CPU at 45W+). It has hard power gating (0mW idle). The Orion paper ran 1,000 steps over 22.4 min with 3.3% CV — no thermal degradation.
+1. **ANE is unlikely the thermal bottleneck**: ANE peak power is ~1.2W measured (originally estimated ~2.8W from Orion; see U1 correction). It has hard power gating (0mW idle). The Orion paper ran 1,000 steps over 22.4 min with 3.3% CV — no thermal degradation.
 
 2. **Single-op ANE utilization is ~30%**: The ANE is a graph execution engine. Single matmul kernels (our unfused approach) get ~30% utilization vs 74-94% for 16-64 op fused graphs. This is a fundamental architectural limitation.
 

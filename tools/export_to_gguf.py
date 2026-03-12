@@ -83,20 +83,54 @@ def de_interleave_weights(W, n_heads, head_dim):
     return W_out
 
 
+def validate_checkpoint_config(c, file_size):
+    """Validate checkpoint header fields before allocating memory."""
+    checks = [
+        (1 <= c['n_layers'] <= 256, f"n_layers={c['n_layers']} out of range [1, 256]"),
+        (64 <= c['dim'] <= 16384, f"dim={c['dim']} out of range [64, 16384]"),
+        (64 <= c['hidden'] <= 65536, f"hidden={c['hidden']} out of range [64, 65536]"),
+        (1 <= c['vocab'] <= 500000, f"vocab={c['vocab']} out of range [1, 500000]"),
+        (1 <= c['n_heads'] <= 256, f"n_heads={c['n_heads']} out of range [1, 256]"),
+        (1 <= c['n_kv_heads'] <= c['n_heads'],
+         f"n_kv_heads={c['n_kv_heads']} out of range [1, n_heads={c['n_heads']}]"),
+        (1 <= c['hd'] <= 1024, f"hd={c['hd']} out of range [1, 1024]"),
+        (c['dim'] % c['n_heads'] == 0, f"dim={c['dim']} not divisible by n_heads={c['n_heads']}"),
+    ]
+    for ok, msg in checks:
+        if not ok:
+            raise ValueError(f"Checkpoint header validation failed: {msg}")
+
+    kv_dim = c['n_kv_heads'] * c['hd']
+    layer_params = (c['q_dim'] * c['dim'] + kv_dim * c['dim'] * 2 +
+                    c['dim'] * c['q_dim'] + c['hidden'] * c['dim'] * 2 +
+                    c['dim'] * c['hidden'] + c['dim'] * 2)
+    layer_bytes = layer_params * 3 * 4
+    other_bytes = c['dim'] * 3 * 4 + c['vocab'] * c['dim'] * 4
+    min_size = 96 + c['n_layers'] * layer_bytes + other_bytes
+    if file_size < min_size:
+        raise ValueError(
+            f"Checkpoint too small: {file_size} bytes, expected >= {min_size} bytes "
+            f"for {c['n_layers']}L dim={c['dim']} vocab={c['vocab']}")
+
+
 def load_ane_checkpoint(path):
     """Load ANE BLZT v4 checkpoint."""
+    file_size = os.path.getsize(path)
     with open(path, 'rb') as f:
         hdr = struct.unpack('<iiiiiiiiiiffdddiiiiii', f.read(96))
 
         magic, version = hdr[0], hdr[1]
-        assert magic == 0x424C5A54, f"Not a BLZT checkpoint"
-        assert version == 4
+        if magic != 0x424C5A54:
+            raise ValueError("Not a BLZT checkpoint")
+        if version != 4:
+            raise ValueError(f"Unsupported checkpoint version {version}")
 
         c = {
             'step': hdr[2], 'n_layers': hdr[4], 'vocab': hdr[5],
             'dim': hdr[6], 'hidden': hdr[7], 'n_heads': hdr[8],
             'n_kv_heads': hdr[18], 'hd': hdr[19], 'q_dim': hdr[20],
         }
+        validate_checkpoint_config(c, file_size)
         kv_dim = c['n_kv_heads'] * c['hd']
 
         sizes = {

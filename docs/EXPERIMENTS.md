@@ -377,28 +377,28 @@ ANE+CPU-attn-bwd is worse than pure ANE because:
 
 | Hardware | Power | Efficiency |
 |----------|-------|-----------|
-| M4 ANE at peak | **2.8W** | **6.6 TFLOPS/W** |
+| ~~M4 ANE at peak~~ | ~~**2.8W**~~ | ~~**6.6 TFLOPS/W**~~ |
 | M4 ANE idle | **0 mW** | Hard power-gated, zero leakage |
 | M4 GPU (Metal) | ~2.9W | ~1.0 TFLOPS/W |
 | NVIDIA A100 | ~300W | ~0.08 TFLOPS/W |
+
+**CORRECTION (2026-03-12)**: The 2.8W ANE power was extrapolated, not measured. Our actual powermetrics measurement (V19) shows ANE averages **765 mW** (peak **1.2W**) in ane_full mode. See VERIFICATION.md Section 19 for full data.
 
 | Chip | CPU FP32 (Accelerate) | Memory BW |
 |------|----------------------|-----------|
 | M4 | 1.49 TFLOPS | 103 GB/s |
 
-### Estimated Power Comparison for Our Training
+### Actual Measured Power Comparison (powermetrics, 2026-03-12)
 
-| Metric | ANE Training | CPU-Only Training |
-|--------|-------------|-------------------|
-| Compute power | ANE: ~2.8W | CPU AMX: ~10-15W (estimated) |
-| CPU power (overhead) | ~3-5W (RMS, SiLU, cls) | ~0W (same CPU does compute) |
-| **Total estimated** | **~6-8W** | **~10-15W** |
-| Steps in 120s | 1297 | 1041 |
-| Steps per watt-hour | ~5600 | ~2800 |
-| **Energy efficiency** | **~2× more efficient** | Baseline |
+| Mode | CPU Power | ANE Power | Package Total | Steps/60s | Val Loss |
+|------|-----------|-----------|---------------|------------|----------|
+| CPU-only | 13241 mW | 9 mW | 13273 mW | 1435 | 4.343 |
+| ANE matmul | 12132 mW | 384 mW | 12568 mW | 1149 | 4.646 |
+| ANE full | 11821 mW | 765 mW | 12664 mW | 1301 | 6.046 |
+| Idle | — | — | 8455 mW | — | — |
 
-### Key Insight from Literature
-ANE is **80× more power-efficient per FLOP** than NVIDIA A100 and **4× more efficient** than Apple's own GPU. The 2.8W peak power draw means ANE training is feasible on battery-powered devices — this is the strongest unique value proposition.
+### Key Finding: ANE Does NOT Save Power
+Package power is nearly identical across all modes (~12.5-13.3W). ANE offloads work from CPU but total system power stays the same. The original "2× more efficient" estimate was wrong — CPU-only is actually most energy-efficient per step (best val_loss at similar power draw). See D8 in ASSUMPTIONS.md.
 
 ### Single-Op Utilization Warning
 The Orion paper reports that single operations achieve only **~30% ANE utilization**, while deep graphs (16-64 chained ops) achieve **94%**. Our dynamic matmul approach uses individual kernel evaluations, meaning we're likely at ~30% utilization. This explains why our measured ANE throughput (~5-6 TFLOPS effective) is well below the 18.6 TFLOPS peak.
@@ -480,7 +480,7 @@ grep -A2 "ANE Power" power_cpu.txt | grep "mW" | awk '{sum+=$1; n++} END {print 
 - **Surprise finding**: ANE+CPU-attn-bwd is WORSE than pure ANE (mixed precision mismatch)
 
 ### Task C: ANE Unique Value Proposition
-- **Power efficiency**: ANE 2.8W peak, 6.6 TFLOPS/W (from Orion paper). Local measurement pending (requires sudo)
+- **Power efficiency**: ~~ANE 2.8W peak~~ **CORRECTED**: ANE peak 1.2W, avg 765 mW (measured via powermetrics). Package power ~identical across modes — ANE does NOT save total system power (D8)
 - **CPU freedom**: During ANE training, CPU handles only RMSNorm, SiLU, classifier, dW. During CPU-only training, CPU is 100% utilized
 - **On-device training**: ANE training enables training while keeping CPU available for other tasks — unique for mobile/edge deployment
 - **Research novelty**: First open-source comparison of ANE vs CPU training with identical training procedures
@@ -713,7 +713,7 @@ At step ~2900 (CPU run), timing jumped to 183.5ms due to `ane_bwd` reaching 98.4
 | A3 | Delta compilation works | INVALIDATED | BLOBFILE patching + reload does NOT update weights |
 | A4 | CPU AMX ~1-2 TFLOPS fp32 | VALIDATED | Measured 1.5-2.5 TFLOPS |
 | A5 | IOSurface is the bottleneck | INVALIDATED | ~13% of step time |
-| A6 | ANE power ~5-10W | REFINED via literature | ANE 2.8W peak (Orion paper), local measurement pending |
+| A6 | ANE power ~5-10W | MEASURED (V19) | ANE avg 765 mW, peak 1.2W. Package power ~identical across modes (~12.5-13.3W). |
 
 ---
 
@@ -921,7 +921,7 @@ Created `measure_power.sh` script that:
 4. NOT RUN yet (requires sudo — user needs to run manually)
 
 ### Status
-Script created but not executed. U1 (ANE power ~2.8W) remains UNVERIFIED.
+Script created. Power was subsequently measured via `sudo powermetrics` (see VERIFICATION.md Section 19). U1 CORRECTED: ANE peak is 1.2W, not 2.8W.
 
 ---
 
@@ -1054,7 +1054,7 @@ Does ANE provide a net training speedup over CPU-only when run long enough for t
 Three parallel investigations conducted before running experiments:
 
 **1. Literature Review** (maderix blog, Orion paper arXiv:2603.06728):
-- ANE peak power is ~2.8W (vs CPU 45W+), has hard power gating (0mW idle)
+- ANE peak power is ~1.2W measured (was estimated ~2.8W from Orion), has hard power gating (0mW idle)
 - Orion ran 1,000 steps over 22.4min with 913 +/- 30 ms/step (3.3% CV) — no degradation
 - Single-op ANE utilization is ~30%, need 16-64 ops for 74-94%
 - Dispatch overhead ~0.095ms/call

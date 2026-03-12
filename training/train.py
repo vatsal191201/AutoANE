@@ -89,9 +89,11 @@ def generate_model_header(path):
         f.write(f'#define CKPT_PATH "ane_autoresearch_ckpt.bin"\n')
 
 
-def main():
+def main(seed=None):
     validate_config()
     train_dir = os.path.dirname(os.path.abspath(__file__))
+    # Seed: CLI env var > function arg > default (42)
+    seed = int(os.environ.get('TRAIN_SEED', seed or 42))
     header_path = os.path.join(train_dir, "models", "autoresearch.h")
 
     # Verify data file exists before doing anything expensive
@@ -139,6 +141,7 @@ def main():
         cmd.append("--ane-matmul-only")
     if LORA_ENABLED:
         cmd.extend(["--lora", "--lora-rank", str(LORA_RANK)])
+    cmd.extend(["--seed", str(seed)])
     print(f"\nTraining for {TIME_BUDGET}s...")
     print(f"Command: {' '.join(cmd)}\n")
 

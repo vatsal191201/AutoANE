@@ -145,12 +145,15 @@ def fix_dependent_params(content):
     return content
 
 
-def run_experiment(description):
-    """Run training and return (val_loss, steps, params_M, ms_step) or None on failure."""
+def run_single_experiment(description, seed=42):
+    """Run a single training with given seed. Returns (val_loss, steps, params_M, ms_step) or None."""
     try:
+        env = os.environ.copy()
+        env['TRAIN_SEED'] = str(seed)
         result = subprocess.run(
             ['python3', 'train.py'],
-            capture_output=True, text=True, timeout=600
+            capture_output=True, text=True, timeout=600,
+            env=env
         )
         output = result.stdout + result.stderr
 
@@ -185,6 +188,55 @@ def run_experiment(description):
         return None
 
 
+def run_experiment(description, n_seeds=1):
+    """Run training n_seeds times, return median result and variance info.
+    Returns (val_loss, steps, params_M, ms_step, all_losses) or None on failure.
+    Using median val_loss prevents hill-climbing on noise (V27/Finding 7)."""
+    if n_seeds <= 1:
+        result = run_single_experiment(description, seed=42)
+        if result is None:
+            return None
+        return result + ([result[0]],)
+
+    # Multi-seed: run with different seeds, take median
+    all_results = []
+    seeds = [42 + i * 1000 for i in range(n_seeds)]
+
+    for i, seed in enumerate(seeds):
+        print(f"    Seed {i+1}/{n_seeds} (seed={seed})...", end='', flush=True)
+        result = run_single_experiment(description, seed=seed)
+        if result is None:
+            print(" CRASH")
+            continue
+        all_results.append(result)
+        print(f" val_loss={result[0]:.4f}")
+
+    if not all_results:
+        return None
+
+    # Require at least ceil(n_seeds/2) successful seeds for a meaningful median
+    min_required = math.ceil(n_seeds / 2)
+    if len(all_results) < min_required:
+        print(f"  Too few seeds succeeded ({len(all_results)}/{n_seeds}, "
+              f"need {min_required}) — treating as crash")
+        return None
+
+    # Use median val_loss for keep/discard decision
+    all_losses = [r[0] for r in all_results]
+    all_losses_sorted = sorted(all_losses)
+    median_idx = len(all_losses_sorted) // 2
+    median_loss = all_losses_sorted[median_idx]
+
+    # Use the result closest to median for steps/params/ms_step
+    closest = min(all_results, key=lambda r: abs(r[0] - median_loss))
+    variance = max(all_losses) - min(all_losses) if len(all_losses) > 1 else 0
+
+    print(f"    Median: {median_loss:.4f} (range: {min(all_losses):.4f}-{max(all_losses):.4f}, "
+          f"spread: {variance:.4f})")
+
+    return (median_loss, closest[1], closest[2], closest[3], all_losses)
+
+
 def git_commit(msg):
     subprocess.run(['git', 'add', 'train.py', 'results.tsv'], capture_output=True)
     subprocess.run(['git', 'commit', '-m', msg], capture_output=True)
@@ -197,11 +249,14 @@ def git_revert():
     subprocess.run(['git', 'reset', '--hard', 'HEAD~1'], capture_output=True)
 
 
-def log_result(commit, val_loss, steps, params_M, ms_step, status, description):
+def log_result(commit, val_loss, steps, params_M, ms_step, status, description, all_losses=None):
     """Append to results.tsv."""
     with open('results.tsv', 'a') as f:
         vl = f'{val_loss:.3f}' if val_loss else 'null'
-        f.write(f'{commit}\t{vl}\t{steps}\t{params_M}\t{ms_step}\t{status}\t{description}\n')
+        losses_str = ''
+        if all_losses and len(all_losses) > 1:
+            losses_str = f'\t[{",".join(f"{l:.3f}" for l in all_losses)}]'
+        f.write(f'{commit}\t{vl}\t{steps}\t{params_M}\t{ms_step}\t{status}\t{description}{losses_str}\n')
 
 
 def main():
@@ -212,6 +267,10 @@ def main():
                         help='Search strategy: random (uniform) or local (perturbation)')
     parser.add_argument('--branch', type=str, default=None,
                         help='Git branch name (default: autoresearch/auto-<timestamp>)')
+    parser.add_argument('--n-seeds', type=int, default=1,
+                        help='Seeds per experiment (1=original, 3+=median reduces noise). '
+                             'V27: run-to-run variance (~0.3 nats) exceeds optimization signal. '
+                             'Use 3+ for reproducible results.')
     args = parser.parse_args()
 
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
@@ -226,17 +285,28 @@ def main():
     subprocess.run(['git', 'checkout', '-b', branch], capture_output=True)
     print(f"Branch: {branch}")
 
+    n_seeds = args.n_seeds
+    if n_seeds > 1:
+        print(f"Multi-seed mode: {n_seeds} seeds per experiment (median val_loss)")
+        print(f"  This {n_seeds}x the runtime but prevents hill-climbing on noise (V27)")
+
+    # Initialize results TSV with header if missing
+    tsv_path = 'results.tsv'
+    if not os.path.exists(tsv_path) or os.path.getsize(tsv_path) == 0:
+        with open(tsv_path, 'w') as f:
+            f.write('commit\tval_loss\tsteps\tparams_M\tms_step\tstatus\tdescription\tall_losses\n')
+
     # Get baseline
     print("\n=== Running baseline ===")
     baseline_content = read_train_py()
-    result = run_experiment("baseline")
+    result = run_experiment("baseline", n_seeds=n_seeds)
     if result is None:
         print("ERROR: Baseline failed. Fix train.py first.")
         sys.exit(1)
 
-    best_val_loss, steps, params_M, ms_step = result
+    best_val_loss, steps, params_M, ms_step, all_losses = result
     commit = git_commit("autosearch: baseline")
-    log_result(commit, best_val_loss, steps, params_M, ms_step, 'keep', 'baseline')
+    log_result(commit, best_val_loss, steps, params_M, ms_step, 'keep', 'baseline', all_losses)
     print(f"  Baseline: val_loss={best_val_loss:.4f}, steps={steps}, {ms_step}ms/step")
 
     # Search loop
@@ -278,7 +348,7 @@ def main():
         commit = git_commit(f"autosearch: {description}")
 
         # Run
-        result = run_experiment(description)
+        result = run_experiment(description, n_seeds=n_seeds)
 
         if result is None:
             print("  CRASHED — reverting")
@@ -287,18 +357,18 @@ def main():
             crashed += 1
             continue
 
-        val_loss, steps, params_M, ms_step = result
+        val_loss, steps, params_M, ms_step, all_losses = result
         print(f"  Result: val_loss={val_loss:.4f} (best={best_val_loss:.4f})")
 
         if val_loss < best_val_loss:
             print(f"  KEEP (improved by {best_val_loss - val_loss:.4f})")
             best_val_loss = val_loss
-            log_result(commit, val_loss, steps, params_M, ms_step, 'keep', description)
+            log_result(commit, val_loss, steps, params_M, ms_step, 'keep', description, all_losses)
             kept += 1
         else:
             print(f"  DISCARD (worse by {val_loss - best_val_loss:.4f})")
             git_revert()
-            log_result(commit, val_loss, steps, params_M, ms_step, 'discard', description)
+            log_result(commit, val_loss, steps, params_M, ms_step, 'discard', description, all_losses)
             discarded += 1
 
     # Summary
@@ -307,6 +377,8 @@ def main():
     print(f"  Experiments: {kept + discarded + crashed}")
     print(f"  Kept: {kept}, Discarded: {discarded}, Crashed: {crashed}")
     print(f"  Best val_loss: {best_val_loss:.4f}")
+    if n_seeds > 1:
+        print(f"  Seeds per experiment: {n_seeds} (median val_loss, noise-resistant)")
     print(f"  Branch: {branch}")
     print(f"  Results: training/results.tsv")
 

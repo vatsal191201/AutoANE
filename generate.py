@@ -13,15 +13,52 @@ import struct, sys, os, math, time
 import numpy as np
 
 
+def validate_checkpoint_config(c, file_size):
+    """Validate checkpoint header fields before allocating memory.
+    Prevents malformed checkpoints from causing OOM or OOB reads."""
+    checks = [
+        (1 <= c['n_layers'] <= 256, f"n_layers={c['n_layers']} out of range [1, 256]"),
+        (64 <= c['dim'] <= 16384, f"dim={c['dim']} out of range [64, 16384]"),
+        (64 <= c['hidden'] <= 65536, f"hidden={c['hidden']} out of range [64, 65536]"),
+        (1 <= c['vocab'] <= 500000, f"vocab={c['vocab']} out of range [1, 500000]"),
+        (1 <= c['n_heads'] <= 256, f"n_heads={c['n_heads']} out of range [1, 256]"),
+        (1 <= c['n_kv_heads'] <= c['n_heads'],
+         f"n_kv_heads={c['n_kv_heads']} out of range [1, n_heads={c['n_heads']}]"),
+        (1 <= c['hd'] <= 1024, f"hd={c['hd']} out of range [1, 1024]"),
+        (c['dim'] % c['n_heads'] == 0, f"dim={c['dim']} not divisible by n_heads={c['n_heads']}"),
+    ]
+    for ok, msg in checks:
+        if not ok:
+            raise ValueError(f"Checkpoint header validation failed: {msg}")
+
+    # Estimate minimum file size from header
+    kv_dim = c['n_kv_heads'] * c['hd']
+    layer_params = (c['q_dim'] * c['dim'] + kv_dim * c['dim'] * 2 +
+                    c['dim'] * c['q_dim'] + c['hidden'] * c['dim'] * 2 +
+                    c['dim'] * c['hidden'] + c['dim'] * 2)
+    # Weights + Adam m + Adam v per layer
+    layer_bytes = layer_params * 3 * 4
+    # Final RMS norm (weights + Adam) + embedding
+    other_bytes = c['dim'] * 3 * 4 + c['vocab'] * c['dim'] * 4
+    min_size = 96 + c['n_layers'] * layer_bytes + other_bytes
+    if file_size < min_size:
+        raise ValueError(
+            f"Checkpoint too small: {file_size} bytes, expected >= {min_size} bytes "
+            f"for {c['n_layers']}L dim={c['dim']} vocab={c['vocab']}")
+
+
 def load_checkpoint(path):
     """Load ANE checkpoint (v4 BLZT format). Returns config, layers, rms_final, embed."""
+    file_size = os.path.getsize(path)
     with open(path, 'rb') as f:
         # Header: 10 ints + 2 floats + 3 doubles + 6 ints = 96 bytes
         hdr = struct.unpack('<iiiiiiiiiiffdddiiiiii', f.read(96))
 
         magic, version = hdr[0], hdr[1]
-        assert magic == 0x424C5A54, f"Not a BLZT checkpoint (magic={hex(magic)})"
-        assert version == 4, f"Unsupported checkpoint version {version}"
+        if magic != 0x424C5A54:
+            raise ValueError(f"Not a BLZT checkpoint (magic={hex(magic)})")
+        if version != 4:
+            raise ValueError(f"Unsupported checkpoint version {version}")
 
         config = {
             'step': hdr[2], 'n_layers': hdr[4], 'vocab': hdr[5],
@@ -29,6 +66,7 @@ def load_checkpoint(path):
             'n_kv_heads': hdr[18], 'hd': hdr[19], 'q_dim': hdr[20],
         }
         c = config
+        validate_checkpoint_config(c, file_size)
         kv_dim = c['n_kv_heads'] * c['hd']
 
         # Per-layer sizes

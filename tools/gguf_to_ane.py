@@ -49,7 +49,8 @@ def interleave_weights(W, n_heads, head_dim):
 def load_gguf(path):
     with open(path, 'rb') as f:
         magic = f.read(4)
-        assert magic == b'GGUF', f"Not GGUF: {magic}"
+        if magic != b'GGUF':
+            raise ValueError(f"Not a GGUF file (magic={magic!r})")
         version = struct.unpack('<I', f.read(4))[0]
         n_tensors = struct.unpack('<Q', f.read(8))[0]
         n_kv = struct.unpack('<Q', f.read(8))[0]

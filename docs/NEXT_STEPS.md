@@ -63,7 +63,7 @@ All assumptions are tracked in [ASSUMPTIONS.md](ASSUMPTIONS.md). Summary:
 | IA2 | GGUF files are always F32/F16/BF16 | gguf_to_ane.py | **FIXED**: now errors on unsupported dtypes |
 | IA3 | SmolLM2 tokenizer is available for generate.py | generate.py | LOW: graceful fallback exists |
 | IA4 | Xcode CLT are installed | Makefile | MEDIUM: could check for `xcrun` before build |
-| IA5 | IOSurface slot sizes are correctly ordered | mil_dynamic.h, io.h | **HIGH**: upstream (UP2) shows violations produce silent zeros. Needs verification. |
+| IA5 | IOSurface slot sizes are correctly ordered | mil_dynamic.h, io.h | **VERIFIED SAFE (P6 audit, 2026-03-12)**: All 14 kernels use exactly 1 input + 1 output IOSurface. Single-surface spatial packing provides structural immunity. Only `bridge/ane_bridge.m` supports multi-slot (no ordering check). |
 | IA6 | Matmul inner dimensions are multiples of 32 | all ANE kernel code | MEDIUM: our DIM=512 is fine, but other configs could silently fail |
 | IA7 | Single-process training (no concurrent ANE users) | train.m | CONFIRMED: E18/E37 showed concurrent processes cause false divergence |
 | IA8 | macOS 15+ required | README, train.m | LOW: documented requirement |
@@ -115,15 +115,19 @@ All assumptions are tracked in [ASSUMPTIONS.md](ASSUMPTIONS.md). Summary:
 
 **Estimated effort**: 2-3 days engineering (requires understanding ane-infer's implementation).
 
-### P4: Multi-Seed Autosearch [MEDIUM IMPACT]
+### P4: Multi-Seed Autosearch [MEDIUM IMPACT] — **IMPLEMENTED**
 
 **What**: Run each autosearch evaluation N times (N=3-5) and use the median val_loss for keep/revert decisions.
 
 **Why**: Our V27/Finding 7 showed run-to-run variance (~0.3 nats) exceeds the optimization signal. Single-evaluation search hill-climbs on noise. The "17% improvement" was seed selection.
 
-**How**: Modify `run_autosearch.py` to run each experiment 3x, take median val_loss. This 3x the runtime (~9 hours for 100 experiments) but produces reproducible results.
-
-**Estimated effort**: 0.5 days code, 9+ hours runtime.
+**Implementation** (2026-03-12):
+- Added `--seed` CLI flag to `train.m` (was hardcoded `srand48(42)`)
+- Added `TRAIN_SEED` environment variable support to `train.py`
+- Added `--n-seeds` flag to `run_autosearch.py` (default 1 for backward compat)
+- Multi-seed runs N experiments with seeds [42, 1042, 2042, ...], takes median val_loss
+- Individual run losses are logged to results.tsv for post-hoc variance analysis
+- Usage: `python3 run_autosearch.py --experiments 50 --n-seeds 3`
 
 ### P5: Larger Dataset Test [MEDIUM IMPACT]
 
@@ -135,22 +139,28 @@ All assumptions are tracked in [ASSUMPTIONS.md](ASSUMPTIONS.md). Summary:
 
 **Estimated effort**: 0.5 days setup, 1-2 days training.
 
-### P6: Verify IOSurface Slot Ordering in Our Code [HIGH PRIORITY, LOW EFFORT]
+### P6: Verify IOSurface Slot Ordering in Our Code — **VERIFIED SAFE**
 
-**What**: Audit `mil_dynamic.h` and `io.h` to verify our IOSurface inputs are in ascending size order and outputs in descending size order.
+**Result (2026-03-12)**: Full audit of all 14 ANE kernels in train.m. Every kernel uses exactly 1 input IOSurface and 1 output IOSurface. The single-surface spatial packing architecture (activations + weights packed in spatial dimension, separated by `slice_by_size` inside MIL) provides structural immunity — a 1-element array is trivially sorted. The `Kern` struct (`config.h:63`) has scalar `ioIn`/`ioOut` fields, making multi-slot structurally impossible.
 
-**Why**: UP2 from imperatormk shows violations produce silent zeros with no error. If our code violates this, we could be getting wrong results in ANE modes.
+**Only risk surface**: `bridge/ane_bridge.m` supports arbitrary multi-slot configurations with no ordering enforcement. Any Python caller passing non-ascending input sizes or non-descending output sizes will get silent zeros.
 
-**Estimated effort**: 2-4 hours audit.
-
-### P7: Port Upstream Performance Fixes [LOW EFFORT]
+### P7: Port Upstream Performance Fixes — **PARTIALLY IMPLEMENTED**
 
 **What**: Integrate applicable fixes from maderix/ANE PRs:
 - PR #32: vDSP/cblas vectorization for CPU bottlenecks
 - PR #39: Cache-optimized embedding ops (~12x lookup speedup)
 - PR #33: ACCUM_STEPS configurable via environment variable
 
-**Estimated effort**: 1-2 days per fix.
+**Implemented (2026-03-12)**:
+1. Gradient scaling vectorization (`train.m:1291-1303`): replaced 9 scalar `for` loops per layer with `vDSP_vsmul` — matches the gradient clipping code 70 lines later. Zero risk.
+2. `transpose_weight` vectorization (`train.m:64-68`): replaced naive nested loop with `vDSP_mtrans`. Called for 7 matrices × 32 layers at startup and every Adam step.
+
+**Remaining** (from P7 assessment):
+- PR #32 Adam vectorization: `cpu_ops.h:56-64` still scalar. Replace with `vDSP_vsmsa`/`vvsqrtf`/`vvrecf`. Estimated 3-5x on Adam step.
+- PR #39 complete compact embed: infrastructure exists (`VocabMap`, `cembed`), but `embed_lookup` at `train.m:656` still uses the full 181MB table. Wire `cinput_tokens` through `vm.full_to_compact[]` to use compact table.
+- PR #33 env-var: operational convenience only, 15 min. Already have `--accum` CLI and `train_config.h` defines.
+- Additional: `gqa_reduce_kv` inner loop (scalar `+=` → `vDSP_vadd`), `vocab_scatter_grads` inner loop (scalar → `cblas_saxpy`).
 
 ---
 
@@ -161,9 +171,9 @@ All assumptions are tracked in [ASSUMPTIONS.md](ASSUMPTIONS.md). Summary:
 | 1 | No automated tests | MEDIUM | No test infrastructure exists. Would need synthetic data + expected output comparison. |
 | 2 | Makefile doesn't check for Xcode CLT | LOW | Could check `which xcrun` before build. |
 | 3 | Data file symlinks point to absolute paths | LOW | Local-only issue, not tracked by git (.gitignore excludes *.bin). |
-| 4 | EXPERIMENTS.md line 380: "2.8W, 6.6 TFLOPS/W" cited from Orion, but our measurement shows ANE peak 1.2W | MEDIUM | Stale citation from before our power measurements. |
-| 5 | U3 says "19 TFLOPS FP16" without specifying chip (this is M4-specific) | LOW | Should clarify "19 TFLOPS FP16 (M4)" |
-| 6 | Security: checkpoint loading doesn't validate header fields before allocating memory | MEDIUM | See maderix/ANE PR #45 (OOB write fix). Our `load_checkpoint()` in generate.py trusts header values. |
+| 4 | EXPERIMENTS.md line 380: "2.8W, 6.6 TFLOPS/W" cited from Orion, but our measurement shows ANE peak 1.2W | MEDIUM | **FIXED**: Struck through stale values, added correction note with actual measured data, replaced estimated table with measured powermetrics data. |
+| 5 | U3 says "19 TFLOPS FP16" without specifying chip (this is M4-specific) | LOW | **FIXED**: Clarified "19 TFLOPS FP16 on M4 (lower on earlier chips: ~15.8 TOPS INT8 on M2)" |
+| 6 | Security: checkpoint loading doesn't validate header fields before allocating memory | MEDIUM | **FIXED**: Added `validate_checkpoint_config()` to generate.py and export_to_gguf.py. Validates all header fields have sane ranges and file size is consistent with claimed dimensions. |
 
 ---
 

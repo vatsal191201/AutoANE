@@ -62,9 +62,7 @@ typedef struct {
 
 // Transpose W[rows,cols] → W^T[cols,rows] stored as [cols channels, rows spatial]
 static void transpose_weight(float *dst, const float *src, int rows, int cols) {
-    for (int r = 0; r < rows; r++)
-        for (int c = 0; c < cols; c++)
-            dst[c * rows + r] = src[r * cols + c];
+    vDSP_mtrans(src, 1, dst, 1, (vDSP_Length)cols, (vDSP_Length)rows);
 }
 
 // Spatial (last dim) sizes for unfused matmul kernels: input is [1, IC, 1, SEQ+OC]
@@ -276,6 +274,7 @@ int main(int argc, char *argv[]) {
         int adaptive_window = 5;       // Consecutive steps above threshold to trigger switch
         int adaptive_above_count = 0;  // Counter for consecutive steps above threshold
         int adaptive_switch_step = -1; // Step at which ANE→CPU switch occurred (-1 = no switch)
+        long init_seed = 42;           // Random seed for weight initialization and data sampling
         const char *data_path = DEFAULT_DATA_PATH;
         for (int i=1; i<argc; i++) {
             if (strcmp(argv[i], "--resume") == 0) do_resume = true;
@@ -299,6 +298,7 @@ int main(int argc, char *argv[]) {
             else if (strcmp(argv[i], "--sanitize") == 0) grad_sanitize = true;
             else if (strcmp(argv[i], "--adaptive") == 0 && i+1<argc) adaptive_thresh = atof(argv[++i]);
             else if (strcmp(argv[i], "--adaptive-window") == 0 && i+1<argc) adaptive_window = atoi(argv[++i]);
+            else if (strcmp(argv[i], "--seed") == 0 && i+1<argc) init_seed = atol(argv[++i]);
         }
         if (cpu_only) use_cpu_bwd = true;            // CPU-only implies CPU backward
         if (ane_matmul_only) use_cpu_bwd = true;   // ANE matmul-only implies CPU backward
@@ -352,8 +352,8 @@ int main(int argc, char *argv[]) {
             double fwd_flops = 2.0*NLAYERS*((double)WQ_SZ + WK_SZ + WV_SZ + WO_SZ + W1_SZ + W2_SZ + W3_SZ) * SEQ;
             double total_flops = 3.0 * fwd_flops;
             printf("FLOPs/step: fwd=%.1fM total=%.1fM\n", fwd_flops/1e6, total_flops/1e6);
-            printf("  Training from scratch (random init)\n");
-            srand48(42);
+            printf("  Training from scratch (random init, seed=%ld)\n", init_seed);
+            srand48(init_seed);
             float scale_d=1.0f/sqrtf(DIM), scale_qd=1.0f/sqrtf(Q_DIM), scale_h=1.0f/sqrtf(HIDDEN);
             float res_scale = 1.0f/sqrtf(2.0f*NLAYERS);
             for (int L=0; L<NLAYERS; L++) {
@@ -630,7 +630,7 @@ int main(int argc, char *argv[]) {
         double total_train_ms = 0;
         int total_steps_done = 0;
         uint64_t t_wall_start = mach_absolute_time();
-        srand48(42 + start_step);
+        srand48(init_seed + start_step);
 
         for (int step = start_step; step < total_steps; step++) {
             // Time budget check (skip first 5 steps for compile warmup)
@@ -1286,19 +1286,20 @@ int main(int argc, char *argv[]) {
                 float gsc = 1.0f / (accum_steps * loss_scale);
                 adam_t++;
 
-                // Scale gradients
+                // Scale gradients (vectorized — matches clipping pattern below)
                 for (int L=0; L<NLAYERS; L++) {
                     LayerGrads *g = &grads[L];
-                    for(size_t i=0;i<WQ_SZ;i++) g->Wq[i]*=gsc;
-                    for(size_t i=0;i<WK_SZ;i++) g->Wk[i]*=gsc;
-                    for(size_t i=0;i<WV_SZ;i++) g->Wv[i]*=gsc;
-                    for(size_t i=0;i<WO_SZ;i++) g->Wo[i]*=gsc;
-                    for(size_t i=0;i<W1_SZ;i++) g->W1[i]*=gsc;
-                    for(size_t i=0;i<W2_SZ;i++) g->W2[i]*=gsc;
-                    for(size_t i=0;i<W3_SZ;i++) g->W3[i]*=gsc;
-                    for(int i=0;i<DIM;i++){g->rms_att[i]*=gsc; g->rms_ffn[i]*=gsc;}
+                    vDSP_vsmul(g->Wq,1,&gsc,g->Wq,1,(vDSP_Length)WQ_SZ);
+                    vDSP_vsmul(g->Wk,1,&gsc,g->Wk,1,(vDSP_Length)WK_SZ);
+                    vDSP_vsmul(g->Wv,1,&gsc,g->Wv,1,(vDSP_Length)WV_SZ);
+                    vDSP_vsmul(g->Wo,1,&gsc,g->Wo,1,(vDSP_Length)WO_SZ);
+                    vDSP_vsmul(g->W1,1,&gsc,g->W1,1,(vDSP_Length)W1_SZ);
+                    vDSP_vsmul(g->W2,1,&gsc,g->W2,1,(vDSP_Length)W2_SZ);
+                    vDSP_vsmul(g->W3,1,&gsc,g->W3,1,(vDSP_Length)W3_SZ);
+                    vDSP_vsmul(g->rms_att,1,&gsc,g->rms_att,1,(vDSP_Length)DIM);
+                    vDSP_vsmul(g->rms_ffn,1,&gsc,g->rms_ffn,1,(vDSP_Length)DIM);
                 }
-                for(int i=0;i<DIM;i++) grms_final[i]*=gsc;
+                vDSP_vsmul(grms_final,1,&gsc,grms_final,1,(vDSP_Length)DIM);
                 vocab_scatter_grads(gembed, gcembed, &vm, DIM);
                 for(size_t i=0;i<(size_t)VOCAB*DIM;i++) gembed[i]*=gsc;
 
