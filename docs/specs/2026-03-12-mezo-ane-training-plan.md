@@ -343,6 +343,7 @@ int main(int argc, char *argv[]) {
         float *k_tiled = (float*)safe_malloc(SEQ * Q_DIM * 4);
         float *v_tiled = (float*)safe_malloc(SEQ * Q_DIM * 4);
         float *logits = (float*)safe_malloc(SEQ * CV * 4);
+        float *dlogits = (float*)safe_malloc(SEQ * CV * 4);  // throwaway for cross_entropy_loss
 
         // === Compile ANE kernels (forward only) ===
         DynLayerKernels dk;
@@ -599,10 +600,10 @@ int main(int argc, char *argv[]) {
 
             // Final RMSNorm + classifier
             rmsnorm(xnorm_buf, x_cur, rms_final, DIM, SEQ);
-            // logits = cembed @ xnorm (classifier = embedding weights)
-            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                        CV, SEQ, DIM, 1.0f, cembed, DIM, xnorm_buf, SEQ, 0.0f, logits, SEQ);
-            float loss_plus = cross_entropy_loss(logits, ctargets, CV, SEQ);
+            // logits[SEQ,CV] = x_final^T[SEQ,DIM] @ cembed^T[DIM,CV]  (row-major for cross_entropy_loss)
+            cblas_sgemm(CblasRowMajor, CblasTrans, CblasTrans,
+                        SEQ, CV, DIM, 1.0f, xnorm_buf, SEQ, cembed, DIM, 0.0f, logits, CV);
+            float loss_plus = cross_entropy_loss(dlogits, logits, ctargets, CV, SEQ);
             t_fwd += tb_ms(mach_absolute_time() - t0);
 
             // ===== 3. Perturb -2*epsilon (to theta - epsilon*z) =====
@@ -698,9 +699,9 @@ int main(int argc, char *argv[]) {
             }
 
             rmsnorm(xnorm_buf, x_cur, rms_final, DIM, SEQ);
-            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                        CV, SEQ, DIM, 1.0f, cembed, DIM, xnorm_buf, SEQ, 0.0f, logits, SEQ);
-            float loss_minus = cross_entropy_loss(logits, ctargets, CV, SEQ);
+            cblas_sgemm(CblasRowMajor, CblasTrans, CblasTrans,
+                        SEQ, CV, DIM, 1.0f, xnorm_buf, SEQ, cembed, DIM, 0.0f, logits, CV);
+            float loss_minus = cross_entropy_loss(dlogits, logits, ctargets, CV, SEQ);
             t_fwd += tb_ms(mach_absolute_time() - t0);
 
             // ===== 5. Restore to original theta (no cembed rebuild needed) =====
@@ -813,8 +814,8 @@ int main(int argc, char *argv[]) {
                         for (int i = 0; i < SEQ*DIM; i++) x_cur[i] += o_out[i];
                     }
                     rmsnorm(xnorm_buf, x_cur, rms_final, DIM, SEQ);
-                    cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans, CV,SEQ,DIM, 1.0f, cembed,DIM, xnorm_buf,SEQ, 0.0f, logits,SEQ);
-                    val_loss_sum += cross_entropy_loss(logits, vctargets, CV, SEQ);
+                    cblas_sgemm(CblasRowMajor,CblasTrans,CblasTrans, SEQ,CV,DIM, 1.0f, xnorm_buf,SEQ, cembed,DIM, 0.0f, logits,CV);
+                    val_loss_sum += cross_entropy_loss(dlogits, logits, vctargets, CV, SEQ);
                 }
                 float val_loss = val_loss_sum / val_batches;
                 printf("  [val_loss=%.4f at step %d]\n", val_loss, step + 1);
@@ -857,7 +858,7 @@ int main(int argc, char *argv[]) {
         free(x_cur); free(xnorm_buf);
         free(Q); free(K); free(V); free(attn_out); free(o_out);
         free(h1); free(h3); free(silu_out);
-        free(k_tiled); free(v_tiled); free(logits);
+        free(k_tiled); free(v_tiled); free(logits); free(dlogits);
         munmap(token_data, data_len); close(data_fd);
 
         if (!cpu_only) {
