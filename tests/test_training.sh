@@ -139,6 +139,53 @@ else
     fail "train.py import/validate failed"
 fi
 
+# Test 9: MeZO compilation
+echo "Test 9: MeZO compilation"
+make mezo MODEL=autoresearch >/dev/null 2>&1
+if [ -f ./train_mezo ]; then
+    pass "MeZO compiles cleanly"
+else
+    fail "MeZO compilation failed"
+fi
+
+# Test 10: MeZO CPU-only forward (step 0 loss)
+echo "Test 10: MeZO CPU-only forward"
+MEZO_OUT=$(./train_mezo --scratch --data "$DATA" --lr 1e-5 --epsilon 1e-3 \
+    --steps 7 --time 30 --cpu-only --seed 42 2>&1)
+MEZO_LOSS=$(echo "$MEZO_OUT" | grep "^step 0" | grep -oE 'loss_plus=[0-9.]+' | cut -d= -f2)
+if [ -n "$MEZO_LOSS" ] && awk "BEGIN {exit !($MEZO_LOSS > 9.0 && $MEZO_LOSS < 10.5)}"; then
+    pass "MeZO step 0 loss=$MEZO_LOSS (expected ~9.7)"
+else
+    fail "MeZO step 0 loss=$MEZO_LOSS outside range [9.0, 10.5]"
+fi
+
+# Test 11: MeZO training stability (loss doesn't diverge)
+echo "Test 11: MeZO training stability (200 steps)"
+MEZO_OUT2=$(./train_mezo --scratch --data "$DATA" --lr 1e-5 --epsilon 1e-3 \
+    --steps 200 --time 60 --cpu-only --seed 42 2>&1)
+MEZO_FINAL=$(echo "$MEZO_OUT2" | grep "^final_loss_plus:" | awk '{print $2}')
+MEZO_INIT=$(echo "$MEZO_OUT2" | grep "^step 0" | grep -oE 'loss_plus=[0-9.]+' | cut -d= -f2)
+if [ -n "$MEZO_FINAL" ] && [ -n "$MEZO_INIT" ] && awk "BEGIN {exit !($MEZO_FINAL < $MEZO_INIT * 2.0 && $MEZO_FINAL > 0)}"; then
+    pass "MeZO stable ($MEZO_INIT -> $MEZO_FINAL, no divergence)"
+else
+    fail "MeZO diverged ($MEZO_INIT -> $MEZO_FINAL)"
+fi
+
+# Test 12: MeZO ANE matmul-only mode
+echo "Test 12: MeZO ANE mode"
+MEZO_ANE=$(./train_mezo --scratch --data "$DATA" --lr 1e-5 --epsilon 1e-3 \
+    --steps 7 --time 30 --ane-matmul-only --seed 42 2>&1)
+if echo "$MEZO_ANE" | grep -q "Compiled"; then
+    MEZO_ANE_LOSS=$(echo "$MEZO_ANE" | grep "^step 0" | grep -oE 'loss_plus=[0-9.]+' | cut -d= -f2)
+    if [ -n "$MEZO_ANE_LOSS" ] && awk "BEGIN {exit !($MEZO_ANE_LOSS > 9.0 && $MEZO_ANE_LOSS < 10.5)}"; then
+        pass "MeZO ANE: loss=$MEZO_ANE_LOSS"
+    else
+        fail "MeZO ANE: loss=$MEZO_ANE_LOSS outside range"
+    fi
+else
+    fail "MeZO ANE kernel compilation failed"
+fi
+
 # Summary
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

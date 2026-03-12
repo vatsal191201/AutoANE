@@ -154,18 +154,26 @@ static void mezo_save_checkpoint(const char *path, int step, int total_steps, fl
     h.cum_train = ct; h.cum_wall = cw; h.cum_steps = cs; h.adam_t = 0;
     h.kv_heads = KV_HEADS; h.head_dim = HD; h.q_dim = Q_DIM;
     fwrite(&h, sizeof(h), 1, f);
-    // Write weights + zeros for Adam state (compatibility with train.m)
-    float *zeros_big = (float*)safe_calloc((size_t)fmax(fmax(WQ_SZ, W1_SZ), VOCAB*DIM), 4);
+    // Write weights + zeros for Adam state (layout matches train.m exactly)
+    size_t max_sz = WQ_SZ > W1_SZ ? WQ_SZ : W1_SZ;
+    if ((size_t)VOCAB * DIM > max_sz) max_sz = (size_t)VOCAB * DIM;
+    float *zeros_big = (float*)safe_calloc(max_sz, 4);
     for (int L = 0; L < NLAYERS; L++) {
-        fwrite(lw[L].Wq,4,WQ_SZ,f); fwrite(zeros_big,4,WQ_SZ,f); fwrite(zeros_big,4,WQ_SZ,f);
-        fwrite(lw[L].Wk,4,WK_SZ,f); fwrite(zeros_big,4,WK_SZ,f); fwrite(zeros_big,4,WK_SZ,f);
-        fwrite(lw[L].Wv,4,WV_SZ,f); fwrite(zeros_big,4,WV_SZ,f); fwrite(zeros_big,4,WV_SZ,f);
-        fwrite(lw[L].Wo,4,WO_SZ,f); fwrite(zeros_big,4,WO_SZ,f); fwrite(zeros_big,4,WO_SZ,f);
-        fwrite(lw[L].W1,4,W1_SZ,f); fwrite(zeros_big,4,W1_SZ,f); fwrite(zeros_big,4,W1_SZ,f);
-        fwrite(lw[L].W2,4,W2_SZ,f); fwrite(zeros_big,4,W2_SZ,f); fwrite(zeros_big,4,W2_SZ,f);
-        fwrite(lw[L].W3,4,W3_SZ,f); fwrite(zeros_big,4,W3_SZ,f); fwrite(zeros_big,4,W3_SZ,f);
-        fwrite(lw[L].rms_att,4,DIM,f); fwrite(zeros_big,4,DIM,f); fwrite(zeros_big,4,DIM,f);
-        fwrite(lw[L].rms_ffn,4,DIM,f); fwrite(zeros_big,4,DIM,f); fwrite(zeros_big,4,DIM,f);
+        // All weights first (same order as train.m)
+        fwrite(lw[L].Wq,4,WQ_SZ,f); fwrite(lw[L].Wk,4,WK_SZ,f);
+        fwrite(lw[L].Wv,4,WV_SZ,f); fwrite(lw[L].Wo,4,WO_SZ,f);
+        fwrite(lw[L].W1,4,W1_SZ,f); fwrite(lw[L].W2,4,W2_SZ,f); fwrite(lw[L].W3,4,W3_SZ,f);
+        fwrite(lw[L].rms_att,4,DIM,f); fwrite(lw[L].rms_ffn,4,DIM,f);
+        // All Adam m/v states as zeros (same order as train.m)
+        fwrite(zeros_big,4,WQ_SZ,f); fwrite(zeros_big,4,WQ_SZ,f);
+        fwrite(zeros_big,4,WK_SZ,f); fwrite(zeros_big,4,WK_SZ,f);
+        fwrite(zeros_big,4,WV_SZ,f); fwrite(zeros_big,4,WV_SZ,f);
+        fwrite(zeros_big,4,WO_SZ,f); fwrite(zeros_big,4,WO_SZ,f);
+        fwrite(zeros_big,4,W1_SZ,f); fwrite(zeros_big,4,W1_SZ,f);
+        fwrite(zeros_big,4,W2_SZ,f); fwrite(zeros_big,4,W2_SZ,f);
+        fwrite(zeros_big,4,W3_SZ,f); fwrite(zeros_big,4,W3_SZ,f);
+        fwrite(zeros_big,4,DIM,f); fwrite(zeros_big,4,DIM,f);
+        fwrite(zeros_big,4,DIM,f); fwrite(zeros_big,4,DIM,f);
     }
     fwrite(rms_final,4,DIM,f); fwrite(zeros_big,4,DIM,f); fwrite(zeros_big,4,DIM,f);
     fwrite(embed,4,(size_t)VOCAB*DIM,f); fwrite(zeros_big,4,(size_t)VOCAB*DIM,f); fwrite(zeros_big,4,(size_t)VOCAB*DIM,f);
@@ -186,18 +194,29 @@ static bool mezo_load_checkpoint(const char *path, int *step, float *lr, float *
         fprintf(stderr, "MeZO checkpoint mismatch\n"); fclose(f); return false;
     }
     *step = h.step; *lr = h.lr; *loss = h.loss;
-    // Read weights, skip Adam m/v (2 buffers per weight matrix)
-    float *skip = (float*)safe_malloc((size_t)fmax(fmax(WQ_SZ, W1_SZ), VOCAB*DIM) * 4);
+    if (h.step < 0 || h.step > 10000000) {
+        fprintf(stderr, "MeZO checkpoint has invalid step value\n"); fclose(f); return false;
+    }
+    // Read weights, skip Adam m/v (layout matches train.m exactly)
+    size_t max_sz = WQ_SZ > W1_SZ ? WQ_SZ : W1_SZ;
+    if ((size_t)VOCAB * DIM > max_sz) max_sz = (size_t)VOCAB * DIM;
+    float *skip = (float*)safe_malloc(max_sz * 4);
     for (int L = 0; L < NLAYERS; L++) {
-        fread(lw[L].Wq,4,WQ_SZ,f); fread(skip,4,WQ_SZ,f); fread(skip,4,WQ_SZ,f);
-        fread(lw[L].Wk,4,WK_SZ,f); fread(skip,4,WK_SZ,f); fread(skip,4,WK_SZ,f);
-        fread(lw[L].Wv,4,WV_SZ,f); fread(skip,4,WV_SZ,f); fread(skip,4,WV_SZ,f);
-        fread(lw[L].Wo,4,WO_SZ,f); fread(skip,4,WO_SZ,f); fread(skip,4,WO_SZ,f);
-        fread(lw[L].W1,4,W1_SZ,f); fread(skip,4,W1_SZ,f); fread(skip,4,W1_SZ,f);
-        fread(lw[L].W2,4,W2_SZ,f); fread(skip,4,W2_SZ,f); fread(skip,4,W2_SZ,f);
-        fread(lw[L].W3,4,W3_SZ,f); fread(skip,4,W3_SZ,f); fread(skip,4,W3_SZ,f);
-        fread(lw[L].rms_att,4,DIM,f); fread(skip,4,DIM,f); fread(skip,4,DIM,f);
-        fread(lw[L].rms_ffn,4,DIM,f); fread(skip,4,DIM,f); fread(skip,4,DIM,f);
+        // All weights first (same order as train.m)
+        fread(lw[L].Wq,4,WQ_SZ,f); fread(lw[L].Wk,4,WK_SZ,f);
+        fread(lw[L].Wv,4,WV_SZ,f); fread(lw[L].Wo,4,WO_SZ,f);
+        fread(lw[L].W1,4,W1_SZ,f); fread(lw[L].W2,4,W2_SZ,f); fread(lw[L].W3,4,W3_SZ,f);
+        fread(lw[L].rms_att,4,DIM,f); fread(lw[L].rms_ffn,4,DIM,f);
+        // Skip all Adam m/v states
+        fread(skip,4,WQ_SZ,f); fread(skip,4,WQ_SZ,f);
+        fread(skip,4,WK_SZ,f); fread(skip,4,WK_SZ,f);
+        fread(skip,4,WV_SZ,f); fread(skip,4,WV_SZ,f);
+        fread(skip,4,WO_SZ,f); fread(skip,4,WO_SZ,f);
+        fread(skip,4,W1_SZ,f); fread(skip,4,W1_SZ,f);
+        fread(skip,4,W2_SZ,f); fread(skip,4,W2_SZ,f);
+        fread(skip,4,W3_SZ,f); fread(skip,4,W3_SZ,f);
+        fread(skip,4,DIM,f); fread(skip,4,DIM,f);
+        fread(skip,4,DIM,f); fread(skip,4,DIM,f);
     }
     fread(rms_final,4,DIM,f); fread(skip,4,DIM,f); fread(skip,4,DIM,f);
     fread(embed,4,(size_t)VOCAB*DIM,f); fread(skip,4,(size_t)VOCAB*DIM,f); fread(skip,4,(size_t)VOCAB*DIM,f);
@@ -316,6 +335,11 @@ int main(int argc, char *argv[]) {
         size_t train_tokens = val_start;
         size_t val_tokens = n_tokens - val_start;
         printf("Tokens: %zu (train: %zu, val: %zu)\n", n_tokens, train_tokens, val_tokens);
+        if (train_tokens < (size_t)SEQ + 2) {
+            fprintf(stderr, "FATAL: training split too small (%zu tokens < SEQ+2=%d)\n",
+                    train_tokens, SEQ + 2);
+            return 1;
+        }
 
         // Vocab compaction
         VocabMap vm = vocab_map_build(token_data, n_tokens, VOCAB);
