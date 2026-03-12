@@ -329,6 +329,9 @@ int main(int argc, char *argv[]) {
         printf("Vocab compaction: %d -> %d active\n", VOCAB, CV);
         float *cembed = vocab_compact_embed(embed, &vm, DIM);
 
+        // Residual scaling (DeepNet: scaled residual connections)
+        float res_alpha = 1.0f / sqrtf(2.0f * NLAYERS);
+
         // === Forward buffers (reused across layers, no per-layer caching) ===
         float *x_cur = (float*)safe_malloc(SEQ * DIM * 4);
         float *xnorm_buf = (float*)safe_malloc(SEQ * DIM * 4);
@@ -510,7 +513,7 @@ int main(int argc, char *argv[]) {
 
             // ===== 2. Forward pass -> loss_plus =====
             t0 = mach_absolute_time();
-            embed_lookup(x_cur, cembed, input_tokens, DIM, SEQ, VOCAB);
+            embed_lookup(x_cur, embed, input_tokens, DIM, SEQ, VOCAB);
 
             for (int L = 0; L < NLAYERS; L++) {
                 // RMSNorm pre-attention
@@ -556,8 +559,8 @@ int main(int argc, char *argv[]) {
                     io_read_dyn(dk.woFwd->ioOut, o_out, DIM, SEQ);
                 }
 
-                // Residual 1: x = x + o_out
-                for (int i = 0; i < SEQ * DIM; i++) x_cur[i] += o_out[i];
+                // Residual 1: x = x + res_alpha * o_out (DeepNet scaled residual)
+                vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ * DIM));
 
                 // RMSNorm pre-FFN
                 rmsnorm(xnorm_buf, x_cur, lw[L].rms_ffn, DIM, SEQ);
@@ -594,8 +597,8 @@ int main(int argc, char *argv[]) {
                     io_read_dyn(dk.w2Fwd->ioOut, o_out, DIM, SEQ);
                 }
 
-                // Residual 2: x = x + ffn_out
-                for (int i = 0; i < SEQ * DIM; i++) x_cur[i] += o_out[i];
+                // Residual 2: x = x + res_alpha * ffn_out (DeepNet scaled residual)
+                vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ * DIM));
             }
 
             // Final RMSNorm + classifier
@@ -621,7 +624,7 @@ int main(int argc, char *argv[]) {
 
             // ===== 4. Forward pass -> loss_minus =====
             t0 = mach_absolute_time();
-            embed_lookup(x_cur, cembed, input_tokens, DIM, SEQ, VOCAB);
+            embed_lookup(x_cur, embed, input_tokens, DIM, SEQ, VOCAB);
 
             for (int L = 0; L < NLAYERS; L++) {
                 rmsnorm(xnorm_buf, x_cur, lw[L].rms_att, DIM, SEQ);
@@ -662,7 +665,7 @@ int main(int argc, char *argv[]) {
                     io_read_dyn(dk.woFwd->ioOut, o_out, DIM, SEQ);
                 }
 
-                for (int i = 0; i < SEQ * DIM; i++) x_cur[i] += o_out[i];
+                vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ * DIM));
 
                 rmsnorm(xnorm_buf, x_cur, lw[L].rms_ffn, DIM, SEQ);
 
@@ -695,7 +698,7 @@ int main(int argc, char *argv[]) {
                     io_read_dyn(dk.w2Fwd->ioOut, o_out, DIM, SEQ);
                 }
 
-                for (int i = 0; i < SEQ * DIM; i++) x_cur[i] += o_out[i];
+                vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ * DIM));
             }
 
             rmsnorm(xnorm_buf, x_cur, rms_final, DIM, SEQ);
@@ -760,7 +763,7 @@ int main(int argc, char *argv[]) {
                     uint16_t vctargets[SEQ];
                     for (int t = 0; t < SEQ; t++) vctargets[t] = (uint16_t)vm.full_to_compact[vtarget_raw[t]];
 
-                    embed_lookup(x_cur, cembed, vinput, DIM, SEQ, VOCAB);
+                    embed_lookup(x_cur, embed, vinput, DIM, SEQ, VOCAB);
                     for (int L = 0; L < NLAYERS; L++) {
                         rmsnorm(xnorm_buf, x_cur, lw[L].rms_att, DIM, SEQ);
                         if (cpu_only) {
@@ -790,7 +793,7 @@ int main(int argc, char *argv[]) {
                             ane_eval_req(dk.woFwd, plr[L].woFwd);
                             io_read_dyn(dk.woFwd->ioOut, o_out, DIM, SEQ);
                         }
-                        for (int i = 0; i < SEQ*DIM; i++) x_cur[i] += o_out[i];
+                        vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ*DIM));
                         rmsnorm(xnorm_buf, x_cur, lw[L].rms_ffn, DIM, SEQ);
                         if (cpu_only) {
                             cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans, HIDDEN,SEQ,DIM, 1.0f, lw[L].W1,DIM, xnorm_buf,SEQ, 0.0f, h1,SEQ);
@@ -811,7 +814,7 @@ int main(int argc, char *argv[]) {
                             ane_eval_req(dk.w2Fwd, plr[L].w2Fwd);
                             io_read_dyn(dk.w2Fwd->ioOut, o_out, DIM, SEQ);
                         }
-                        for (int i = 0; i < SEQ*DIM; i++) x_cur[i] += o_out[i];
+                        vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ*DIM));
                     }
                     rmsnorm(xnorm_buf, x_cur, rms_final, DIM, SEQ);
                     cblas_sgemm(CblasRowMajor,CblasTrans,CblasTrans, SEQ,CV,DIM, 1.0f, xnorm_buf,SEQ, cembed,DIM, 0.0f, logits,CV);
