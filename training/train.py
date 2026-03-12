@@ -94,6 +94,13 @@ def main():
     train_dir = os.path.dirname(os.path.abspath(__file__))
     header_path = os.path.join(train_dir, "models", "autoresearch.h")
 
+    # Verify data file exists before doing anything expensive
+    data_abs = os.path.normpath(os.path.join(train_dir, DATA_PATH))
+    if not os.path.exists(data_abs):
+        print(f"ERROR: Training data not found: {data_abs}")
+        print(f"Download it first:  bash tools/download_data.sh")
+        sys.exit(1)
+
     # Generate model header
     generate_model_header(header_path)
 

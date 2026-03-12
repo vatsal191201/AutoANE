@@ -12,7 +12,7 @@ We present AutoANE, the first open-source system for training Llama-family trans
 
 ## 1. Introduction
 
-Apple's Neural Engine (ANE) is a dedicated neural network accelerator present in all Apple Silicon chips since M1 (2020). ANE claims 15.8 TFLOPS (FP16) on M4, compared to ~2 TFLOPS (FP32) for the CPU's AMX coprocessor and ~4 TFLOPS (FP32) for the integrated GPU. Despite this raw advantage, ANE has seen almost no use for training — CoreML and coremltools target inference only, and the training APIs are private.
+Apple's Neural Engine (ANE) is a dedicated neural network accelerator present in all Apple Silicon chips since M1 (2020). Apple rates ANE at 15.8 TOPS on M2 and 38 TOPS on M4 (INT8 operations; fp16 throughput is roughly half). By comparison, the CPU's AMX coprocessor achieves ~2 TFLOPS (FP32) and the integrated GPU ~4 TFLOPS (FP32). Despite this raw advantage, ANE has seen almost no use for training — CoreML and coremltools target inference only, and the training APIs are private.
 
 Two prior works have explored ANE training:
 - **maderix/ANE** (maderix, 2025): Reverse-engineered `_ANEClient`, `_ANECompiler`, and `_ANEInMemoryModelDescriptor` to implement forward and backward passes for Llama-family transformers. Achieved training on Stories110M (12L, dim=768, 109M params) and Qwen3-0.6B (28L, dim=1024, 596M params). Two pipeline approaches: static (const weights, recompile every N steps) and dynamic (IOSurface weight staging, compile once). Uses loss scaling of `256 * NLAYERS`.

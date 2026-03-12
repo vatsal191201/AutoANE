@@ -305,8 +305,9 @@ AutoANE/
     ├── TECHNICAL_REPORT.md  # Full technical report
     ├── VERIFICATION.md      # First-principles verification (21 sections)
     ├── EXPERIMENTS.md       # Experiment log (E1-E43 + E44 autosearch)
-    ├── ASSUMPTIONS.md       # 26 verified, 1 qualified, 8 disproved, 13 unverified
-    └── RESEARCH_PLAN.md     # Research roadmap with completed results
+    ├── ASSUMPTIONS.md       # 26 verified, 1 qualified, 8 disproved, 13 unverified, 6 upstream
+    ├── NEXT_STEPS.md        # Research roadmap, upstream findings, prioritized next steps
+    └── RESEARCH_PLAN.md     # Original research plan with completed results
 ```
 
 ## Comparison to Existing Frameworks
@@ -344,9 +345,24 @@ MLX is better for: raw GPU throughput on large models, broader ecosystem, rapid 
 ## Open Questions
 
 1. Does the step-count advantage hold with larger datasets? Chinchilla predicts a crossover where larger models become optimal — but at what data scale?
-2. Can `_ANEChainingRequest` (firmware-level chained execution) eliminate CPU round-trips between layers? This is unexplored and could fundamentally change the ANE throughput picture.
+2. Can `_ANEChainingRequest` (firmware-level chained execution) eliminate CPU round-trips between layers? [ane-infer](https://github.com/thebasedcapital/ane-infer) confirmed chaining works (error was wrong factory method). Untested in our training pipeline.
 3. INT8 quantization halves IOSurface size — does this move the memory pressure ceiling from DIM=1536 to DIM=2048+?
-4. Mixed precision (ANE fp16 forward, CPU fp32 backward) is theoretically sound but untested as a complete pipeline.
+4. Mega-kernel fusion (N transformer layers in one MIL program) achieves 3-4x forward speedup ([maderix/ANE PR #24](https://github.com/maderix/ANE/issues/24)). Can this be combined with runtime weight injection to avoid recompilation?
+5. [imperatormk/ane-train](https://github.com/imperatormk/ane-train) demonstrated full Adam on ANE with runtime weight ping-pong (ConvNeXt UNet, ~3 it/s on M1). Adapting this approach for transformers could change our IOSurface overhead picture.
+
+---
+
+## Related Work (Post-Publication)
+
+Since AutoANE's initial experiments, several projects have advanced ANE training/inference:
+
+| Project | Key Finding | Relevance |
+|---------|------------|-----------|
+| [imperatormk/ane-train](https://github.com/imperatormk/ane-train) | Runtime weight injection via IOSurface matmul inputs — compile once, train forever. Full Adam on ANE. | Eliminates recompilation. Documents critical IOSurface constraints (ascending slot sizes, Ci multiple of 32). |
+| [thebasedcapital/ane-infer](https://github.com/thebasedcapital/ane-infer) | `_ANEChainingRequest` works. `doEvaluateDirectWithModel:` bypasses daemon (10% faster). 25 `_ANEClient` methods documented. | Chaining could eliminate CPU round-trips. Direct eval mode is a free speedup. |
+| [maderix/ANE PR #24](https://github.com/maderix/ANE/issues/24) | Mega-kernel fusion: 4.17x forward speedup (stories15M). XPC overhead ~160μs/eval is the bottleneck. ACCUM_STEPS=100 gives 4.74x throughput. | Fusion + runtime weights is the key open question. |
+| [maderix/ANE PR #35](https://github.com/maderix/ANE/pull/35) | M5 ANE support: 128-byte IOSurface alignment, dynamic weight injection via matmul. | M5 compatibility for future work. |
+| [Community benchmark dashboard](https://github.com/dev-erik/ANE) | Cross-chip ANE benchmarks (M1-M5). M3 Ultra: 512ch only, peak 8.77 TFLOPS. | Community validation of our findings. |
 
 ---
 
@@ -355,6 +371,8 @@ MLX is better for: raw GPU throughput on large models, broader ecosystem, rapid 
 - **[maderix](https://github.com/maderix)** — [ANE](https://github.com/maderix/ANE): original reverse engineering of Apple's Neural Engine private APIs and first-ever training on ANE hardware. AutoANE's bridge, IOSurface code, and MIL generation are direct adaptations.
 - **[Andrej Karpathy](https://github.com/karpathy)** — [autoresearch](https://github.com/karpathy/autoresearch): the autonomous keep/revert experiment protocol. Agent edits a single `train.py` containing the full model, optimizer (Muon + AdamW), and training loop.
 - **[Orion](https://github.com/mechramc/Orion)** (Murai Labs): ANE training/inference runtime. Claims 8.5x faster weight reload vs full compilation. Delta compilation findings from Orion motivated our investigation (which could not reproduce their reload mechanism).
+- **[imperatormk](https://github.com/imperatormk)** — [ane-train](https://github.com/imperatormk/ane-train): runtime weight injection approach, comprehensive ANE training cheatsheet documenting IOSurface constraints, MIL op compatibility, and the sqrt fusion bug.
+- **[thebasedcapital](https://github.com/thebasedcapital)** — [ane-infer](https://github.com/thebasedcapital/ane-infer): confirmed `_ANEChainingRequest` works, documented 25 `_ANEClient` methods, achieved 3.6 TFLOPS with fused mega-kernels.
 
 ## License
 

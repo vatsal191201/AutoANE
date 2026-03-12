@@ -78,8 +78,10 @@ def load_gguf(path):
         for name, info in tensors.items():
             dtype_id = info['dtype']
             if dtype_id not in GGML_TYPES:
-                print(f"  WARNING: Unsupported dtype {dtype_id} for {name}, skipping")
-                continue
+                print(f"  ERROR: Unsupported dtype {dtype_id} for tensor '{name}'")
+                print(f"  Supported dtypes: {list(GGML_TYPES.keys())} ({', '.join(n for n,_ in GGML_TYPES.values())})")
+                print(f"  Quantized GGUF files must be dequantized first (use llama.cpp quantize --dequantize)")
+                raise ValueError(f"Unsupported GGML dtype {dtype_id} for tensor '{name}'")
             dtype_name, elem_size = GGML_TYPES[dtype_id]
             n_elements = 1
             for d in info['dims']:

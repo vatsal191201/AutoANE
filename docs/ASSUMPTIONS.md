@@ -2,7 +2,7 @@
 
 **Purpose**: Every assumption in this project must be explicitly stated, tracked, and verified. No implicit assumptions allowed. See [TECHNICAL_REPORT.md](TECHNICAL_REPORT.md) Section 12 for summary.
 
-**Last updated**: 2026-03-12 | **Totals**: 26 verified, 1 qualified, 8 disproved, 13 unverified/resolved
+**Last updated**: 2026-03-12 | **Totals**: 26 verified, 1 qualified, 8 disproved, 13 unverified/resolved, 6 new from upstream
 
 ---
 
@@ -13,7 +13,7 @@
 | SA1 | fp16 precision gap (~16%) is irreducible via software | **RE-CONFIRMED (E19)** | Zero NaN/Inf in 5777 steps. Gap is genuine fp16 accumulation rounding, not fixable by sanitization. |
 | SA2 | ANE training diverges after ~2000 steps | **DISPROVED (E19-ext)** | 5777 steps, loss still improving (avg ~4.59). Exp 18 "divergence" was thermal throttling from running concurrent tests on same machine. |
 | SA3 | Activation clamping to [-4,4] doesn't improve loss | VERIFIED (Exp 14) | Still needs testing: activations reach [-121, 127] at 10min — approaching fp16 max (65504). Overflow clamping [-65504, +65504] untested. |
-| SA4 | Delta compilation not viable | **RE-CONFIRMED (E34)** | _ANEClient.loadModelNewInstance fails; _ANEClient and _ANEInMemoryModel are separate compilation paths. Full pipeline rewrite needed. |
+| SA4 | Delta compilation not viable | **RE-CONFIRMED (E34)** but **NUANCED by UP1**: _ANEClient.loadModelNewInstance fails for baked-weight models. However, runtime weight injection (weights as IOSurface inputs, not const()) eliminates the need for delta compilation entirely. Our dynamic pipeline already does this. The bottleneck is IOSurface overhead + fp16 precision, not the compilation model. |
 
 ## Category: VERIFIED (confirmed by experiment)
 
@@ -62,12 +62,23 @@
 | U9 | Single-op ANE kernels get only ~30% utilization (vs 74-94% for deep graphs) | maderix Part 2 benchmarks. Our unfused approach uses 28 single-matmul dispatches/step. 4-layer fusion achieves 7.7x speedup but hurts generalization (V12). | HIGH |
 | U10 | ANE dispatch overhead is ~0.095ms per call | maderix Part 2. 28 dispatches/step = ~2.7ms fixed cost. | MEDIUM |
 | U11 | M2 Pro only supports ch=512 for conv 1x1 operations | maderix Issue #3: M1/M2/M3 Pro only compile ch=512. M4+ supports flexible channels. Does not affect our matmul-based approach. | MEDIUM |
-| U12 | _ANEChainingRequest could eliminate CPU round-trips between layers | M5 benchmark report: supports loopback, firmware-level enqueue, shared memory pools. Untested for training. | HIGH |
+| U12 | _ANEChainingRequest could eliminate CPU round-trips between layers | M5 benchmark report: supports loopback, firmware-level enqueue, shared memory pools. **UPDATE (UP5)**: ane-infer confirmed chaining works — error 15 was wrong factory method (`objectWithstatsSurRef:outputBuffer:`). Untested in OUR training pipeline. | HIGH |
 | U13 | No one has trained models larger than DIM=1024 before our E38 | maderix tested Stories110M (DIM=768) and Qwen3-0.6B (DIM=1024). Our DIM=1536 and DIM=2048 experiments are novel. | CONFIRMED (literature) |
 | U14 | LR=3e-4 is equally good for all architectures in E39 grid | **RESOLVED (E40)**: LR=5e-4 optimal for 512d/4L, 3e-4 for 1024d/2L. Ranking unchanged. SA-E39-1 resolved. | RESOLVED |
 | U15 | 120s budget is representative of quick-iteration training regime | **RESOLVED (E41)**: 512d/4L wins at 120s, 300s, AND 600s. Gap actually widens at longer budgets. No crossover observed. | CONFIRMED |
 | U16 | ~~Warmup=100 steps is appropriate for all configs at all LRs~~ | **RESOLVED (E43)**: Warmup 100→50 produced val 3.540 vs baseline 3.533 — within noise. 100 steps is fine. | RESOLVED |
 | U17 | ~~Weight decay 0.1 is equally good across all architectures~~ | **RESOLVED (E43)**: WD 0.1→0.05 produced val 3.533 — identical to baseline. WD is not a sensitive parameter in this regime. | RESOLVED |
+
+## Category: NEW FROM UPSTREAM (2026-03-12, not yet tested by us)
+
+| ID | Assumption | Source | Implications | Risk |
+|----|-----------|--------|-------------|------|
+| UP1 | Runtime weight injection via IOSurface inputs eliminates recompilation | [imperatormk/ane-train](https://github.com/imperatormk/ane-train), maderix/ANE Issue #47. Demonstrated on ConvNeXt UNet (96→384ch, 256×256) at ~3 it/s on M1. Weights passed as runtime IOSurface inputs to matmul, not baked as const(). | **Invalidates the premise of SA4/D5**: delta compilation is not needed if you compile with runtime inputs from the start. Our dynamic pipeline (mil_dynamic.h) already does this — the issue was never that runtime weights don't work, but that IOSurface overhead + fp16 precision made it uncompetitive vs CPU. | HIGH |
+| UP2 | IOSurface slot sizes must be strictly ascending (inputs) / descending (outputs) — violations produce silent zeros | imperatormk/ane-train ANE_TRAINING.md. No error, no warning. | Critical constraint for anyone extending our ANE pipeline. We should verify if our IOSurface code respects this ordering. | HIGH |
+| UP3 | Matmul inner dim (Ci) must be a multiple of 32 — non-multiples silently produce zeros | imperatormk/ane-train. Tested: Ci=16,48,80,112 give eval=0. | Our DIM=512 (multiple of 32) is fine. But configs with non-standard dimensions would silently fail. | MEDIUM |
+| UP4 | Mega-kernel fusion (N layers in single MIL program) achieves 3-4x forward speedup | maderix/ANE PR #24 (filipexyz). Full transformer fusion: stories15M 4.17x, stories110M 3.00x. XPC overhead ~160μs/eval is the bottleneck. | Could improve our ANE mode significantly, but weights must still be const() in fused kernels (conflicts with UP1). Trade-off: runtime weights (no recompile) vs fused kernels (3x faster but recompile on weight update). | HIGH |
+| UP5 | `_ANEChainingRequest` actually works — error was wrong factory method | [thebasedcapital/ane-infer](https://github.com/thebasedcapital/ane-infer), maderix/ANE Issue #44. Correct method: `objectWithstatsSurRef:outputBuffer:`. Also: `doEvaluateDirectWithModel:` bypasses ANE daemon, 10% faster. | Updates our U12 (was "untested"). Chaining could eliminate CPU round-trips between layers. Combined with mega-kernels, potentially transformative. | HIGH |
+| UP6 | M3 Ultra ANE only supports ch=512 (exactly, not minimum). Peak 8.77 TFLOPS at 128x conv | maderix/ANE Issue #42 (pudepiedj). All other channel configs fail with -4. Only one ANE die active on UltraFusion. | Extends U11 (M1/M2/M3 Pro 512ch constraint) to M3 Ultra. Our matmul-based approach avoids this constraint. | LOW |
 
 ## Category: DISPROVED (tested and found wrong)
 

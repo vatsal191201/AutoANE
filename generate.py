@@ -234,6 +234,13 @@ def main():
                   file=sys.stderr)
             sys.exit(1)
 
+    if args.temperature < 0:
+        print("ERROR: --temperature must be >= 0 (0 = greedy decoding)", file=sys.stderr)
+        sys.exit(1)
+    if args.top_k < 0:
+        print("ERROR: --top-k must be >= 0 (0 = sample from full vocab)", file=sys.stderr)
+        sys.exit(1)
+
     if args.seed is not None:
         np.random.seed(args.seed)
 
