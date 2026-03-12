@@ -237,10 +237,10 @@ static void lora_adam_free(LoRAAdam *a) {
 }
 static LoRAGrads lora_grads_alloc(int rank) {
     LoRAGrads g;
-    g.Aq=(float*)calloc((size_t)rank*DIM,4);     g.Bq=(float*)calloc((size_t)Q_DIM*rank,4);
-    g.Ak=(float*)calloc((size_t)rank*DIM,4);     g.Bk=(float*)calloc((size_t)KV_DIM*rank,4);
-    g.Av=(float*)calloc((size_t)rank*DIM,4);     g.Bv=(float*)calloc((size_t)KV_DIM*rank,4);
-    g.Ao=(float*)calloc((size_t)rank*Q_DIM,4);   g.Bo=(float*)calloc((size_t)DIM*rank,4);
+    g.Aq=(float*)safe_calloc((size_t)rank*DIM,4);     g.Bq=(float*)safe_calloc((size_t)Q_DIM*rank,4);
+    g.Ak=(float*)safe_calloc((size_t)rank*DIM,4);     g.Bk=(float*)safe_calloc((size_t)KV_DIM*rank,4);
+    g.Av=(float*)safe_calloc((size_t)rank*DIM,4);     g.Bv=(float*)safe_calloc((size_t)KV_DIM*rank,4);
+    g.Ao=(float*)safe_calloc((size_t)rank*Q_DIM,4);   g.Bo=(float*)safe_calloc((size_t)DIM*rank,4);
     return g;
 }
 static void lora_grads_zero(LoRAGrads *g, int rank) {
