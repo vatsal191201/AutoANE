@@ -45,8 +45,8 @@ measure_power() {
     echo "  Flags: $train_flags"
 
     # Start powermetrics in background
-    powermetrics --samplers cpu_power,gpu_power \
-        -i 1000 --max-dt 1 \
+    powermetrics --samplers cpu_power,gpu_power,ane_power \
+        -i 1000 \
         -o "$output_file" &
     local pm_pid=$!
 
@@ -104,7 +104,7 @@ measure_power() {
 # Idle baseline (no training)
 echo ""
 echo "--- Measuring: idle baseline (10s) ---"
-powermetrics --samplers cpu_power,gpu_power \
+powermetrics --samplers cpu_power,gpu_power,ane_power \
     -i 1000 -n 10 \
     -o /tmp/autoane_power_idle.log 2>/dev/null
 idle_power=$(grep -i "Package Power\|CPU Power" /tmp/autoane_power_idle.log | grep -oE '[0-9]+\.?[0-9]*' | head -10 | awk '{s+=$1; n++} END {if(n>0) printf "%.1f", s/n; else print "N/A"}')

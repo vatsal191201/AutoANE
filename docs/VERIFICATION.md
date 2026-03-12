@@ -621,8 +621,23 @@ AutoANE's README credit ("original reverse engineering of Apple's Neural Engine 
 
 ## 19. Power Measurement
 
-- `sudo powermetrics` required for full measurement — script validated but not run
-- **Proxy**: ~21W system draw during CPU-only training (from PowerTelemetryData), thermal nominal
+### 19.1 Results (sudo powermetrics, 60s per mode)
+
+| Mode | CPU Power | ANE Power | Package Power | Steps/60s | val_loss |
+|------|-----------|-----------|---------------|-----------|----------|
+| Idle | — | — | 8455 mW | — | — |
+| CPU-only | 13241 mW (peak 16841) | 9 mW | 13273 mW | 1435 | 4.343 |
+| ANE matmul | 12132 mW (peak 15289) | 384 mW | 12568 mW | 1149 | 4.646 |
+| ANE full | 11821 mW (peak 13942) | 765 mW (peak 1200) | 12664 mW | 1301 | 6.046 |
+
+### 19.2 Analysis
+
+- **Training overhead**: ~4.8W above idle for CPU-only (13.3W - 8.5W)
+- **ANE does NOT save power**: Shifts ~1.4W from CPU to ANE but total package power is nearly identical (~12.5-13.3W across all modes)
+- **CPU-only wins on throughput**: 1435 steps vs 1149 (ANE matmul) / 1301 (ANE full) in 60s
+- **CPU-only wins on convergence**: val_loss 4.343 vs 4.646 / 6.046
+- **Energy per step**: CPU-only 9.2 mW/step, ANE matmul 10.9 mW/step, ANE full 9.7 mW/step
+- **Conclusion**: For this model size (36.4M params), CPU-only is optimal for both performance and energy efficiency. ANE overhead (IOSurface copies, kernel compilation) outweighs any computational benefit
 
 ---
 
@@ -671,7 +686,7 @@ AutoANE's README credit ("original reverse engineering of Apple's Neural Engine 
 - **GGUF export**: Loads in llama.cpp with tokenizer metadata, 316.5 t/s generation
 - **GGUF round-trip**: ANE→GGUF→ANE bit-perfect on all tensors (38 and 272 tensors)
 - **HuggingFace import**: SmolLM2-135M converted, forward pass valid, round-trip bit-perfect
-- **Power proxy**: ~21W system draw during CPU-only training, thermal nominal
+- **Power measurement**: CPU-only 13.3W package (4.8W over idle), ANE adds no power savings, CPU-only wins on throughput and energy/step
 - **100-exp autosearch**: 3.952→3.288 (17% improvement), 6 keeps in 88 experiments
 - **Code provenance**: maderix/ANE comparison confirms accurate credits
 
