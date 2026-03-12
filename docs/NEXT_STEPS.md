@@ -4,7 +4,22 @@
 
 ---
 
-## What Has Been Done (This Session)
+## What Has Been Done
+
+### Security Hardening & Bridge Audit (Session 3, 2026-03-12)
+- **P10 COMPLETE**: 10 security fixes across config.h, cpu_ops.h, train.m, Makefile
+- `safe_malloc()`/`safe_calloc()` wrappers abort on allocation failure — ~60+ call sites converted
+- Token OOB bounds checks in `cross_entropy_loss`, `embed_lookup`, `embed_backward` (added vocab param)
+- Token range validation on data file load (all tokens < VOCAB)
+- `ane_init()` → `bool` return type with dlopen/NSClassFromString validation
+- Checkpoint header validation: magic, version, dimensions, step/adam_t bounds
+- Compiler hardening: `-fstack-protector-strong -D_FORTIFY_SOURCE=2`
+- `io.h`: safe_calloc for blob/kern alloc, NULL check on model creation
+- `bridge/ane_bridge.m`: Fixed malloc NULL checks, integer overflow (int→size_t) in blob builders
+- Test 7 (gradient health) fixed: now runs with accum=10 steps=20 → `grad_norm=4.2867` (finite)
+- All 8 regression tests pass, all 3 model configs compile, bridge compiles
+- CPU vs ANE matmul-only divergence verified <0.001% over 21 steps (3 accum cycles)
+- Gradient health: grad_norm 3.77→3.07 over 70 steps (monotonically decreasing, finite)
 
 ### Systematic Verification (Prior Session)
 - Verified all 7 literature references (Kaplan, Chinchilla, Eldan & Li, Wang/DeepNet, Smith, Muennighoff, Nguyen & Salazar) — all accurate
