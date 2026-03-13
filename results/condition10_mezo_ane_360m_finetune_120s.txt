@@ -1,0 +1,41 @@
+=== MeZO (Zeroth-Order) Training: SmolLM2-360M (32 layers, GQA 15/5) ===
+dim=960 q_dim=960 kv_dim=320 hd=64 hidden=2560 seq=256 vocab=49152
+Params: 361.8M | Mode: ANE-matmul-only
+MeZO: lr=1e-05 epsilon=0.001 seed=42 val_every=100
+Memory: ~1457MB (inference only, no gradients/optimizer)
+[RESUMED from step 0, loss=0.0000]
+  (using CLI lr=1e-05 instead of checkpoint lr)
+Tokens: 20000000 (train: 18000000, val: 2000000)
+Vocab compaction: 49152 -> 16893 active
+
+Compiling ANE forward kernels...
+  Compiling wqFwd (DIM->Q_DIM)...
+  Compiling wkvFwd (DIM->KV_DIM)...
+  Compiling woFwd (Q_DIM->DIM)...
+  Compiling w13Fwd (DIM->HIDDEN)...
+  Compiling w2Fwd (HIDDEN->DIM)...
+Compiled 5 kernels in 394ms
+Initial weight staging complete
+
+Starting MeZO training...
+
+step 0  loss_plus=2.1099  loss_minus=2.1014  proj_grad=4.254341  lr=1.00e-05  step_ms=1585 (fwd=525 perturb=579 transpose=478)
+  [val_loss=2.0666 at step 100]
+  [ckpt saved, best_val=2.0666]
+Time budget 120s reached at step 100 (124.6s elapsed)
+
+=== MeZO Efficiency Report ===
+Total steps:  100
+Train time:   119990ms (1199.9ms/step)
+Wall time:    124.6s
+
+---
+final_loss_plus:  2.278737
+final_loss_minus: 2.257878
+training_seconds: 120.0
+total_seconds:    124.6
+num_steps:        100
+num_params_M:     361.8
+mode:             mezo-ane
+epsilon:          0.001
+lr:               1e-05

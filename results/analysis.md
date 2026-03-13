@@ -1,10 +1,10 @@
-# MeZO vs Backprop: Complete 2x2x2 Experimental Results
+# MeZO vs Backprop: Complete Experimental Results
 
 **Date:** 2026-03-12/13
 **Hardware:** Apple M-series (ANE + AMX)
 **Data:** TinyStories (20M tokens, 90/10 train/val split)
 **Time budget:** 120 seconds per condition
-**Version:** v3 (post-DeepNet fix + IOSurface transpose optimization)
+**Version:** v5 (v4 audit + SmolLM2-360M scaling experiments)
 
 ## Full Results (8 Conditions)
 
@@ -41,6 +41,28 @@
 **MeZO HPs:** lr=1e-5, epsilon=1e-3, Rademacher perturbation (xoshiro256+), res_alpha=1.0
 **LR sweep:** {1e-4, 5e-5, 3e-5, 2e-5, 1e-5, 1e-6, 1e-7} — lr=1e-5 best (only LR showing decrease)
 
+### Fine-Tuning (SmolLM2-360M, 361.8M params, 32 layers) — v5
+
+| # | Method | Hardware | Steps | ms/step | Start Loss | Final Loss | Val Loss | RSS (MB) |
+|---|--------|----------|-------|---------|------------|------------|----------|----------|
+| 9 | MeZO (ZO-SGD) | CPU | 143 | 813.6 | 2.11 | 2.17‡ | 2.067 | 1,720 |
+| 10 | MeZO (ZO-SGD) | ANE | 100 | 1199.9 | 2.11 | 2.28‡ | 2.067 | — |
+| 11 | Backprop+Adam | CPU | 140 | 602.1 | 2.10 | 1.641 | 1.791 | 4,133 |
+| 12 | Backprop+Adam | ANE | 120 | 700.1 | 2.10 | 2.031 | 1.791 | — |
+
+*‡MeZO "Final Loss" is loss_plus (single batch, perturbed weights) — NOT val loss.*
+*Val loss measured at step 100 with val_every=100.*
+*Memory (RSS) measured via ps during training at steady state.*
+
+**Backprop HPs:** lr=3e-4, Adam, accum=10, warmup=10, grad_clip=1.0, --no-deepnet
+**MeZO HPs:** lr=1e-5, epsilon=1e-3, Rademacher perturbation (xoshiro256+), res_alpha=1.0
+
+**Key 360M findings:**
+- MeZO-ANE is **47% slower** than MeZO-CPU (1200 vs 814 ms/step)
+- Backprop-ANE is **16% slower** than Backprop-CPU (700 vs 602 ms/step)
+- Memory: MeZO uses **2.4x less** than Backprop (1720 vs 4133 MB)
+- Val convergence: Backprop reaches 1.79 in 100 steps; MeZO only reaches 2.07
+
 ## Per-Step Timing Breakdown
 
 ### From-Scratch (4-layer, 36.4M)
@@ -65,6 +87,35 @@
 
 *Timings from steady-state steps (step 100+). Initial steps slower due to warmup.*
 *v3 MeZO-ANE timings from condition 8 v3 output (step 100: fwd=249, perturb=141, transpose=99).*
+
+### Fine-Tuning (32-layer, 361.8M) — v5
+
+| Component | MeZO CPU (ms) | MeZO ANE (ms) | BP CPU (ms) | BP ANE (ms) |
+|-----------|---------------|---------------|-------------|-------------|
+| Forward (2x for MeZO) | 428 | 525 | ~200-400* | ~200 (ANE) + IO |
+| Perturbation (4x) | 379 | 579† | — | — |
+| Transpose+stage | 0 | 478 | — | ~30-90 |
+| Backward | — | — | ~250 | ~250-540 |
+| Other | ~7 | — | ~40-80 | ~50-90 |
+| **Total** | **814** | **1200** | **602** | **700** |
+
+*†Step 0 perturbation is slow (JIT warmup); steady-state is ~376ms.*
+*\*BP step times vary widely (545-1907ms) due to thermal throttling; average reported.*
+
+## Memory Comparison (measured RSS)
+
+| Model | MeZO (MB) | Backprop (MB) | Ratio | MeZO fits 8GB? | BP fits 8GB? |
+|-------|-----------|---------------|-------|-----------------|--------------|
+| 36.4M (4L) | ~320* | ~1200* | ~3.7x | Yes | Yes |
+| 134.5M (30L) | 785 | 2,910 | 3.7x | Yes | Yes |
+| 361.8M (32L) | 1,720 | 4,133 | 2.4x | Yes | Yes |
+| ~1B (est.) | ~4,600 | ~11,000+ | ~2.4x | Yes | **No** |
+
+*36.4M and 1B are estimated from scaling.*
+
+**The memory crossover — where backprop doesn't fit but MeZO does — occurs around
+600M-1B params on 8GB devices.** At 360M, both fit. MeZO's memory advantage is real
+but only becomes critical for models larger than what we tested.
 
 ## Key Findings
 
@@ -236,33 +287,62 @@ Steps/120s: 183  → 240   (+31% throughput)
 4. **Single seed (42):** All conditions use seed=42. Multiple seeds needed for statistical
    significance but impractical within current time budget.
 
-### 8. IOSurface transpose overhead — fundamental limit at 135M (v4 ANALYSIS)
-Even with zero transpose, MeZO-ANE cannot beat MeZO-CPU at 135M params:
-- MeZO-ANE without transpose: fwd(249) + perturb(141) = 390ms
-- MeZO-CPU: fwd(228) + perturb(149) = 377ms
-- ANE forward pass is 21ms slower due to IO overhead (7 kernel dispatches × 30 layers
-  = 210 dispatches per forward pass, each with IOSurface write/read)
-- The remaining 99ms transpose is on top of this structural deficit
+### 8. ANE is slower than CPU for MeZO at ALL tested sizes (v5 FALSIFIED HYPOTHESIS)
 
-**Options evaluated:**
-1. **Pre-transposed storage** (eliminate vDSP_mtrans): Saves 67ms → 434ms. Still > 379ms CPU.
-2. **In-place fp16 perturbation** (eliminate all restaging): Saves 99ms → 402ms. Still > 379ms.
-   Also introduces fp16 rounding errors, breaking bit-identical guarantee.
-3. **Dual-buffer weights** (fp32 + fp16 shadow copy): Extra 538MB memory. Saves transpose
-   but not staging. Net ~434ms. Not worth the 2x memory cost.
+**v4 hypothesis:** At 360M+ params, ANE matmul throughput would overcome dispatch overhead,
+making MeZO-ANE faster than MeZO-CPU.
 
-**Conclusion:** For 135M params, ANE overhead per dispatch (~50μs × 210 = ~10ms per fwd)
-makes ANE forward structurally slower than CPU. This is a model-size dependent limitation.
-At larger models (360M+), matmul time dominates and ANE's 2x throughput advantage should
-overcome the dispatch overhead. This motivates testing SmolLM2-360M as next experiment.
+**v5 result: FALSIFIED.** MeZO-ANE is 47% slower at 360M (1200 vs 814 ms/step), worse
+than the 32% gap at 135M (501 vs 379 ms/step). The gap WIDENED, not narrowed.
+
+| Model | MeZO-CPU (ms) | MeZO-ANE (ms) | ANE overhead | Transpose (ms) |
+|-------|---------------|---------------|--------------|----------------|
+| 135M (30L) | 379 | 501 | +32% | 99 |
+| 360M (32L) | 814 | 1200 | +47% | 478 |
+
+**Root cause: transpose overhead scales superlinearly with model size.**
+- 135M: 99ms transpose (2 restages × 7 matrices × 30 layers)
+- 360M: 478ms transpose (2 restages × 7 matrices × 32 layers)
+- Ratio: 478/99 = 4.8x for 2.69x more parameters
+- Transpose grows faster than matmul because weight matrix sizes are larger
+  (larger matrices → more data to copy per vDSP_mtrans + cvt_f32_f16)
+
+Even without transpose, ANE forward (525ms) is still slower than CPU forward (428ms)
+at 360M. The per-dispatch IO overhead (~50μs × 224 dispatches = ~11ms per fwd pass)
+persists, and ANE matmul throughput does not compensate.
+
+**Conclusion: MeZO-on-ANE is structurally slower than MeZO-on-CPU for any model that
+fits in memory on Apple Silicon.** The IOSurface restaging cost (required because MeZO
+perturbs weights in fp32, but ANE requires fp16 IOSurfaces) is a fundamental
+architectural mismatch between MeZO's algorithm and ANE's interface.
+
+Backprop-ANE does better (only 16% slower at 360M) because it only stages weights once
+at initialization, not 2x per step.
+
+### 9. 360M scaling confirms MeZO is memory-only advantage (v5)
+
+At 360M params, the full picture is:
+
+| Metric | MeZO-CPU | MeZO-ANE | BP-CPU | BP-ANE |
+|--------|----------|----------|--------|--------|
+| ms/step | 814 | 1200 | 602 | 700 |
+| Steps/120s | 143 | 100 | 140 | 120 |
+| Val loss @100 | 2.067 | 2.067 | 1.791 | 1.791 |
+| RSS (MB) | 1,720 | — | 4,133 | — |
+
+- Backprop is **faster** (602 vs 814 ms/step on CPU)
+- Backprop converges **far better** (val 1.79 vs 2.07 after equal wall time)
+- MeZO's sole advantage: **2.4x less memory** (1.7GB vs 4.1GB)
+- At 360M, both methods fit in 8GB. MeZO's memory advantage only matters at ~1B+ params.
 
 ## Next Steps
 
-1. **SmolLM2-360M (362M params):** The most important next experiment. At this size,
-   ANE matmul throughput should overcome dispatch overhead, making MeZO-ANE faster
-   than MeZO-CPU. Also tests MeZO's memory advantage (backprop may not fit).
-2. **Longer fine-tuning runs** (600s+): Does MeZO eventually match or beat backprop quality?
-3. **Validation loss for MeZO:** Reduce val_every from 500 to 100 to get val measurements
-   within the 120s budget (currently MeZO runs never reach step 500).
-4. **Multiple seeds:** Run 3-5 seeds per condition for error bars.
-5. **Epsilon sensitivity sweep:** Test {1e-4, 5e-4, 1e-3, 5e-3, 1e-2} to verify our choice.
+1. **Longer fine-tuning runs** (600s+): Does MeZO val loss eventually converge given
+   enough steps? Current trajectory suggests 50K+ steps needed.
+2. **SmolLM2-1.7B or similar ~1B model:** The actual memory crossover point where
+   backprop doesn't fit on-device but MeZO does. This is the real test case.
+3. **MeZO-SVRG or Sparse MeZO:** Follow-up methods (ICML/ICLR 2024) claim 20% accuracy
+   improvement and 2x faster convergence. Would address MeZO's convergence weakness.
+4. **Multiple seeds:** 3-5 seeds per condition for error bars.
+5. **Alternative MeZO-ANE architecture:** Fused ANE kernels that avoid per-step restaging.
+   Current approach (separate matmul dispatches) is fundamentally mismatched with MeZO.

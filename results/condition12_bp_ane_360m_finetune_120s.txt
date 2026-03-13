@@ -1,0 +1,36 @@
+=== Backprop+Adam Training: SmolLM2-360M (32 layers, GQA 15/5) ===
+dim=960 q_dim=960 kv_dim=320 hd=64 hidden=2560 seq=256 vocab=49152
+Params: 361.8M | Mode: ANE-matmul-only | --no-deepnet
+Backprop: lr=3e-4, Adam, accum=10, warmup=10, clip=1.0
+[RESUMED step 0, loss=0.0000]
+Compiled 5 kernels in 321ms
+
+step 0    loss=2.1040  lr=3.00e-04  1116.3ms/step  thermal=nominal
+step 10   loss=2.2036  lr=3.00e-04  1147.6ms/step
+step 20   loss=1.9643  lr=3.00e-04  721.3ms/step
+step 30   loss=2.1832  lr=3.00e-04  736.9ms/step
+step 40   loss=1.8321  lr=3.00e-04  598.1ms/step
+step 50   loss=1.7050  lr=3.00e-04  623.6ms/step
+step 60   loss=1.9153  lr=3.00e-04  692.9ms/step
+step 70   loss=1.6374  lr=3.00e-04  1247.1ms/step
+step 80   loss=1.6917  lr=3.00e-04  1225.4ms/step
+step 90   loss=2.0940  lr=3.00e-04  1086.6ms/step
+step 100  loss=2.0513  lr=3.00e-04  1163.0ms/step  val_loss=1.7908
+step 110  loss=1.8049  lr=3.00e-04  1906.7ms/step
+Time budget 120s reached at step 120 (121.8s elapsed)
+
+=== Efficiency Report ===
+Total steps:  120
+Compile:      321ms (one-time, 0.3%)
+Train time:   84018ms (700.1ms/step)
+Wall time:    121.8s
+
+---
+final_loss:       2.030733
+val_loss:         1.790845
+training_seconds: 84.0
+total_seconds:    121.8
+num_steps:        120
+num_params_M:     361.8
+depth:            32
+mode:             ane-matmul-only

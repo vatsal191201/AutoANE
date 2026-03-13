@@ -1,0 +1,38 @@
+=== Backprop+Adam Training: SmolLM2-360M (32 layers, GQA 15/5) ===
+dim=960 q_dim=960 kv_dim=320 hd=64 hidden=2560 seq=256 vocab=49152
+Params: 361.8M | Mode: CPU-only | --no-deepnet
+Backprop: lr=3e-4, Adam, accum=10, warmup=10, clip=1.0
+[RESUMED step 0, loss=0.0000]
+
+step 0    loss=2.1040  lr=3.00e-04  1172.9ms/step  thermal=nominal
+step 10   loss=2.2109  lr=3.00e-04  808.6ms/step
+step 20   loss=1.9632  lr=3.00e-04  686.7ms/step
+step 30   loss=2.1831  lr=3.00e-04  1258.9ms/step
+step 40   loss=1.8327  lr=3.00e-04  1042.3ms/step
+step 50   loss=1.7048  lr=3.00e-04  680.0ms/step
+step 60   loss=1.9141  lr=3.00e-04  572.6ms/step
+step 70   loss=1.6369  lr=3.00e-04  612.1ms/step
+step 80   loss=1.6912  lr=3.00e-04  794.3ms/step
+step 90   loss=2.0951  lr=3.00e-04  859.4ms/step
+step 100  loss=2.0537  lr=3.00e-04  873.1ms/step  val_loss=1.7909
+step 110  loss=1.8048  lr=3.00e-04  779.5ms/step
+step 120  loss=1.9888  lr=3.00e-04  810.8ms/step
+step 130  loss=1.6113  lr=3.00e-04  1121.6ms/step
+Time budget 120s reached at step 140 (121.0s elapsed)
+
+=== Efficiency Report ===
+Total steps:  140
+Train time:   84300ms (602.1ms/step)
+Wall time:    121.0s
+
+---
+final_loss:       1.640754
+val_loss:         1.790924
+training_seconds: 84.3
+total_seconds:    121.0
+num_steps:        140
+num_params_M:     361.8
+depth:            32
+mode:             cpu-only
+
+RSS memory (measured): 4133 MB
