@@ -1,0 +1,35 @@
+=== MeZO (Zeroth-Order) Training: SmolLM2-360M (32 layers, GQA 15/5) ===
+dim=960 q_dim=960 kv_dim=320 hd=64 hidden=2560 seq=256 vocab=49152
+Params: 361.8M | Mode: CPU-only
+MeZO+LoRA: lr=1e-05 epsilon=0.001 seed=42 val_every=100 rank=32
+Memory: ~1457MB (inference only, no gradients/optimizer)
+[RESUMED from step 0, loss=0.0000]
+  (using CLI lr=1e-05 instead of checkpoint lr)
+LoRA: rank=32, adapter params=9175.0K, trainable RMS params=62.4K
+  Adapters on: Wq, Wk, Wv, Wo | Frozen: W1, W2, W3, embed
+  Perturbation: LoRA A/B + RMS only (~9237.4K params vs 361.8M full)
+Tokens: 20000000 (train: 18000000, val: 2000000)
+Vocab compaction: 49152 -> 16893 active
+CPU-only mode: skipping ANE kernel compilation
+
+Starting MeZO training...
+
+step 0  loss_plus=2.1042  loss_minus=2.1043  proj_grad=-0.016570  lr=1.00e-05  step_ms=768 (fwd=642 perturb=123 transpose=0)
+Time budget 60s reached at step 55 (62.8s elapsed)
+
+=== MeZO Efficiency Report ===
+Total steps:  55
+Train time:   62788ms (1141.6ms/step)
+Wall time:    62.8s
+
+---
+final_loss_plus:  2.440366
+final_loss_minus: 2.449830
+training_seconds: 62.8
+total_seconds:    62.8
+num_steps:        55
+num_params_M:     361.8
+mode:             mezo-cpu-lora
+epsilon:          0.001
+lr:               1e-05
+lora_rank:        32

@@ -140,6 +140,52 @@ static void perturb_all_weights(LayerWeights *lw, float *embed, float *rms_final
     perturb_buffer(rms_final, DIM, scale);
 }
 
+// ===== MeZO + LoRA: perturb ONLY adapter matrices =====
+static void perturb_lora_weights(LoRALayer *ll, LayerWeights *lw,
+                                 float *rms_final, int nlayers, uint64_t seed, float scale) {
+    xo_seed(seed);
+    // Perturb LoRA A/B matrices for each layer (attention projections only)
+    for (int L = 0; L < nlayers; L++) {
+        int r = ll[L].rank;
+        perturb_buffer(ll[L].Aq, (size_t)r * DIM, scale);
+        perturb_buffer(ll[L].Bq, (size_t)Q_DIM * r, scale);
+        perturb_buffer(ll[L].Ak, (size_t)r * DIM, scale);
+        perturb_buffer(ll[L].Bk, (size_t)KV_DIM * r, scale);
+        perturb_buffer(ll[L].Av, (size_t)r * DIM, scale);
+        perturb_buffer(ll[L].Bv, (size_t)KV_DIM * r, scale);
+        perturb_buffer(ll[L].Ao, (size_t)r * Q_DIM, scale);
+        perturb_buffer(ll[L].Bo, (size_t)DIM * r, scale);
+        // RMS norms are still trainable (small, always perturbed)
+        perturb_buffer(lw[L].rms_att, DIM, scale);
+        perturb_buffer(lw[L].rms_ffn, DIM, scale);
+    }
+    perturb_buffer(rms_final, DIM, scale);
+}
+
+// Merge LoRA adapters into effective weights: W_eff = W_base + B @ A
+static void lora_merge_all(LayerWeights *lw, LoRALayer *ll, int nlayers) {
+    for (int L = 0; L < nlayers; L++) {
+        int r = ll[L].rank;
+        lora_merge_weight(lw[L].Wq, ll[L].Wq_base, ll[L].Bq, ll[L].Aq, Q_DIM, r, DIM);
+        lora_merge_weight(lw[L].Wk, ll[L].Wk_base, ll[L].Bk, ll[L].Ak, KV_DIM, r, DIM);
+        lora_merge_weight(lw[L].Wv, ll[L].Wv_base, ll[L].Bv, ll[L].Av, KV_DIM, r, DIM);
+        lora_merge_weight(lw[L].Wo, ll[L].Wo_base, ll[L].Bo, ll[L].Ao, DIM, r, Q_DIM);
+    }
+}
+
+// ===== Adapter-as-input: compute LoRA correction CPU-side, add to ANE output =====
+// out += B @ (A @ x), where A[rank,in_dim], B[out_dim,rank], x[in_dim,SEQ]
+static void lora_addmm(float *out, const float *A, const float *B,
+                        const float *x, float *tmp_r,
+                        int out_dim, int rank, int in_dim) {
+    // tmp_r[rank, SEQ] = A[rank, in_dim] @ x[in_dim, SEQ]
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                rank, SEQ, in_dim, 1.0f, A, in_dim, x, SEQ, 0.0f, tmp_r, SEQ);
+    // out[out_dim, SEQ] += B[out_dim, rank] @ tmp_r[rank, SEQ]
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                out_dim, SEQ, rank, 1.0f, B, rank, tmp_r, SEQ, 1.0f, out, SEQ);
+}
+
 // ===== MeZO checkpoint (BLZT v4, zeros for Adam state) =====
 static void mezo_save_checkpoint(const char *path, int step, int total_steps, float lr, float loss,
                                  double ct, double cw, int cs,
@@ -237,6 +283,9 @@ int main(int argc, char *argv[]) {
         double time_budget_sec = 0;
         bool from_scratch = false, cpu_only = false, ane_matmul_only = false;
         bool lr_from_cli = false;
+        bool use_lora = false;
+        bool lora_split = false;  // adapter-as-input: no merge, no restage
+        int lora_rank = 8;
         long init_seed = 42;
         int val_every = 500;
         const char *data_path = DEFAULT_DATA_PATH;
@@ -254,6 +303,9 @@ int main(int argc, char *argv[]) {
             else if (strcmp(argv[i], "--data") == 0 && i+1 < argc) data_path = argv[++i];
             else if (strcmp(argv[i], "--val-every") == 0 && i+1 < argc) val_every = atoi(argv[++i]);
             else if (strcmp(argv[i], "--resume") == 0 && i+1 < argc) ckpt_load_path = argv[++i];
+            else if (strcmp(argv[i], "--lora") == 0) use_lora = true;
+            else if (strcmp(argv[i], "--lora-split") == 0) { use_lora = true; lora_split = true; }
+            else if (strcmp(argv[i], "--lora-rank") == 0 && i+1 < argc) lora_rank = atoi(argv[++i]);
         }
 
         if (!cpu_only && !ane_matmul_only) cpu_only = true;  // Default to CPU-only
@@ -272,7 +324,8 @@ int main(int argc, char *argv[]) {
         double total_p = (double)NLAYERS * LAYER_PARAMS + DIM + (double)VOCAB * DIM;
         printf("Params: %.1fM | Mode: %s\n", total_p / 1e6,
                cpu_only ? "CPU-only" : "ANE-matmul-only");
-        printf("MeZO: lr=%g epsilon=%g seed=%ld val_every=%d\n", lr, epsilon, init_seed, val_every);
+        if (use_lora) printf("MeZO+LoRA: lr=%g epsilon=%g seed=%ld val_every=%d rank=%d\n", lr, epsilon, init_seed, val_every, lora_rank);
+        else printf("MeZO: lr=%g epsilon=%g seed=%ld val_every=%d\n", lr, epsilon, init_seed, val_every);
         printf("Memory: ~%.0fMB (inference only, no gradients/optimizer)\n",
                (total_p * 4 + SEQ * DIM * 4 * 10) / 1e6);
 
@@ -320,6 +373,37 @@ int main(int argc, char *argv[]) {
         } else {
             fprintf(stderr, "Must specify --scratch or --resume <path>\n");
             return 1;
+        }
+
+        // === LoRA initialization ===
+        LoRALayer lora_layers[NLAYERS];
+        if (use_lora) {
+            int r = lora_rank;
+            float a_scale = 1.0f / sqrtf((float)r);
+            srand48(init_seed + 12345);  // Separate seed for LoRA init
+            size_t lora_params = 0;
+            for (int L = 0; L < NLAYERS; L++) {
+                lora_layers[L] = lora_layer_alloc(r);
+                // Copy base weights (frozen)
+                memcpy(lora_layers[L].Wq_base, lw[L].Wq, WQ_SZ * 4);
+                memcpy(lora_layers[L].Wk_base, lw[L].Wk, WK_SZ * 4);
+                memcpy(lora_layers[L].Wv_base, lw[L].Wv, WV_SZ * 4);
+                memcpy(lora_layers[L].Wo_base, lw[L].Wo, WO_SZ * 4);
+                // Init A with small random, B with zero (LoRA starts as identity)
+                for (size_t i = 0; i < (size_t)r * DIM; i++) lora_layers[L].Aq[i] = a_scale * (2 * drand48() - 1);
+                for (size_t i = 0; i < (size_t)r * DIM; i++) lora_layers[L].Ak[i] = a_scale * (2 * drand48() - 1);
+                for (size_t i = 0; i < (size_t)r * DIM; i++) lora_layers[L].Av[i] = a_scale * (2 * drand48() - 1);
+                for (size_t i = 0; i < (size_t)r * Q_DIM; i++) lora_layers[L].Ao[i] = a_scale * (2 * drand48() - 1);
+                // B matrices stay zero (calloc)
+                lora_params += 2 * (size_t)r * DIM * 3 + 2 * (size_t)r * Q_DIM + 2 * (size_t)r * KV_DIM * 2;
+            }
+            size_t rms_params = (size_t)NLAYERS * 2 * DIM + DIM;
+            printf("LoRA: rank=%d, adapter params=%.1fK, trainable RMS params=%.1fK\n",
+                   r, (float)lora_params / 1e3, (float)rms_params / 1e3);
+            printf("  Adapters on: Wq, Wk, Wv, Wo | Frozen: W1, W2, W3, embed\n");
+            printf("  Perturbation: LoRA A/B + RMS only (~%.1fK params vs %.1fM full)\n",
+                   (float)(lora_params + rms_params) / 1e3, total_p / 1e6);
+            if (lora_split) printf("  Mode: adapter-as-input (zero restaging, CPU-side LoRA correction)\n");
         }
 
         // === mmap token data ===
@@ -373,6 +457,11 @@ int main(int argc, char *argv[]) {
         float *v_tiled = (float*)safe_malloc(SEQ * Q_DIM * 4);
         float *logits = (float*)safe_malloc(SEQ * CV * 4);
         float *dlogits = (float*)safe_malloc(SEQ * CV * 4);  // throwaway for cross_entropy_loss
+        // Temp buffer for lora_split mode: A @ x intermediate result [rank, SEQ]
+        float *lora_tmp = NULL;
+        if (lora_split) {
+            lora_tmp = (float*)safe_malloc((size_t)lora_rank * SEQ * 4);
+        }
 
         // === Compile ANE kernels (forward only) ===
         DynLayerKernels dk;
@@ -476,6 +565,32 @@ int main(int argc, char *argv[]) {
             } \
         } while(0)
 
+        // Attention-only restage: for MeZO+LoRA, FFN weights (W1/W2/W3) never change
+        #define RETRANSPOSE_ATTN_ONLY() do { \
+            for (int L = 0; L < NLAYERS; L++) { \
+                transpose_weight(Wqt_buf[L], lw[L].Wq, Q_DIM, DIM); \
+                transpose_weight(Wkt_buf[L], lw[L].Wk, KV_DIM, DIM); \
+                transpose_weight(Wvt_buf[L], lw[L].Wv, KV_DIM, DIM); \
+                transpose_weight(Wot_buf[L], lw[L].Wo, DIM, Q_DIM); \
+                { IOSurfaceLock(pls[L].wqFwd_in, 0, NULL); \
+                  _Float16 *buf = (_Float16*)IOSurfaceGetBaseAddress(pls[L].wqFwd_in); \
+                  for (int d = 0; d < DIM; d++) \
+                      cvt_f32_f16(buf + d*WQ_FWD_SP + SEQ, Wqt_buf[L] + d*Q_DIM, Q_DIM); \
+                  IOSurfaceUnlock(pls[L].wqFwd_in, 0, NULL); } \
+                { IOSurfaceLock(pls[L].wkFwd_in, 0, NULL); \
+                  _Float16 *buf = (_Float16*)IOSurfaceGetBaseAddress(pls[L].wkFwd_in); \
+                  for (int d = 0; d < DIM; d++) \
+                      cvt_f32_f16(buf + d*WKV_FWD_SP + SEQ, Wkt_buf[L] + d*KV_DIM, KV_DIM); \
+                  IOSurfaceUnlock(pls[L].wkFwd_in, 0, NULL); } \
+                { IOSurfaceLock(pls[L].wvFwd_in, 0, NULL); \
+                  _Float16 *buf = (_Float16*)IOSurfaceGetBaseAddress(pls[L].wvFwd_in); \
+                  for (int d = 0; d < DIM; d++) \
+                      cvt_f32_f16(buf + d*WKV_FWD_SP + SEQ, Wvt_buf[L] + d*KV_DIM, KV_DIM); \
+                  IOSurfaceUnlock(pls[L].wvFwd_in, 0, NULL); } \
+                stage_wo_fwd_weights(pls[L].woFwd_in, Wot_buf[L]); \
+            } \
+        } while(0)
+
         // Initial transpose + staging
         if (!cpu_only) {
             RETRANSPOSE_AND_STAGE();
@@ -520,14 +635,19 @@ int main(int argc, char *argv[]) {
 
             // ===== 1. Perturb +epsilon =====
             uint64_t t0 = mach_absolute_time();
-            perturb_all_weights(lw, embed, rms_final, mezo_seed, +epsilon);
-            free(cembed);
-            cembed = vocab_compact_embed(embed, &vm, DIM);
+            if (use_lora) {
+                perturb_lora_weights(lora_layers, lw, rms_final, NLAYERS, mezo_seed, +epsilon);
+                if (!lora_split) lora_merge_all(lw, lora_layers, NLAYERS);
+            } else {
+                perturb_all_weights(lw, embed, rms_final, mezo_seed, +epsilon);
+            }
+            if (!lora_split) { free(cembed); cembed = vocab_compact_embed(embed, &vm, DIM); }
             t_perturb += tb_ms(mach_absolute_time() - t0);
 
-            if (!cpu_only) {
+            if (!cpu_only && !lora_split) {
                 t0 = mach_absolute_time();
-                RETRANSPOSE_AND_STAGE();
+                if (use_lora) { RETRANSPOSE_ATTN_ONLY(); }
+                else { RETRANSPOSE_AND_STAGE(); }
                 t_transpose += tb_ms(mach_absolute_time() - t0);
             }
 
@@ -540,15 +660,22 @@ int main(int argc, char *argv[]) {
                 rmsnorm(xnorm_buf, x_cur, lw[L].rms_att, DIM, SEQ);
 
                 if (cpu_only) {
-                    // CPU matmuls
+                    // CPU matmuls (use effective weights: base or merged)
                     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                                 Q_DIM, SEQ, DIM, 1.0f, lw[L].Wq, DIM, xnorm_buf, SEQ, 0.0f, Q, SEQ);
                     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                                 KV_DIM, SEQ, DIM, 1.0f, lw[L].Wk, DIM, xnorm_buf, SEQ, 0.0f, K, SEQ);
                     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                                 KV_DIM, SEQ, DIM, 1.0f, lw[L].Wv, DIM, xnorm_buf, SEQ, 0.0f, V, SEQ);
+                    if (lora_split) {
+                        // Add LoRA corrections: Q += Bq @ (Aq @ xnorm), etc.
+                        LoRALayer *ll = &lora_layers[L];
+                        lora_addmm(Q, ll->Aq, ll->Bq, xnorm_buf, lora_tmp, Q_DIM, ll->rank, DIM);
+                        lora_addmm(K, ll->Ak, ll->Bk, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM);
+                        lora_addmm(V, ll->Av, ll->Bv, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM);
+                    }
                 } else {
-                    // ANE matmuls
+                    // ANE matmuls (base weights baked in IOSurfaces)
                     io_write_dyn_acts(pls[L].wqFwd_in, xnorm_buf, DIM, SEQ, WQ_FWD_SP);
                     ane_eval_req(dk.wqFwd, plr[L].wqFwd);
                     io_read_dyn(dk.wqFwd->ioOut, Q, Q_DIM, SEQ);
@@ -560,6 +687,14 @@ int main(int argc, char *argv[]) {
                     io_write_dyn_acts(pls[L].wvFwd_in, xnorm_buf, DIM, SEQ, WKV_FWD_SP);
                     ane_eval_req(dk.wkvFwd, plr[L].wvFwd);
                     io_read_dyn(dk.wkvFwd->ioOut, V, KV_DIM, SEQ);
+
+                    if (lora_split) {
+                        // Add LoRA corrections on CPU after ANE base matmul
+                        LoRALayer *ll = &lora_layers[L];
+                        lora_addmm(Q, ll->Aq, ll->Bq, xnorm_buf, lora_tmp, Q_DIM, ll->rank, DIM);
+                        lora_addmm(K, ll->Ak, ll->Bk, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM);
+                        lora_addmm(V, ll->Av, ll->Bv, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM);
+                    }
                 }
 
                 // RoPE + GQA tile + SDPA (always CPU fp32)
@@ -573,10 +708,18 @@ int main(int argc, char *argv[]) {
                 if (cpu_only) {
                     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                                 DIM, SEQ, Q_DIM, 1.0f, lw[L].Wo, Q_DIM, attn_out, SEQ, 0.0f, o_out, SEQ);
+                    if (lora_split) {
+                        LoRALayer *ll = &lora_layers[L];
+                        lora_addmm(o_out, ll->Ao, ll->Bo, attn_out, lora_tmp, DIM, ll->rank, Q_DIM);
+                    }
                 } else {
                     write_wo_fwd_acts(pls[L].woFwd_in, attn_out);
                     ane_eval_req(dk.woFwd, plr[L].woFwd);
                     io_read_dyn(dk.woFwd->ioOut, o_out, DIM, SEQ);
+                    if (lora_split) {
+                        LoRALayer *ll = &lora_layers[L];
+                        lora_addmm(o_out, ll->Ao, ll->Bo, attn_out, lora_tmp, DIM, ll->rank, Q_DIM);
+                    }
                 }
 
                 // Residual 1: x = x + res_alpha * o_out (DeepNet scaled residual)
@@ -631,14 +774,19 @@ int main(int argc, char *argv[]) {
 
             // ===== 3. Perturb -2*epsilon (to theta - epsilon*z) =====
             t0 = mach_absolute_time();
-            perturb_all_weights(lw, embed, rms_final, mezo_seed, -2.0f * epsilon);
-            free(cembed);
-            cembed = vocab_compact_embed(embed, &vm, DIM);
+            if (use_lora) {
+                perturb_lora_weights(lora_layers, lw, rms_final, NLAYERS, mezo_seed, -2.0f * epsilon);
+                if (!lora_split) lora_merge_all(lw, lora_layers, NLAYERS);
+            } else {
+                perturb_all_weights(lw, embed, rms_final, mezo_seed, -2.0f * epsilon);
+            }
+            if (!lora_split) { free(cembed); cembed = vocab_compact_embed(embed, &vm, DIM); }
             t_perturb += tb_ms(mach_absolute_time() - t0);
 
-            if (!cpu_only) {
+            if (!cpu_only && !lora_split) {
                 t0 = mach_absolute_time();
-                RETRANSPOSE_AND_STAGE();
+                if (use_lora) { RETRANSPOSE_ATTN_ONLY(); }
+                else { RETRANSPOSE_AND_STAGE(); }
                 t_transpose += tb_ms(mach_absolute_time() - t0);
             }
 
@@ -656,6 +804,12 @@ int main(int argc, char *argv[]) {
                                 KV_DIM, SEQ, DIM, 1.0f, lw[L].Wk, DIM, xnorm_buf, SEQ, 0.0f, K, SEQ);
                     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                                 KV_DIM, SEQ, DIM, 1.0f, lw[L].Wv, DIM, xnorm_buf, SEQ, 0.0f, V, SEQ);
+                    if (lora_split) {
+                        LoRALayer *ll = &lora_layers[L];
+                        lora_addmm(Q, ll->Aq, ll->Bq, xnorm_buf, lora_tmp, Q_DIM, ll->rank, DIM);
+                        lora_addmm(K, ll->Ak, ll->Bk, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM);
+                        lora_addmm(V, ll->Av, ll->Bv, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM);
+                    }
                 } else {
                     io_write_dyn_acts(pls[L].wqFwd_in, xnorm_buf, DIM, SEQ, WQ_FWD_SP);
                     ane_eval_req(dk.wqFwd, plr[L].wqFwd);
@@ -668,6 +822,13 @@ int main(int argc, char *argv[]) {
                     io_write_dyn_acts(pls[L].wvFwd_in, xnorm_buf, DIM, SEQ, WKV_FWD_SP);
                     ane_eval_req(dk.wkvFwd, plr[L].wvFwd);
                     io_read_dyn(dk.wkvFwd->ioOut, V, KV_DIM, SEQ);
+
+                    if (lora_split) {
+                        LoRALayer *ll = &lora_layers[L];
+                        lora_addmm(Q, ll->Aq, ll->Bq, xnorm_buf, lora_tmp, Q_DIM, ll->rank, DIM);
+                        lora_addmm(K, ll->Ak, ll->Bk, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM);
+                        lora_addmm(V, ll->Av, ll->Bv, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM);
+                    }
                 }
 
                 rope_forward_inplace(Q, SEQ, Q_DIM, HD);
@@ -679,10 +840,18 @@ int main(int argc, char *argv[]) {
                 if (cpu_only) {
                     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                                 DIM, SEQ, Q_DIM, 1.0f, lw[L].Wo, Q_DIM, attn_out, SEQ, 0.0f, o_out, SEQ);
+                    if (lora_split) {
+                        LoRALayer *ll = &lora_layers[L];
+                        lora_addmm(o_out, ll->Ao, ll->Bo, attn_out, lora_tmp, DIM, ll->rank, Q_DIM);
+                    }
                 } else {
                     write_wo_fwd_acts(pls[L].woFwd_in, attn_out);
                     ane_eval_req(dk.woFwd, plr[L].woFwd);
                     io_read_dyn(dk.woFwd->ioOut, o_out, DIM, SEQ);
+                    if (lora_split) {
+                        LoRALayer *ll = &lora_layers[L];
+                        lora_addmm(o_out, ll->Ao, ll->Bo, attn_out, lora_tmp, DIM, ll->rank, Q_DIM);
+                    }
                 }
 
                 vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ * DIM));
@@ -727,9 +896,13 @@ int main(int argc, char *argv[]) {
             float loss_minus = cross_entropy_loss(dlogits, logits, ctargets, CV, SEQ);
             t_fwd += tb_ms(mach_absolute_time() - t0);
 
-            // ===== 5. Restore to original theta (no cembed rebuild needed) =====
+            // ===== 5. Restore to original theta =====
             t0 = mach_absolute_time();
-            perturb_all_weights(lw, embed, rms_final, mezo_seed, +epsilon);
+            if (use_lora) {
+                perturb_lora_weights(lora_layers, lw, rms_final, NLAYERS, mezo_seed, +epsilon);
+            } else {
+                perturb_all_weights(lw, embed, rms_final, mezo_seed, +epsilon);
+            }
             t_perturb += tb_ms(mach_absolute_time() - t0);
 
             // ===== 6. Gradient estimate + update =====
@@ -737,19 +910,23 @@ int main(int argc, char *argv[]) {
             float update_scale = -lr * proj_grad;
 
             t0 = mach_absolute_time();
-            // update_all_weights is just perturb_all_weights with update_scale
-            perturb_all_weights(lw, embed, rms_final, mezo_seed, update_scale);
+            if (use_lora) {
+                perturb_lora_weights(lora_layers, lw, rms_final, NLAYERS, mezo_seed, update_scale);
+                if (!lora_split) lora_merge_all(lw, lora_layers, NLAYERS);
+            } else {
+                perturb_all_weights(lw, embed, rms_final, mezo_seed, update_scale);
+            }
             t_perturb += tb_ms(mach_absolute_time() - t0);
 
             // Re-build compact embedding after weight update
-            free(cembed);
-            cembed = vocab_compact_embed(embed, &vm, DIM);
+            if (!lora_split) { free(cembed); cembed = vocab_compact_embed(embed, &vm, DIM); }
 
             // 7. Defer re-transpose: next step's +eps perturbation will restage anyway.
             //    Only restage here if validation is about to run (needs updated weights).
             if (!cpu_only && val_every > 0 && (step + 1) % val_every == 0 && val_tokens > SEQ + 1) {
                 t0 = mach_absolute_time();
-                RETRANSPOSE_AND_STAGE();
+                if (use_lora) { RETRANSPOSE_ATTN_ONLY(); }
+                else { RETRANSPOSE_AND_STAGE(); }
                 t_transpose += tb_ms(mach_absolute_time() - t0);
             }
 
@@ -802,6 +979,12 @@ int main(int argc, char *argv[]) {
                             ane_eval_req(dk.wkvFwd, plr[L].wvFwd);
                             io_read_dyn(dk.wkvFwd->ioOut, V, KV_DIM, SEQ);
                         }
+                        if (lora_split) {
+                            LoRALayer *ll = &lora_layers[L];
+                            lora_addmm(Q, ll->Aq, ll->Bq, xnorm_buf, lora_tmp, Q_DIM, ll->rank, DIM);
+                            lora_addmm(K, ll->Ak, ll->Bk, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM);
+                            lora_addmm(V, ll->Av, ll->Bv, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM);
+                        }
                         rope_forward_inplace(Q, SEQ, Q_DIM, HD);
                         rope_forward_inplace(K, SEQ, KV_DIM, HD);
                         gqa_tile_kv(k_tiled, K, SEQ);
@@ -813,6 +996,10 @@ int main(int argc, char *argv[]) {
                             write_wo_fwd_acts(pls[L].woFwd_in, attn_out);
                             ane_eval_req(dk.woFwd, plr[L].woFwd);
                             io_read_dyn(dk.woFwd->ioOut, o_out, DIM, SEQ);
+                        }
+                        if (lora_split) {
+                            LoRALayer *ll = &lora_layers[L];
+                            lora_addmm(o_out, ll->Ao, ll->Bo, attn_out, lora_tmp, DIM, ll->rank, Q_DIM);
                         }
                         vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ*DIM));
                         rmsnorm(xnorm_buf, x_cur, lw[L].rms_ffn, DIM, SEQ);
@@ -869,11 +1056,17 @@ int main(int argc, char *argv[]) {
         printf("total_seconds:    %.1f\n", wall / 1000.0);
         printf("num_steps:        %d\n", total_steps_done);
         printf("num_params_M:     %.1f\n", ((double)NLAYERS * LAYER_PARAMS + DIM + (double)VOCAB * DIM) / 1e6);
-        printf("mode:             mezo-%s\n", cpu_only ? "cpu" : "ane");
+        printf("mode:             mezo-%s%s\n", cpu_only ? "cpu" : "ane",
+               lora_split ? "-lora-split" : (use_lora ? "-lora" : ""));
         printf("epsilon:          %g\n", epsilon);
         printf("lr:               %g\n", lr);
+        if (use_lora) printf("lora_rank:        %d\n", lora_rank);
 
         // Cleanup
+        if (lora_tmp) free(lora_tmp);
+        if (use_lora) {
+            for (int L = 0; L < NLAYERS; L++) lora_layer_free(&lora_layers[L]);
+        }
         for (int L = 0; L < NLAYERS; L++) {
             layer_weights_free(&lw[L]);
             free(Wqt_buf[L]); free(Wkt_buf[L]); free(Wvt_buf[L]); free(Wot_buf[L]);

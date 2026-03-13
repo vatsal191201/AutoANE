@@ -1,0 +1,108 @@
+DeepNet disabled: res_alpha=1.0 (standard residual connections)
+[RESUMED step 0, loss=0.0000]
+LoRA: rank=8, adapter params=1474.6K, trainable RMS params=62.4K
+  Adapters on: Wq, Wk, Wv, Wo (attention projections)
+  Frozen: W1, W2, W3, embed (FFN + embedding)
+Token data: 20000000 tokens (40.0 MB) — train: 18000000, val: 2000000
+Vocab compaction: 49152 → 16893 active tokens (2.9x reduction)
+CPU-only mode: skipping ANE kernel compilation
+
+    L0 sdpa_bwd: |dq|=0.376626 |dk|=0.419923 |dv|=12.278695
+  timing: ane_fwd=488.9 io_fwd=0.0 rms=15.0 ane_bwd=313.6 io_bwd=11.0 silu=66.5 rms_bwd=32.5 cls=32.8 cblas_wait=0.0 dw_copy=57.2
+step 0    loss=2.1040  lr=3.00e-04  1045.5ms/step  x[-1042.06,1075.32] dy[-1.723e+01,1.757e+01] thermal=fair
+  grad_norm=2.5665  attn=1.0842 ffn=1.2906 embed=1.6035
+    L0 sdpa_bwd: |dq|=0.598924 |dk|=0.410142 |dv|=12.315166
+  timing: ane_fwd=188.1 io_fwd=0.0 rms=7.0 ane_bwd=252.8 io_bwd=1.4 silu=35.1 rms_bwd=15.1 cls=11.9 cblas_wait=0.0 dw_copy=9.9
+step 10   loss=2.1911  lr=3.00e-04  544.7ms/step  x[-1127.72,961.10] dy[-6.276e+01,1.038e+02] thermal=fair
+  grad_norm=2.1209  attn=0.8497 ffn=1.1427 embed=1.3161
+    L0 sdpa_bwd: |dq|=0.826045 |dk|=0.506986 |dv|=9.547502
+  timing: ane_fwd=186.9 io_fwd=0.0 rms=6.8 ane_bwd=246.6 io_bwd=1.4 silu=35.5 rms_bwd=14.8 cls=12.4 cblas_wait=0.0 dw_copy=10.2
+step 20   loss=1.9487  lr=3.00e-04  537.0ms/step  x[-1067.24,1018.17] dy[-2.461e+01,1.707e+01] thermal=fair
+  grad_norm=2.0567  attn=0.8765 ffn=1.1085 embed=1.2854
+    L0 sdpa_bwd: |dq|=1.981047 |dk|=0.989647 |dv|=7.384378
+  timing: ane_fwd=190.5 io_fwd=0.0 rms=6.9 ane_bwd=248.5 io_bwd=1.3 silu=35.2 rms_bwd=14.9 cls=12.5 cblas_wait=0.0 dw_copy=10.5
+step 30   loss=2.2809  lr=3.00e-04  543.3ms/step  x[-1016.52,853.19] dy[-7.564e+01,1.359e+02] thermal=fair
+  grad_norm=1.9477  attn=0.7964 ffn=1.0351 embed=1.1870
+    L0 sdpa_bwd: |dq|=0.752176 |dk|=0.562557 |dv|=19.046356
+  timing: ane_fwd=189.7 io_fwd=0.0 rms=7.1 ane_bwd=248.7 io_bwd=1.4 silu=35.5 rms_bwd=14.7 cls=12.4 cblas_wait=0.0 dw_copy=10.2
+step 40   loss=1.8631  lr=3.00e-04  542.6ms/step  x[-1021.53,917.00] dy[-6.468e+01,6.529e+01] thermal=fair
+  grad_norm=1.8818  attn=0.7525 ffn=1.0247 embed=1.1503
+    L0 sdpa_bwd: |dq|=0.343276 |dk|=0.190965 |dv|=8.044334
+  timing: ane_fwd=190.2 io_fwd=0.0 rms=7.1 ane_bwd=245.0 io_bwd=1.4 silu=36.8 rms_bwd=14.8 cls=12.6 cblas_wait=0.0 dw_copy=10.2
+step 50   loss=1.6922  lr=3.00e-04  540.6ms/step  x[-975.71,797.29] dy[-5.294e+01,2.936e+01] thermal=fair
+  grad_norm=1.8691  attn=0.7171 ffn=0.9973 embed=1.1728
+    L0 sdpa_bwd: |dq|=0.902262 |dk|=0.553002 |dv|=11.374598
+  timing: ane_fwd=189.3 io_fwd=0.0 rms=7.1 ane_bwd=247.0 io_bwd=1.5 silu=35.6 rms_bwd=14.8 cls=12.5 cblas_wait=0.0 dw_copy=10.3
+step 60   loss=2.0095  lr=3.00e-04  541.3ms/step  x[-934.46,1012.68] dy[-3.082e+01,1.842e+01] thermal=fair
+  grad_norm=1.9045  attn=0.6981 ffn=1.0212 embed=1.1069
+    L0 sdpa_bwd: |dq|=0.368353 |dk|=0.354209 |dv|=11.710182
+  timing: ane_fwd=192.0 io_fwd=0.0 rms=7.1 ane_bwd=246.9 io_bwd=1.4 silu=37.2 rms_bwd=14.7 cls=12.2 cblas_wait=0.0 dw_copy=10.5
+step 70   loss=1.5756  lr=3.00e-04  544.8ms/step  x[-871.85,1098.87] dy[-1.206e+01,1.349e+01] thermal=fair
+  grad_norm=1.7960  attn=0.6776 ffn=1.0021 embed=1.0898
+    L0 sdpa_bwd: |dq|=0.434562 |dk|=0.289093 |dv|=7.931726
+  timing: ane_fwd=188.8 io_fwd=0.0 rms=7.0 ane_bwd=247.4 io_bwd=1.5 silu=36.1 rms_bwd=14.9 cls=12.3 cblas_wait=0.0 dw_copy=10.3
+step 80   loss=1.7201  lr=3.00e-04  540.8ms/step  x[-907.37,1103.17] dy[-5.568e+01,3.808e+01] thermal=fair
+  grad_norm=1.7133  attn=0.6674 ffn=0.9014 embed=1.0669
+    L0 sdpa_bwd: |dq|=0.417818 |dk|=0.194814 |dv|=5.398807
+  timing: ane_fwd=193.1 io_fwd=0.0 rms=6.8 ane_bwd=248.5 io_bwd=1.3 silu=36.6 rms_bwd=14.9 cls=12.5 cblas_wait=0.0 dw_copy=9.9
+step 90   loss=2.2200  lr=3.00e-04  546.4ms/step  x[-961.58,1230.11] dy[-1.279e+01,2.508e+01] thermal=fair
+  grad_norm=1.7176  attn=0.6104 ffn=0.9155 embed=1.0188
+  [ckpt saved, best_loss=1.9475]
+    L0 sdpa_bwd: |dq|=0.362136 |dk|=0.424860 |dv|=8.801311
+  timing: ane_fwd=255.2 io_fwd=0.0 rms=16.3 ane_bwd=331.0 io_bwd=1.7 silu=44.7 rms_bwd=17.2 cls=33.9 cblas_wait=0.0 dw_copy=55.2
+step 100  loss=2.1676  lr=3.00e-04  993.0ms/step  x[-980.25,945.41] dy[-1.570e+01,2.126e+01] thermal=fair
+  [val] loss=1.9248 (avg of 10 samples from val split)
+  grad_norm=1.6239  attn=0.5983 ffn=0.8664 embed=1.0791
+    L0 sdpa_bwd: |dq|=0.520938 |dk|=0.198224 |dv|=4.956181
+  timing: ane_fwd=192.1 io_fwd=0.0 rms=7.1 ane_bwd=251.8 io_bwd=1.4 silu=34.6 rms_bwd=14.6 cls=12.7 cblas_wait=0.0 dw_copy=10.2
+step 110  loss=1.9118  lr=3.00e-04  547.3ms/step  x[-987.21,1073.82] dy[-3.415e+01,2.429e+01] thermal=fair
+  grad_norm=1.6755  attn=0.5965 ffn=0.9660 embed=1.0513
+    L0 sdpa_bwd: |dq|=0.418706 |dk|=0.327800 |dv|=7.667986
+  timing: ane_fwd=189.1 io_fwd=0.0 rms=7.1 ane_bwd=248.6 io_bwd=1.3 silu=37.2 rms_bwd=14.8 cls=12.3 cblas_wait=0.0 dw_copy=10.2
+step 120  loss=2.1175  lr=3.00e-04  543.7ms/step  x[-957.92,983.83] dy[-1.754e+01,1.674e+01] thermal=fair
+  grad_norm=1.6218  attn=0.6580 ffn=0.8484 embed=0.9718
+    L0 sdpa_bwd: |dq|=0.700635 |dk|=0.185352 |dv|=5.104260
+  timing: ane_fwd=192.0 io_fwd=0.0 rms=6.9 ane_bwd=250.8 io_bwd=1.4 silu=34.7 rms_bwd=15.8 cls=12.9 cblas_wait=0.0 dw_copy=10.4
+step 130  loss=1.7513  lr=3.00e-04  548.1ms/step  x[-940.69,999.55] dy[-1.599e+01,1.026e+01] thermal=fair
+  grad_norm=1.5358  attn=0.5743 ffn=0.8488 embed=0.9942
+    L0 sdpa_bwd: |dq|=0.452807 |dk|=0.168338 |dv|=10.406031
+  timing: ane_fwd=192.4 io_fwd=0.0 rms=7.2 ane_bwd=247.4 io_bwd=1.4 silu=37.0 rms_bwd=15.7 cls=12.8 cblas_wait=0.0 dw_copy=10.3
+step 140  loss=1.7916  lr=3.00e-04  548.1ms/step  x[-1034.83,992.68] dy[-1.703e+01,2.742e+01] thermal=fair
+  grad_norm=1.5526  attn=0.5558 ffn=0.9290 embed=0.9111
+    L0 sdpa_bwd: |dq|=0.136205 |dk|=0.186905 |dv|=3.719164
+  timing: ane_fwd=202.5 io_fwd=0.0 rms=7.5 ane_bwd=249.4 io_bwd=1.4 silu=36.9 rms_bwd=15.9 cls=13.0 cblas_wait=0.0 dw_copy=10.4
+step 150  loss=1.5375  lr=3.00e-04  560.7ms/step  x[-949.73,1050.07] dy[-1.387e+01,8.394e+00] thermal=fair
+  grad_norm=1.8885  attn=0.7891 ffn=1.0915 embed=1.0704
+    L0 sdpa_bwd: |dq|=0.627652 |dk|=0.577842 |dv|=6.517652
+  timing: ane_fwd=216.5 io_fwd=0.0 rms=8.0 ane_bwd=247.8 io_bwd=1.3 silu=38.0 rms_bwd=15.9 cls=12.8 cblas_wait=0.0 dw_copy=10.2
+step 160  loss=1.9074  lr=3.00e-04  574.6ms/step  x[-1026.91,897.86] dy[-1.430e+01,2.112e+01] thermal=fair
+  grad_norm=1.6493  attn=0.6194 ffn=0.8910 embed=1.0370
+    L0 sdpa_bwd: |dq|=0.235740 |dk|=0.246918 |dv|=3.446975
+  timing: ane_fwd=214.4 io_fwd=0.0 rms=8.0 ane_bwd=253.6 io_bwd=1.4 silu=37.4 rms_bwd=16.1 cls=12.8 cblas_wait=0.0 dw_copy=10.3
+step 170  loss=2.0563  lr=3.00e-04  578.6ms/step  x[-927.27,1037.69] dy[-9.252e+00,1.015e+01] thermal=fair
+  grad_norm=1.7479  attn=0.6400 ffn=0.9890 embed=1.1375
+    L0 sdpa_bwd: |dq|=0.377360 |dk|=0.209471 |dv|=5.388142
+  timing: ane_fwd=349.5 io_fwd=0.0 rms=13.5 ane_bwd=403.3 io_bwd=2.2 silu=65.8 rms_bwd=29.6 cls=22.3 cblas_wait=0.0 dw_copy=18.3
+step 180  loss=1.8945  lr=3.00e-04  949.6ms/step  x[-924.76,966.63] dy[-8.541e+00,1.158e+01] thermal=fair
+  grad_norm=1.7085  attn=0.5888 ffn=0.9460 embed=1.0751
+    L0 sdpa_bwd: |dq|=0.323489 |dk|=0.206548 |dv|=3.746323
+  timing: ane_fwd=354.0 io_fwd=0.0 rms=13.7 ane_bwd=405.6 io_bwd=2.2 silu=65.9 rms_bwd=29.8 cls=22.3 cblas_wait=0.0 dw_copy=18.4
+step 190  loss=2.3809  lr=3.00e-04  958.1ms/step  x[-938.10,880.45] dy[-1.311e+01,1.321e+01] thermal=fair
+Time budget 120s reached at step 191 (120.1s elapsed)
+
+=== Efficiency Report ===
+Total steps:  191
+Train time:   111975ms (586.3ms/step)
+Wall time:    120.1s
+
+---
+final_loss:       2.380948
+val_loss:         1.924801
+training_seconds: 112.0
+total_seconds:    120.1
+total_tokens_M:   0.0
+num_steps:        191
+num_params_M:     361.8
+depth:            32
+lora_rank:        8
+mode:             cpu-only
