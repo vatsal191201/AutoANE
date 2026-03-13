@@ -4,7 +4,7 @@
 **Hardware:** Apple M-series (ANE + AMX)
 **Data:** TinyStories (20M tokens, 90/10 train/val split)
 **Time budget:** 120 seconds per condition
-**Version:** v5 (v4 audit + SmolLM2-360M scaling experiments)
+**Version:** v10 (v9 + param counting fix + deep code audit + multi-seed validation)
 
 ## Full Results (8 Conditions)
 
@@ -81,7 +81,7 @@
 **Key MeZO+LoRA findings (v7):**
 - **LoRA-split ANE: 708ms** vs full MeZO-ANE 1200ms (**41% faster**)
 - Transpose overhead **eliminated entirely** (478ms → 0ms) via adapter-as-input
-- Perturbation **193x faster** (579ms → 3ms) by only perturbing 2.3M adapter params
+- Perturbation **193x faster** (579ms → 3ms) by only perturbing 1.7M adapter+RMS params
 - **Rank 8 > rank 32** for MeZO: lower dim = lower ZO variance = better signal
 - ANE vs CPU gap narrowed from 47% (full) to 32% (split); remaining gap is ANE IO overhead
 - Correctness: step-0 loss_plus=2.1095 matches across all 4 LoRA modes
@@ -116,8 +116,8 @@ Compare: BP+LoRA CPU reaches val=1.972 in 2 min (Δval = 0.098).
 
 | # | Rank | Adapter Params | ms/step | Val@100 | Val@200 |
 |---|------|---------------|---------|---------|---------|
-| 18 | 8 | 2,294K | 537 | 2.069 | — |
-| 21 | 4 | 1,147K | 455 | 2.070 | 2.069 |
+| 18 | 8 | 1,638K | 537 | 2.069 | — |
+| 21 | 4 | 819K | 455 | 2.070 | 2.069 |
 
 Rank 4 is ~15% faster per step, similar convergence. Minimal difference at these ranks.
 
@@ -147,10 +147,10 @@ in ANE backward pass (io_fwd spikes to 600-964ms on ~3 steps out of 69).
 
 | # | Method | Adapter Params | ms/step | Val@100 | Val@250 |
 |---|--------|---------------|---------|---------|---------|
-| 24 | MeZO+LoRA-split r8 (attn) | 2,294K | 463 | 2.0594 | 2.0506 |
-| 33 | MeZO+LoRA-split r8 (attn+FFN) | 6,144K | 1006 | 2.0530 | **2.0474** |
+| 24 | MeZO+LoRA-split r8 (attn) | 1,638K | 463 | 2.0594 | 2.0506 |
+| 33 | MeZO+LoRA-split r8 (attn+FFN) | 4,342K | 1006 | 2.0530 | **2.0474** |
 
-FFN LoRA adds W1/W2/W3 adapters (6.1M total adapter params = 1.7% of model).
+FFN LoRA adds W1/W2/W3 adapters (4.3M total adapter params = 1.2% of model).
 FFN helps break through the attn-only plateau but at 2.2x step cost.
 **Wall-time tradeoff:** FFN gets to val=2.047 in 5 min; attn-only gets 2.045 in 10 min.
 The FFN adapters provide marginally better convergence but are slower per step.
@@ -158,6 +158,26 @@ The FFN adapters provide marginally better convergence but are slower per step.
 **Other v9 experiments:**
 - Full MeZO at lr=1e-4 (condition 29): val=2.074 at step 50, worse than LoRA
 - Epsilon sweep: eps=1e-3 is optimal (1e-2 and 1e-4 both slightly worse)
+
+### Multi-Seed Reproducibility (SmolLM2-360M, MeZO+LoRA-split r8) — v10
+
+All runs: lr=1e-4, eps=1e-3, rank=8, attn-only, CPU, 120s, clean checkpoint from HuggingFace.
+
+| Seed | Val@50 | Val@100 | Steps | Step-0 loss+ | Step-0 loss- |
+|------|--------|---------|-------|-------------|-------------|
+| 42 | 2.0631 | 2.0594 | 101 | 2.1095 | 2.0987 |
+| 123 | 2.0667 | 2.0632 | 138 | 1.9274 | 1.9284 |
+| 7 | 2.0661 | 2.0582 | 138 | 2.1359 | 2.1454 |
+| 999 | 2.0633 | 2.0583 | 134 | 1.9417 | 1.9454 |
+
+**Statistics:**
+- val@50:  mean=2.0648, std=0.0017, range=[2.0631, 2.0667]
+- val@100: mean=2.0598, std=0.0024, range=[2.0582, 2.0632]
+- Seed 42 exactly reproduces condition 24 (val@50=2.0631, val@100=2.0594)
+
+**Conclusion:** Validation loss is highly reproducible across seeds (std < 0.003).
+Step-0 loss varies by seed (expected — perturbation direction depends on seed), but
+converged val loss is seed-independent. MeZO+LoRA-split learning signal is real and robust.
 
 ## Per-Step Timing Breakdown
 
@@ -380,8 +400,9 @@ Steps/120s: 183  → 240   (+31% throughput)
    distribution shift from HF reference (1.94). The gap (0.30) is due to our shorter
    SEQ=256 vs HF's default and VocabMap compaction effects.
 
-4. **Single seed (42):** All conditions use seed=42. Multiple seeds needed for statistical
-   significance but impractical within current time budget.
+4. **Single seed (42) for most conditions:** Most conditions use seed=42. Multi-seed
+   validation (seeds 42/123/7/999) performed for MeZO+LoRA-split at lr=1e-4 (v10):
+   val@100 std=0.0024 across 4 seeds, confirming results are seed-independent.
 
 ### 8. ANE is slower than CPU for MeZO at ALL tested sizes (v5 FALSIFIED HYPOTHESIS)
 

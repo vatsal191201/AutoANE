@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-12/13
 **Auditor:** Comprehensive automated + manual review
-**Status:** All critical checks PASS (v7: MeZO+LoRA implementation + adapter-as-input verified)
+**Status:** All critical checks PASS (v10: deep code audit + param fix + multi-seed validation)
 
 ---
 
@@ -269,7 +269,7 @@ Tested on actual SmolLM2-135M weights (134.5M params):
 - Error/update ratio: 0.0022 (447x smaller)
 - **Negligible for correctness** ✅
 
-### 3.7 Multi-Seed Statistical Validation (v2)
+### 3.7 Multi-Seed Statistical Validation (v2, SmolLM2-135M)
 
 MeZO fine-tuning SmolLM2-135M, 300 steps each, CPU:
 
@@ -283,6 +283,32 @@ MeZO fine-tuning SmolLM2-135M, 300 steps each, CPU:
 
 Mean final loss: 2.12 ± 0.02 (std)
 All seeds show consistent decrease → **learning signal is real, not seed-dependent** ✅
+
+### 3.10 Multi-Seed Validation (v10, SmolLM2-360M, MeZO+LoRA-split)
+
+MeZO+LoRA-split r8, lr=1e-4, eps=1e-3, CPU, 120s. Clean checkpoint regenerated from
+HuggingFace before each run (to prevent checkpoint contamination from prior training).
+
+| Seed | Val@50 | Val@100 | Steps | Step-0 loss+ | Step-0 loss- |
+|------|--------|---------|-------|-------------|-------------|
+| 42 | 2.0631 | 2.0594 | 101 | 2.1095 | 2.0987 |
+| 123 | 2.0667 | 2.0632 | 138 | 1.9274 | 1.9284 |
+| 7 | 2.0661 | 2.0582 | 138 | 2.1359 | 2.1454 |
+| 999 | 2.0633 | 2.0583 | 134 | 1.9417 | 1.9454 |
+
+**Statistics:**
+- val@50:  mean=2.0648 ± 0.0017
+- val@100: mean=2.0598 ± 0.0024
+- Seed 42 exactly reproduces condition 24 ✅
+
+**Notes on experimental procedure:**
+- Step-0 loss_plus/loss_minus vary by seed (expected: perturbation direction is seed-dependent)
+- Step counts vary (101-138) due to system load; does not affect val at fixed step numbers
+- Checkpoint contamination discovered during earlier runs: step-0 verification overwrote
+  checkpoint at step 1, causing subsequent experiments to resume from step 2. Fixed by
+  regenerating checkpoint from HF before each clean run.
+
+**Conclusion:** Val loss std < 0.003 across 4 seeds → **highly reproducible** ✅
 
 ### 3.8 IOSurface Transpose Overhead Microbenchmark (v3)
 
@@ -508,7 +534,7 @@ while dispatch overhead grows linearly, so ANE should eventually win.
 **Answer:** YES. Two modes implemented and verified.
 
 **Mode 1: MeZO+LoRA merge** (--lora --lora-rank 8)
-- Perturbs only LoRA A/B matrices + RMS norms (~2.3M params vs 361.8M full)
+- Perturbs only LoRA A/B matrices + RMS norms (~1.7M params vs 361.8M full)
 - Merges W_eff = W_base + B@A before ANE dispatch
 - Only restages Wq/Wk/Wv/Wo (RETRANSPOSE_ATTN_ONLY — skips W1/W2/W3 = 74% reduction)
 - Result: 807ms/step ANE (vs 1200ms full MeZO-ANE = 33% faster)
@@ -570,6 +596,33 @@ while dispatch overhead grows linearly, so ANE should eventually win.
 - Backprop: 4,133 MB
 - At 360M, both fit comfortably on 8GB devices
 - Memory crossover (backprop won't fit, MeZO will) estimated at ~600M-1B params
+
+### 5.7 Parameter Counting Bug Fix (v10 audit)
+
+**Symptom:** LoRA adapter param count reported as 2293.8K (attn-only) and 6144.0K (attn+FFN).
+**Root cause:** The counting formula in train_mezo.m treated Bk[KV_DIM,rank] and Bv[KV_DIM,rank]
+as DIM×rank instead of KV_DIM×rank. Similarly, FFN formula had an extra HIDDEN×rank term.
+
+**Code (old, line 415):**
+```c
+lora_params += 2 * r * DIM * 3 + 2 * r * Q_DIM + 2 * r * KV_DIM * 2;  // = 71680/layer
+```
+
+**Correct formula:**
+```c
+lora_params += r*DIM*3 + Q_DIM*r + KV_DIM*r*2 + r*Q_DIM + DIM*r;  // = 51200/layer
+```
+
+**Impact:**
+| Config | Reported (wrong) | Actual (correct) | Overcount |
+|--------|-----------------|------------------|-----------|
+| Attn-only r8 | 2,293.8K | 1,638.4K | +40% |
+| Attn+FFN r8 | 6,144.0K | 4,341.8K | +41% |
+
+**NOT a correctness bug:** Allocations in config.h use the correct sizes. Training is unaffected.
+This is a reporting/documentation bug only. Fixed in v10.
+
+**Verification:** After fix, step-0 loss_plus=2.1095, loss_minus=2.0987 — identical to pre-fix.
 
 ---
 
@@ -643,7 +696,7 @@ Accuracy: MeZO+LoRA on LLaMA-7B SST-2=95.0% (vs full-param MeZO SST-2=92.7%).
 
 ### A13: MeZO+LoRA rank 8 is optimal for ZO fine-tuning on ANE
 **Status: VALIDATED** by v7 experiments.
-Rank 8 (2.3M adapter params): val_loss=2.068, 576ms/step CPU, 708ms/step ANE (split).
+Rank 8 (1.6M adapter params): val_loss=2.068, 576ms/step CPU, 708ms/step ANE (split).
 Rank 32 (9.2M adapter params): near-zero gradient signal, 1142ms/step, no convergence.
 Lower rank = fewer perturbed dimensions = lower ZO variance = better gradient estimate.
 MeZO paper Table 4 confirms rank 8 often matches or beats rank 32 for ZO.
@@ -652,7 +705,7 @@ MeZO paper Table 4 confirms rank 8 often matches or beats rank 32 for ZO.
 **Status: VALIDATED** by v7 experiments.
 LoRA-split mode: base weights baked at init, LoRA correction on CPU via lora_addmm().
 Transpose overhead: 478ms → 0ms (eliminated entirely).
-Perturbation overhead: 579ms → 3ms (193x faster, only 2.3M params).
+Perturbation overhead: 579ms → 3ms (193x faster, only 1.7M params).
 ANE vs CPU gap: 47% (full MeZO) → 32% (LoRA-split). Remaining gap is ANE dispatch IO.
 
 ### A15: BP+LoRA ANE should be faster than BP+LoRA CPU
@@ -667,7 +720,7 @@ Root cause is NOT thermal — it's ANE backward pass IO overhead and memory bus 
 MeZO+LoRA with lr=1e-4 converges 10x faster than lr=1e-5 on val loss.
 At lr=3e-4, convergence is faster initially but shows instability (val bounces).
 **Best LR for MeZO+LoRA-split: 1e-4** (10x higher than full MeZO's optimal 1e-5).
-This is expected: LoRA reduces effective parameter count from 361.8M to 2.3M,
+This is expected: LoRA reduces effective parameter count from 361.8M to 1.7M (incl. RMS),
 and ZO LR scales as n/(d+n-1) × SGD_LR — smaller d allows proportionally higher LR.
 
 ### A17: MeZO+LoRA val loss will keep improving with more steps
@@ -731,7 +784,7 @@ or P-GAP/AGZO for better gradient estimation.
 - [x] v7: Confirmed rank 8 >> rank 32 for MeZO (lower ZO variance)
 - [x] v7: LoRA-split ANE achieves 708ms/step (41% faster than 1200ms full MeZO-ANE)
 - [x] v7: Eliminated transpose overhead entirely (478ms → 0ms) via adapter-as-input
-- [x] v7: Reduced perturbation time 193x (579ms → 3ms) by perturbing only 2.3M adapter params
+- [x] v7: Reduced perturbation time 193x (579ms → 3ms) by perturbing only 1.7M adapter params
 - [x] v7: Narrowed ANE vs CPU gap from 47% to 32%
 - [x] v8: MeZO+LoRA LR sweep (1e-5, 5e-5, 1e-4, 3e-4) — best LR is 1e-4 (10x faster)
 - [x] v8: Long convergence test (600s, 1150 steps, lr=1e-4) — val plateaus at 2.045 after 650 steps
@@ -746,6 +799,10 @@ or P-GAP/AGZO for better gradient estimation.
 - [x] v9: Full MeZO lr=1e-4 — worse than LoRA (val=2.074 at step 50)
 - [x] v9: Epsilon sweep — eps=1e-3 optimal, 1e-2 and 1e-4 both slightly worse
 - [x] v9: 5 new conditions (29-33)
+- [x] v10: Parameter counting bug fix (reporting only, not correctness)
+- [x] v10: Deep code audit — lora_addmm, perturb_lora_weights, FFN split mode, forward pass
+- [x] v10: Cross-checked all 14 raw logs (conditions 20-33) against analysis.md tables
+- [x] v10: Multi-seed validation (4 seeds) for MeZO+LoRA-split at 360M — val@100 std=0.0024
 
 ### Next Steps
 - [x] ~~**MeZO + LoRA on ANE (HIGHEST PRIORITY):**~~ **DONE in v7.** Implemented merge and
@@ -763,7 +820,8 @@ or P-GAP/AGZO for better gradient estimation.
 - [ ] **MeZO-SVRG + LoRA:** Variance-reduced ZO (ICML 2024) converges 2x faster with 20%
       accuracy improvement. Combined with LoRA on ANE, this addresses both speed and
       convergence weaknesses simultaneously.
-- [ ] **Multiple seeds for all conditions:** 3-5 seeds per condition for error bars.
+- [x] **Multi-seed validation for MeZO+LoRA-split (v10):** 4 seeds (42/123/7/999), val@100 std=0.0024
+- [ ] **Multiple seeds for remaining conditions:** 3-5 seeds per condition for error bars.
 - [ ] **Push to remote:** 13+ unpushed commits on main.
 
 ---

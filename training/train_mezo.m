@@ -412,7 +412,8 @@ int main(int argc, char *argv[]) {
                 for (size_t i = 0; i < (size_t)r * DIM; i++) lora_layers[L].Av[i] = a_scale * (2 * drand48() - 1);
                 for (size_t i = 0; i < (size_t)r * Q_DIM; i++) lora_layers[L].Ao[i] = a_scale * (2 * drand48() - 1);
                 // B matrices stay zero (calloc)
-                lora_params += 2 * (size_t)r * DIM * 3 + 2 * (size_t)r * Q_DIM + 2 * (size_t)r * KV_DIM * 2;
+                // Aq[r,DIM]+Bq[Q_DIM,r] + Ak[r,DIM]+Bk[KV_DIM,r] + Av[r,DIM]+Bv[KV_DIM,r] + Ao[r,Q_DIM]+Bo[DIM,r]
+                lora_params += (size_t)r * DIM * 3 + (size_t)Q_DIM * r + (size_t)KV_DIM * r * 2 + (size_t)r * Q_DIM + (size_t)DIM * r;
                 if (lora_ffn) {
                     memcpy(lora_layers[L].W1_base, lw[L].W1, W1_SZ * 4);
                     memcpy(lora_layers[L].W2_base, lw[L].W2, W2_SZ * 4);
@@ -424,7 +425,8 @@ int main(int argc, char *argv[]) {
                     float a2_scale = 1.0f / sqrtf((float)r);
                     for (size_t i = 0; i < (size_t)r * HIDDEN; i++) lora_layers[L].A2[i] = a2_scale * (2 * drand48() - 1);
                     // B matrices stay zero (calloc)
-                    lora_params += 2 * (size_t)r * DIM * 2 + 2 * (size_t)r * HIDDEN + (size_t)HIDDEN * r * 2 + (size_t)DIM * r;
+                    // A1[r,DIM]+B1[HIDDEN,r] + A2[r,HIDDEN]+B2[DIM,r] + A3[r,DIM]+B3[HIDDEN,r]
+                    lora_params += (size_t)r * DIM * 2 + (size_t)HIDDEN * r * 2 + (size_t)r * HIDDEN + (size_t)DIM * r;
                 }
             }
             size_t rms_params = (size_t)NLAYERS * 2 * DIM + DIM;
