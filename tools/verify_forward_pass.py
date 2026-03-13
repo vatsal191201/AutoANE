@@ -40,7 +40,7 @@ def build_vocab_map(token_data, full_vocab):
 def forward_full_sequence(tokens_np, config, layers, rms_final, embed):
     """Forward pass returning logits for ALL positions. tokens: [seq] int."""
     c = config
-    res_alpha = 1.0 / math.sqrt(2.0 * c['n_layers'])
+    res_alpha = c.get('res_alpha', 1.0)  # 1.0 for pretrained, 1/sqrt(2*n) for from-scratch
     seq = len(tokens_np)
 
     x = embed[tokens_np]  # [seq, dim]

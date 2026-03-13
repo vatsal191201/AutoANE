@@ -107,12 +107,12 @@ def rmsnorm(x, w):
     return (x / np.sqrt(np.mean(x * x, axis=-1, keepdims=True) + 1e-5)) * w
 
 
-def apply_rope(x, n_heads, hd):
+def apply_rope(x, n_heads, hd, rope_theta=10000.0):
     """RoPE with interleaved (re, im) pairs. x: [seq, n_heads*hd] -> [seq, n_heads*hd]"""
     seq = x.shape[0]
     x = x.reshape(seq, n_heads, hd)
 
-    freqs = 1.0 / (10000.0 ** (2.0 * np.arange(hd // 2, dtype=np.float32) / hd))
+    freqs = 1.0 / (rope_theta ** (2.0 * np.arange(hd // 2, dtype=np.float32) / hd))
     theta = np.arange(seq, dtype=np.float32)[:, None] * freqs[None, :]  # [seq, hd//2]
     cos_t = np.cos(theta)[:, None, :]  # [seq, 1, hd//2]
     sin_t = np.sin(theta)[:, None, :]
@@ -161,7 +161,8 @@ def silu(x):
 def forward_last(tokens, config, layers, rms_final, embed):
     """Forward pass returning logits for the LAST token only."""
     c = config
-    res_alpha = 1.0 / math.sqrt(2.0 * c['n_layers'])
+    res_alpha = c.get('res_alpha', 1.0)  # 1.0 for pretrained, 1/sqrt(2*n) for from-scratch
+    rope_theta = c.get('rope_theta', 10000.0)
 
     x = embed[tokens]  # [seq, dim]
 
@@ -170,8 +171,8 @@ def forward_last(tokens, config, layers, rms_final, embed):
         Q = xn @ lw['Wq'].T
         K = xn @ lw['Wk'].T
         V = xn @ lw['Wv'].T
-        Q = apply_rope(Q, c['n_heads'], c['hd'])
-        K = apply_rope(K, c['n_kv_heads'], c['hd'])
+        Q = apply_rope(Q, c['n_heads'], c['hd'], rope_theta)
+        K = apply_rope(K, c['n_kv_heads'], c['hd'], rope_theta)
         o = attention(Q, K, V, c['n_heads'], c['n_kv_heads'], c['hd']) @ lw['Wo'].T
         x = x + res_alpha * o
 
@@ -252,6 +253,10 @@ def main():
     p.add_argument('--top-k', type=int, default=40, help='Top-k sampling (0=full)')
     p.add_argument('--seed', type=int, default=None, help='Random seed')
     p.add_argument('--raw', action='store_true', help='Print raw token IDs instead of text')
+    p.add_argument('--rope-theta', type=float, default=10000.0,
+                   help='RoPE theta (10000=Llama, 100000=SmolLM2, 1000000=Qwen3)')
+    p.add_argument('--from-scratch', action='store_true',
+                   help='Use DeepNet residual scaling (1/sqrt(2*n_layers)) for from-scratch models')
     args = p.parse_args()
 
     # Find checkpoint
@@ -285,6 +290,9 @@ def main():
     # Load model
     print(f"Loading {ckpt}...", file=sys.stderr)
     config, layers, rms_final, embed = load_checkpoint(ckpt)
+    config['rope_theta'] = args.rope_theta
+    if args.from_scratch:
+        config['res_alpha'] = 1.0 / math.sqrt(2.0 * config['n_layers'])
     n_params = sum(w.size for L in layers for w in L.values()) + rms_final.size + embed.size
     print(f"  {config['n_layers']}L dim={config['dim']} | {n_params/1e6:.1f}M params | "
           f"step {config['step']}", file=sys.stderr)

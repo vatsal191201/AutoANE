@@ -120,10 +120,12 @@ static float cross_entropy_loss(float *dlogits, const float *logits, const uint1
         float sum; vDSP_sve(drow, 1, &sum, (vDSP_Length)V);
         float inv_sum = 1.0f / sum;
         vDSP_vsmul(drow, 1, &inv_sum, drow, 1, (vDSP_Length)V);
-        // Loss + gradient
+        // Loss via log-sum-exp (numerically stable, no epsilon guard needed)
+        // loss_t = -logit[target] + max + log(sum(exp(logit - max)))
+        // At this point drow[] already contains exp(logit - max), sum = sum(exp)
         int tgt = targets[t];
         if (tgt < 0 || tgt >= V) { fprintf(stderr, "FATAL: target[%d]=%d OOB (vocab=%d)\n", t, tgt, V); abort(); }
-        total_loss -= logf(drow[tgt] + 1e-10f);
+        total_loss += -(row[tgt] - maxv) + logf(sum);
         drow[tgt] -= 1.0f;
         vDSP_vsmul(drow, 1, &invS, drow, 1, (vDSP_Length)V);
     }

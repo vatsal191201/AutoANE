@@ -4,11 +4,19 @@
 **Hardware:** Apple M-series (ANE + AMX)
 **Data:** TinyStories (20M tokens, 90/10 train/val split)
 **Time budget:** 120 seconds per condition
-**Version:** v11 (v10 + RoPE theta bug fix + HuggingFace baseline validation)
+**Version:** v12 (v11 + CE loss epsilon guard bug fix)
 
 **v11 NOTE:** All SmolLM2 experiments (conditions 5-37) used incorrect RoPE theta=10000 instead
 of the correct 100000. Absolute loss values are ~0.05 inflated. Relative comparisons between
 methods are unaffected (all used the same theta). See research_audit.md §5.9 for details.
+
+**v12 NOTE:** All experiments used `logf(p + 1e-10)` in cross-entropy loss, which underestimates
+loss by ~1.7% when any position has very low target probability. Fixed to log-sum-exp form.
+The backward pass gradient (`dL/d_logit = p - 1`) was correct, but MeZO's projected gradient
+`(L+ - L-) / 2ε` had ~3.9% average bias because the tiny variation in CE bias (~0.0005%)
+between +/- perturbations gets amplified 500x by the `1/(2ε)` factor. This is small relative
+to MeZO's inherent O(d) variance. Relative comparisons remain valid. See research_audit.md
+§5.11 for details.
 
 ## Full Results (8 Conditions)
 
