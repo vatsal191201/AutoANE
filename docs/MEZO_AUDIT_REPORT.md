@@ -28,13 +28,21 @@
 
 We implemented MeZO (Memory-Efficient Zeroth-Order Optimizer, NeurIPS 2023) on Apple's Neural Engine (ANE) and evaluated it across 37 experimental conditions on three model sizes. This is the first known deployment of zeroth-order LLM training on any NPU hardware.
 
-**Core results:**
+**Core results (measured 2026-03-14, SmolLM2-360M, 120s budget, clean HF checkpoint):**
+
+| Method | ms/step | Steps | Val@50 | RSS (MB) |
+|--------|---------|-------|--------|----------|
+| MeZO+LoRA-split CPU | **593** | **173** | 2.0666 | 2,028 |
+| MeZO full CPU | 1,062 | 104 | 2.0698 | **1,717** |
+| MeZO full ANE | 1,332 | 87 | 2.0699 | 3,657 |
+| Backprop CPU | 910 | 38 | — | 6,664 |
+
 - MeZO works correctly on ANE — losses match CPU mode within perturbation noise
-- MeZO-ANE is structurally slower than MeZO-CPU at all tested sizes (32-47% overhead)
-- MeZO+LoRA-split eliminates the transpose bottleneck (478ms → 0ms), reducing ANE overhead to 32%
-- MeZO uses 2.0-2.4x less memory than backprop, but converges ~100x slower per step
+- MeZO-ANE is 25% slower than MeZO-CPU (1,332 vs 1,062 ms/step) due to 449ms/step IOSurface transpose
+- MeZO+LoRA-split eliminates the transpose bottleneck entirely (449ms → 0ms) and is the fastest variant
+- MeZO uses 3.3x less memory than backprop (1,717 vs 6,664 MB), but converges ~100x slower per step
 - The memory advantage only becomes critical at ~1B+ params (both methods fit at 360M)
-- 3 critical bugs were found and fixed during the audit (DeepNet, CE loss, CLI LR override)
+- 4 bugs found and fixed during the audit (DeepNet, CE loss, CLI LR override, RoPE theta)
 
 ---
 
@@ -426,13 +434,19 @@ The MeZO paper (Table 1) validates MeZO+LoRA on OPT-13B: SST-2 89.6%, RTE 67.9%,
 
 ### 10.3 Related NPU Training Work
 
-| Paper | Contribution | Relation to Our Work |
-|-------|-------------|---------------------|
-| Orion (arXiv 2026) | ANE training, adapter-as-input, 20 constraints | Same hardware, our LoRA-split is similar |
-| MobiZO (EMNLP 2025) | MP-LoRA on Qualcomm NPU, 4.3x speedup | Same concept (ZO+LoRA on NPU) |
-| AMD NPU Train (arXiv 2025) | First NPU training (GPT-2 124M) | Peer comparison |
-| P-GAP (arXiv 2025) | Gradient-aligned perturbation, 5.2x convergence | Potential future improvement |
-| AGZO (arXiv 2026) | Activation-guided subspace perturbation | Potential future improvement |
+| Paper | Venue | Contribution | Relation to Our Work |
+|-------|-------|-------------|---------------------|
+| [Orion](https://arxiv.org/abs/2603.06728) | arXiv 2026 | ANE training, adapter-as-input, 20 constraints, 3x via 1x1 conv | Same hardware, our LoRA-split is similar to adapter-as-input |
+| [MobiZO](https://aclanthology.org/2025.emnlp-main.1022/) | EMNLP 2025 | MP-LoRA on Qualcomm NPU, 4.3x speedup via parallelized perturbations | Same concept (ZO+LoRA on NPU), deployed on ExecuTorch |
+| [ZO2](https://arxiv.org/abs/2503.12668) | arXiv 2025 | CPU-GPU offloading for ZO, fine-tunes OPT-175B on 18GB GPU | Same principle (ZO for memory-constrained), GPU-focused |
+| [DistZO2](https://arxiv.org/abs/2507.03211) | arXiv 2025 | Distributed parallel ZO2 | Extension of ZO2 to multi-GPU |
+| [MobiLLM](https://arxiv.org/abs/2502.20421) | arXiv 2025 | Server-assisted side tuning on mobile | Alternative to on-device ZO |
+| [AMD NPU Train](https://arxiv.org/abs/2504.03083) | arXiv 2025 | First NPU training (GPT-2 124M) | Peer comparison on different NPU |
+| [Sparse MeZO](https://arxiv.org/abs/2402.15751) | ICLR 2025 | 0.1% sparse subset, 3.5x speedup | Potential future improvement |
+| [SubZero](https://openaccess.thecvf.com/content/ICCV2025/papers/Yu_Zeroth-Order_Fine-Tuning_of_LLMs_in_Random_Subspaces_ICCV_2025_paper.pdf) | ICCV 2025 | Random subspace ZO, works with LoRA | Potential future improvement |
+| [P-GAP](https://arxiv.org/abs/2510.18228) | arXiv 2025 | Gradient-aligned perturbation, 5.2x convergence | Potential future improvement |
+| [AGZO](https://arxiv.org/abs/2601.17261) | arXiv 2026 | Activation-guided subspace perturbation | Potential future improvement |
+| [ZO Fine-tuner](https://arxiv.org/abs/2510.00419) | arXiv 2025 | Learned adaptive perturbation strategy | Potential future improvement |
 
 ### 10.4 Architecture References
 
