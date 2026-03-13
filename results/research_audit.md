@@ -46,8 +46,12 @@ For unbiasedness: E[g_hat] = E[z z^T] * grad_L
 **Both satisfy the unbiasedness condition.** Rademacher actually has LOWER variance
 (E[z_i^4]=1 vs E[z_i^4]=3 for Gaussian), making it slightly better.
 
-This is confirmed in SPSA literature: "a good choice for each delta is the Rademacher
-distribution" (Spall, IEEE Trans. 2000).
+**Important nuance (v10 literature verification):** MeZO's gradient estimator is a
+"randomized finite difference" / ZO-SGD estimator, NOT classical SPSA (Spall 1992).
+Classical SPSA uses a 1/z-weighted estimator requiring E[1/z_i^2] < ∞, which Gaussian
+does NOT satisfy (but Rademacher does). MeZO's estimator g_hat = [(L+ - L-)/(2ε)] * z
+does not have the 1/z term, so both distributions are valid for MeZO specifically.
+Rademacher is optimal for classical SPSA (Sadegh & Spall 1997) and equally valid for MeZO.
 
 **Validated experimentally:** See Section 3.3 below.
 
@@ -524,7 +528,7 @@ Added `--no-deepnet` flag to train.m.
 3. Dual-buffer (fp32 + fp16 shadow): +538MB memory, saves transpose not staging → ~434ms.
 
 **Root cause:** For 135M params with 7 separate ANE dispatches per layer, per-dispatch IO
-overhead (~50μs × 210 = ~10ms per fwd) makes ANE forward slower than CPU AMX.
+overhead (~95μs × 210 = ~20ms per fwd) makes ANE forward slower than CPU AMX.
 This is a model-size dependent limitation: at 360M+ params, matmul time grows quadratically
 while dispatch overhead grows linearly, so ANE should eventually win.
 
@@ -588,7 +592,7 @@ while dispatch overhead grows linearly, so ANE should eventually win.
 **Why the hypothesis failed:**
 1. Transpose overhead scaled superlinearly: 99ms (135M) → 478ms (360M) = 4.8x for 2.69x params
 2. ANE forward is STILL slower than CPU: 525ms vs 428ms (even ignoring transpose)
-3. Per-dispatch IO overhead (~50μs) persists regardless of matmul size
+3. Per-dispatch IO overhead (~95μs) persists regardless of matmul size
 4. Larger weight matrices → more data to transpose+stage per restage cycle
 
 **Memory comparison:**
@@ -692,14 +696,16 @@ MeZO's per-step weight perturbation and ANE's preference for static baked weight
 **Status: INCORRECT.** The MeZO paper tests MeZO+LoRA (Section 4.4), which only perturbs
 LoRA adapter parameters. With rank 32 on 360M: ~7.9M adapter params (2.2% of full model).
 This reduces perturbation time by ~47x and eliminates base weight restaging entirely.
-Accuracy: MeZO+LoRA on LLaMA-7B SST-2=95.0% (vs full-param MeZO SST-2=92.7%).
+Accuracy: MeZO+LoRA on OPT-13B SST-2=89.6% (Table 1, original paper).
+Note: The MeZO paper does NOT test on LLaMA; all experiments use OPT and RoBERTa families.
 
 ### A13: MeZO+LoRA rank 8 is optimal for ZO fine-tuning on ANE
 **Status: VALIDATED** by v7 experiments.
 Rank 8 (1.6M adapter params): val_loss=2.068, 576ms/step CPU, 708ms/step ANE (split).
 Rank 32 (9.2M adapter params): near-zero gradient signal, 1142ms/step, no convergence.
 Lower rank = fewer perturbed dimensions = lower ZO variance = better gradient estimate.
-MeZO paper Table 4 confirms rank 8 often matches or beats rank 32 for ZO.
+Theory: lower dim = lower ZO variance (Lemma 2). No published rank 8 vs 32 comparison
+for MeZO specifically, but SubZero and MaZO confirm the dimension-dependence principle.
 
 ### A14: Adapter-as-input (LoRA-split) eliminates ANE restaging overhead
 **Status: VALIDATED** by v7 experiments.
@@ -815,7 +821,7 @@ or P-GAP/AGZO for better gradient estimation.
 - [ ] **MobiZO MP-LoRA (v6 finding):** Parallelize +ε/-ε in single forward pass.
       4.3x speedup, already deployed on Qualcomm NPU. Directly applicable to ANE.
 - [ ] **1x1 convolution matmuls:** ANE is a convolution engine. Expressing Linear layers as
-      1x1 Conv2d yields 3x throughput (Apple ML Research documentation). Currently using
+      1x1 Conv2d yields ~3x throughput (Orion paper, arXiv:2603.06728). Currently using
       matmul dispatches. This alone could make ANE forward faster than CPU.
 - [ ] **MeZO-SVRG + LoRA:** Variance-reduced ZO (ICML 2024) converges 2x faster with 20%
       accuracy improvement. Combined with LoRA on ANE, this addresses both speed and
@@ -826,7 +832,28 @@ or P-GAP/AGZO for better gradient estimation.
 
 ---
 
-## 8. Sources
+## 8. Literature Verification (v10)
+
+Cross-checked claims against original papers via web search. Key corrections:
+
+| Claim | Verdict | Action |
+|-------|---------|--------|
+| MeZO Algorithm 1 steps | CONFIRMED | — |
+| Rademacher valid for MeZO's ZO-SGD | CONFIRMED | Clarified: not valid for classical SPSA (Spall 1992) |
+| MeZO+LoRA on "LLaMA-7B SST-2=95%" | **INCORRECT** | Removed — MeZO paper has NO LLaMA experiments |
+| ZO LR scales as n/(d+n-1) × SGD_LR | CONFIRMED | Equation 3 in paper |
+| Dimension-free convergence (Theorem 1) | CONFIRMED | — |
+| ANE dispatch overhead "~50μs" | **INCORRECT** | Corrected to ~95μs (maderix/Orion measurements) |
+| 1x1 Conv2d "3x throughput" from Apple blog | **INCORRECT SOURCE** | 3x from Orion paper, not Apple blog |
+| MobiZO 4.3x speedup (EMNLP 2025) | CONFIRMED | vs MeZO full-param (not MeZO+LoRA) |
+| P-GAP 22.4% GPU hours (arXiv:2510.18228) | CONFIRMED | Table 5, vs MeZO+LoRA on SQuAD |
+| Orion adapter-as-input (arXiv:2603.06728) | CONFIRMED | — |
+| LoRA init: A ~ Gaussian, B = 0 | CONFIRMED | Paper says "random Gaussian" (no specific sigma) |
+| MeZO default epsilon = 1e-3 | CONFIRMED | Code default in princeton-nlp/MeZO |
+
+---
+
+## 9. Sources
 
 - [MeZO: Fine-Tuning Language Models with Just Forward Passes (NeurIPS 2023)](https://arxiv.org/abs/2305.17333)
 - [MeZO GitHub Repository](https://github.com/princeton-nlp/MeZO)

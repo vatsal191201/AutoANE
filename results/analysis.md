@@ -425,7 +425,7 @@ than the 32% gap at 135M (501 vs 379 ms/step). The gap WIDENED, not narrowed.
   (larger matrices → more data to copy per vDSP_mtrans + cvt_f32_f16)
 
 Even without transpose, ANE forward (525ms) is still slower than CPU forward (428ms)
-at 360M. The per-dispatch IO overhead (~50μs × 224 dispatches = ~11ms per fwd pass)
+at 360M. The per-dispatch IO overhead (~95μs × 224 dispatches = ~21ms per fwd pass)
 persists, and ANE matmul throughput does not compensate.
 
 **Conclusion: MeZO-on-ANE is structurally slower than MeZO-on-CPU for any model that
@@ -462,7 +462,7 @@ Full-parameter MeZO has a fundamental architectural mismatch with ANE:
    not changing every step
 3. **ANE's native primitive is convolution** → 1x1 conv yields 3x throughput vs matmul,
    but our implementation uses matmul dispatches
-4. **Per-dispatch IO overhead (~50μs)** accumulates: 7 dispatches × L layers × 2 fwd passes
+4. **Per-dispatch IO overhead (~95μs)** accumulates: 7 dispatches × L layers × 2 fwd passes
    = 420+ dispatches/step at 360M
 
 These costs are inherent to full-parameter ZO + ANE, not optimization bugs.
@@ -487,9 +487,10 @@ The research literature points to a fundamentally better approach: **MeZO + LoRA
    deep graph pipelining achieves near-peak 19 TFLOPS at 2.8W.
 5. **Memory stays inference-only** → MeZO's key advantage preserved.
 
-**MeZO + LoRA is proven:** The original MeZO paper (NeurIPS 2023) tests this:
-- MeZO+LoRA on LLaMA-7B: SST-2 95.0%, RTE 74.9%, COPA 84.3%
-- MeZO+LoRA on OPT-13B: SST-2 89.6%, BoolQ 73.8%
+**MeZO + LoRA is proven:** The original MeZO paper (NeurIPS 2023, Table 1) tests this:
+- MeZO+LoRA on OPT-13B: SST-2 89.6%, RTE 67.9%, COPA 84.0%
+- Best MeZO variant on OPT-13B: SST-2 91.4%, RTE 66.1%, COPA 88.0%
+- (Note: the paper does NOT test on LLaMA; all experiments use OPT and RoBERTa families)
 - The ZO-Bench paper (ICML 2024) confirms: "LoRA shows consistent robustness
   when paired with various ZO algorithms"
 
@@ -528,8 +529,9 @@ competitive with backprop-CPU (602ms), while using inference-only memory (~1.5GB
    gradients to backprop but with 62% less memory (136MB vs 361MB on Qwen2.5-0.5B).
    If backprop gradients fit, MeSP dominates MeZO on both speed and accuracy.
 
-6. **1x1 convolution** (Apple ML Research + Orion): ANE's native primitive is convolution.
-   Expressing Linear as 1x1 Conv2d yields 3x throughput. Combined with
+6. **1x1 convolution** (Apple ML Research recommends Conv2d; Orion paper measures 3x):
+   ANE optimized for convolution. Expressing Linear as 1x1 Conv2d yields ~3x throughput
+   (Orion, arXiv:2603.06728, Table 1). Combined with
    adapter-as-input, this is the key to making ANE forward faster than CPU.
 
 **Optimal ANE training stack (proposed):**
