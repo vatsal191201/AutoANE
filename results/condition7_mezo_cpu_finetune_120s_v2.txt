@@ -1,0 +1,34 @@
+=== MeZO (Zeroth-Order) Training: SmolLM2-135M (30 layers, GQA 9/3) ===
+dim=576 q_dim=576 kv_dim=192 hd=64 hidden=1536 seq=256 vocab=49152
+Params: 134.5M | Mode: CPU-only
+MeZO: lr=1e-05 epsilon=0.001 seed=42 val_every=500
+Memory: ~544MB (inference only, no gradients/optimizer)
+[RESUMED from step 0, loss=0.0000]
+  (using CLI lr=1e-05 instead of checkpoint lr)
+Tokens: 20000000 (train: 18000000, val: 2000000)
+Vocab compaction: 49152 -> 16893 active
+CPU-only mode: skipping ANE kernel compilation
+
+Starting MeZO training...
+
+step 0  loss_plus=2.2467  loss_minus=2.2464  proj_grad=0.186801  lr=1.00e-05  step_ms=389 (fwd=233 perturb=154 transpose=0)
+step 100  loss_plus=1.8954  loss_minus=1.9077  proj_grad=-6.144583  lr=1.00e-05  step_ms=380 (fwd=228 perturb=149 transpose=0)
+step 200  loss_plus=2.0814  loss_minus=2.0650  proj_grad=8.185625  lr=1.00e-05  step_ms=377 (fwd=225 perturb=149 transpose=0)
+step 300  loss_plus=2.1170  loss_minus=2.1192  proj_grad=-1.113057  lr=1.00e-05  step_ms=376 (fwd=227 perturb=147 transpose=0)
+Time budget 120s reached at step 317 (120.2s elapsed)
+
+=== MeZO Efficiency Report ===
+Total steps:  317
+Train time:   120230ms (379.3ms/step)
+Wall time:    120.2s
+
+---
+final_loss_plus:  1.973836
+final_loss_minus: 1.962051
+training_seconds: 120.2
+total_seconds:    120.2
+num_steps:        317
+num_params_M:     134.5
+mode:             mezo-cpu
+epsilon:          0.001
+lr:               1e-05

@@ -353,8 +353,10 @@ int main(int argc, char *argv[]) {
         printf("Vocab compaction: %d -> %d active\n", VOCAB, CV);
         float *cembed = vocab_compact_embed(embed, &vm, DIM);
 
-        // Residual scaling (DeepNet: scaled residual connections)
-        float res_alpha = 1.0f / sqrtf(2.0f * NLAYERS);
+        // Residual scaling: DeepNet for from-scratch, standard (1.0) for pretrained
+        // SmolLM2/Llama models use alpha=1.0; DeepNet scaling only valid when
+        // weights are initialized with matching 1/sqrt(2L) scale on Wo/W2
+        float res_alpha = from_scratch ? 1.0f / sqrtf(2.0f * NLAYERS) : 1.0f;
 
         // === Forward buffers (reused across layers, no per-layer caching) ===
         float *x_cur = (float*)safe_malloc(SEQ * DIM * 4);
@@ -469,8 +471,7 @@ int main(int argc, char *argv[]) {
                 { IOSurfaceLock(pls[L].w2Fwd_in, 0, NULL); \
                   _Float16 *buf = (_Float16*)IOSurfaceGetBaseAddress(pls[L].w2Fwd_in); \
                   for (int h = 0; h < HIDDEN; h++) \
-                      for (int d = 0; d < DIM; d++) \
-                          buf[h*W2_FWD_SP + SEQ + d] = (_Float16)lw[L].W2[d*HIDDEN + h]; \
+                      cvt_f32_f16(buf + h*W2_FWD_SP + SEQ, W2t_buf[L] + h*DIM, DIM); \
                   IOSurfaceUnlock(pls[L].w2Fwd_in, 0, NULL); } \
             } \
         } while(0)
@@ -744,8 +745,9 @@ int main(int argc, char *argv[]) {
             free(cembed);
             cembed = vocab_compact_embed(embed, &vm, DIM);
 
-            // 7. Re-transpose for next step (ANE only)
-            if (!cpu_only) {
+            // 7. Defer re-transpose: next step's +eps perturbation will restage anyway.
+            //    Only restage here if validation is about to run (needs updated weights).
+            if (!cpu_only && val_every > 0 && (step + 1) % val_every == 0 && val_tokens > SEQ + 1) {
                 t0 = mach_absolute_time();
                 RETRANSPOSE_AND_STAGE();
                 t_transpose += tb_ms(mach_absolute_time() - t0);

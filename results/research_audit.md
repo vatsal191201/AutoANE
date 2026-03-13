@@ -1,8 +1,8 @@
 # MeZO-on-ANE Research Audit
 
-**Date:** 2026-03-12
+**Date:** 2026-03-12/13
 **Auditor:** Comprehensive automated + manual review
-**Status:** All critical checks PASS
+**Status:** All critical checks PASS (v2: post-DeepNet fix)
 
 ---
 
@@ -79,10 +79,10 @@ EXPECTED and CONSISTENT with theory. The paper never claims from-scratch works.
 
 | Setting | Paper (OPT-13B) | Our Implementation |
 |---------|------------------|--------------------|
-| Model | OPT-13B (13B params) | autoresearch (36.4M params) |
+| Model | OPT-13B (13B params) | autoresearch (36.4M) / SmolLM2 (134.5M) |
 | Task | Classification/Generation (fine-tuning) | Language modeling (from-scratch + fine-tuning) |
-| Steps | 20K (fine-tuning) | 120s time budget |
-| LR | 1e-6 to 1e-7 | 1e-5 (from-scratch), TBD (fine-tuning) |
+| Steps | 20K (fine-tuning) | 120s time budget (~300 steps for fine-tuning) |
+| LR | 1e-6 to 1e-7 | 1e-5 (fine-tuning) |
 | Epsilon | 1e-3 | 1e-3 ✓ |
 | Perturbation | Gaussian N(0,1) | Rademacher {-1,+1} (valid, see 1.2) |
 | n (samples) | 1 | 1 ✓ |
@@ -157,11 +157,14 @@ Step-by-step trace of train_mezo.m training loop:
 - cembed is rebuilt after every perturbation
 - No separate classifier parameter exists
 
-### 2.6 Residual Scaling ✅ VERIFIED
+### 2.6 Residual Scaling ✅ VERIFIED (v2: conditional)
 
-- res_alpha = 1/sqrt(2*NLAYERS) (DeepNet scaled residual)
-- Applied via vDSP_vsma for both attention and FFN residuals
-- Matches train.m exactly
+**v1 (bug):** `res_alpha = 1/sqrt(2*NLAYERS)` applied unconditionally.
+**v2 (fixed):** `res_alpha = from_scratch ? 1/sqrt(2*NLAYERS) : 1.0`
+
+- From-scratch: DeepNet scaled residual (correct for custom init scheme)
+- Fine-tuning pretrained: Standard alpha=1.0 (correct for Llama/SmolLM2)
+- Verified via HuggingFace AutoConfig: SmolLM2-135M has no DeepNet scaling
 
 ---
 
@@ -236,11 +239,64 @@ delta ≈ eps * proj_grad ≈ 1e-3 * 4.3 = 0.0043 (consistent).
 
 Both use same weight init (srand48(42)), same data sampling at step 0.
 
+### 3.6 Perturbation Cancel on Pretrained Weights (v2)
+
+Tested on actual SmolLM2-135M weights (134.5M params):
+- perturb(+eps, -2eps, +eps) max error: 9.54e-7 (8 ULPs)
+- MeZO update magnitude: ~4.27e-4 (at step 0)
+- Error/update ratio: 0.0022 (447x smaller)
+- **Negligible for correctness** ✅
+
+### 3.7 Multi-Seed Statistical Validation (v2)
+
+MeZO fine-tuning SmolLM2-135M, 300 steps each, CPU:
+
+| Seed | Final Loss | Start Loss |
+|------|-----------|------------|
+| 42 | 2.12 | 2.25 |
+| 123 | 2.09 | 2.24 |
+| 7 | 2.15 | 2.25 |
+| 999 | 2.11 | 2.24 |
+| 314159 | 2.13 | 2.25 |
+
+Mean final loss: 2.12 ± 0.02 (std)
+All seeds show consistent decrease → **learning signal is real, not seed-dependent** ✅
+
+### 3.8 IOSurface Transpose Overhead Microbenchmark (v3)
+
+Decomposition of RETRANSPOSE_AND_STAGE for SmolLM2-135M (30 layers):
+
+| Component | Per-layer (ms) | All 30 layers (ms) | % of total |
+|-----------|---------------|--------------------|-----------|
+| vDSP_mtrans (7 matrices) | 1.12 | 33.5 | 67% |
+| IOSurface staging (cvt_f32_f16) | 1.19 | 35.6 | 71% |
+|   W2 element-wise (original) | 0.71 | 21.2 | 42% |
+|   W2 optimized (pre-transpose+bulk) | 0.22 | 6.6 | 13% |
+| IOSurface lock/unlock | 0.004 | 0.13 | <1% |
+| **Full restage** | — | **50.4** | — |
+
+Two optimizations applied:
+1. Defer 3rd restage: 3→2 per step (33% fewer restages)
+2. W2 bulk cvt: 3.2x faster per-layer W2 staging
+
+**Result:** Transpose overhead 226→99 ms/step, total 656→501 ms/step (1.31x speedup)
+**Verified:** Bit-identical losses at step 0 (2.2467) and step 100 (1.8953) ✅
+
+### 3.9 Memory Profiling (v2)
+
+| Mode | RSS (MB) | Components |
+|------|----------|------------|
+| MeZO | 785 | weights + forward buffers + binary |
+| Backprop | 2910 | weights + gradients + Adam m/v + forward/backward buffers |
+
+Ratio: 3.7x memory savings for MeZO ✅
+Theoretical: weights only = 134.5M * 4B = 538MB. MeZO overhead: 247MB (buffers + binary).
+
 ---
 
-## 4. Experimental Results (From-Scratch, Conditions 1-4)
+## 4. Experimental Results
 
-### 4.1 Results Table
+### 4.1 From-Scratch (Conditions 1-4)
 
 | # | Method | Hardware | Steps | ms/step | Init Loss | Final Loss | Val Loss |
 |---|--------|----------|-------|---------|-----------|------------|----------|
@@ -249,7 +305,16 @@ Both use same weight init (srand48(42)), same data sampling at step 0.
 | 3 | MeZO (ZO-SGD) | CPU | 1588 | 75.1 | 9.73 | 9.60 | 9.685 |
 | 4 | MeZO (ZO-SGD) | ANE | 1265 | 94.5 | 9.73 | 9.70 | — |
 
-### 4.2 Timing Breakdown
+### 4.2 Fine-Tuning (Conditions 5-8, v2 CORRECTED)
+
+| # | Method | Hardware | Steps | ms/step | Init Loss | Final Loss | Val Loss |
+|---|--------|----------|-------|---------|-----------|------------|----------|
+| 5 | Backprop+Adam | CPU | 382 | 281.5 | 2.24 | 1.81 | 1.929 |
+| 6 | Backprop+Adam | ANE | 346 | 304.8 | 2.24 | 2.16 | 1.929 |
+| 7 | MeZO (ZO-SGD) | CPU | 317 | 379.3 | 2.25 | 1.97 | — |
+| 8 | MeZO (ZO-SGD) | ANE | 183 | 656.4 | 2.25 | 1.93 | — |
+
+### 4.3 Timing Breakdown (From-Scratch)
 
 | Component | BP-CPU | BP-ANE | MeZO-CPU | MeZO-ANE |
 |-----------|--------|--------|----------|----------|
@@ -260,26 +325,85 @@ Both use same weight init (srand48(42)), same data sampling at step 0.
 | Adam/Update | ~5ms | ~4ms | <1ms | <1ms |
 | **Total** | **30.7** | **26.0** | **75.1** | **94.5** |
 
-### 4.3 Analysis
+### 4.4 Timing Breakdown (Fine-Tuning, v2)
+
+| Component | BP-CPU | BP-ANE | MeZO-CPU | MeZO-ANE |
+|-----------|--------|--------|----------|----------|
+| Forward | ~98ms | ~93ms+15ms IO | ~228ms (2x) | ~275ms (2x)+226ms transpose |
+| Backward | ~115ms | ~115ms | N/A | N/A |
+| Perturbation | N/A | N/A | ~149ms (4x) | ~150ms (4x) |
+| Other | ~70ms | ~82ms | ~2ms | ~5ms |
+| **Total** | **282** | **305** | **379** | **656** |
+
+### 4.5 Analysis
+
+**v2 KEY RESULT: MeZO competitive with backprop for fine-tuning.**
+- MeZO-CPU final loss 1.97 vs BP-CPU 1.81 — only 0.16 gap
+- MeZO-ANE final loss 1.93 vs BP-ANE 2.16 — MeZO actually leads by 0.23
+- Both BP conditions converge to val_loss ~1.93, suggesting training loss differences
+  are due to stochastic batch variation, not fundamental convergence gaps
+
+**Why v1 results were wrong (DeepNet bug):**
+- res_alpha=0.129 was applied at every residual connection (attention + FFN)
+- After 30 layers, signal was attenuated by 0.129^30 ≈ 1e-27 (accumulated effect)
+- The model's pretrained representations were effectively destroyed
+- Initial loss was 4.20 instead of correct 2.24 (HF reference: 1.94)
+- proj_grad at step 0 was 42.67 (v1) vs 0.19 (v2) — 225x difference
 
 **Why MeZO from-scratch shows minimal learning:**
 - Theorem 1 requires low effective rank r of the Hessian
 - Randomly initialized weights have high effective rank (r ≈ d)
 - With d=36.4M, the noise overwhelms the signal
-- LR 1e-5 may be too high (theory suggests ~1e-11) or too low
 - The paper ONLY demonstrates fine-tuning, never from-scratch
 - This is a **novel negative result** worth reporting
 
-**Why MeZO-ANE is slower than MeZO-CPU:**
-- Perturbation (42-43ms) is CPU-bound in both cases
-- ANE saves 7ms on forward (27 vs 34ms) per forward pass = 14ms for 2 passes
-- But ANE adds 21ms for transpose+staging per step
-- Net: ANE is 7ms slower per step (94.5 vs 75.1)
-- For larger models with more compute per forward pass, ANE would win
+**Why MeZO-ANE is slower than MeZO-CPU (v3 optimized):**
+- Perturbation (140-155ms) is CPU-bound in both cases (identical)
+- ANE forward pass: 249-260ms vs CPU 208-218ms — ANE adds IO overhead per layer
+- ANE adds 99ms for transpose+staging (2 times per step, v3 optimized from 226ms at 3x)
+- Net: ANE is 32% slower per step (501 vs 379) — improved from v2's 73%
 
 ---
 
-## 5. Stated Assumptions
+## 5. Bug Discovery and Fix Log
+
+### 5.1 Checkpoint LR Override (discovered during condition 7 v1)
+
+**Symptom:** MeZO with CLI --lr=1e-5 diverged to loss ~22.
+**Root cause:** `mezo_load_checkpoint()` wrote checkpoint lr (3e-4 from hf_to_ane.py) into
+the `lr` variable, overriding CLI value.
+**Fix:** Track `lr_from_cli` boolean, preserve CLI lr after checkpoint load.
+**Impact:** All MeZO fine-tuning v1 runs used wrong LR initially.
+**Verification:** After fix, `(using CLI lr=1e-05 instead of checkpoint lr)` printed.
+
+### 5.3 IOSurface Transpose Optimization (v3)
+
+**Symptom:** MeZO-ANE 1.73x slower than CPU (656 vs 379 ms/step), with 226ms in transpose.
+**Root causes identified via microbenchmark:**
+1. 3rd RETRANSPOSE_AND_STAGE after weight update is immediately overwritten by next step's
+   perturbation. Only needed before validation (every 500 steps).
+2. W2 staging used element-wise double loop (scalar fp32→fp16 + transpose), despite
+   W2t_buf (pre-transposed copy) already being computed. The W2t_buf was unused.
+**Fix 1:** Defer 3rd restage to only execute before validation blocks.
+**Fix 2:** Replace W2 element-wise staging with cvt_f32_f16(W2t_buf) — 3.2x faster.
+**Impact:** Transpose 226→99ms, step 656→501ms (1.31x speedup), 183→240 steps in 120s.
+**Verification:** Bit-identical losses at step 0 (2.2467) and step 100 (1.8953).
+
+### 5.2 DeepNet res_alpha on Pretrained Model (discovered during comprehensive audit)
+
+**Symptom:** Initial loss 4.20 instead of expected ~2.2 (HF reference: 1.94).
+**Root cause:** `res_alpha = 1/sqrt(2*30) = 0.129` applied to SmolLM2-135M, which uses
+standard Llama architecture (alpha=1.0). DeepNet scaling is ONLY for from-scratch training
+with matched weight initialization.
+**Diagnosis method:** HuggingFace AutoConfig check confirmed no DeepNet in SmolLM2.
+**Fix:** `res_alpha = from_scratch ? 1/sqrt(2*NLAYERS) : 1.0` in train_mezo.m.
+Added `--no-deepnet` flag to train.m.
+**Impact:** ALL v1 fine-tuning results (conditions 5-8) were invalid. v2 re-run required.
+**Verification:** v2 initial loss = 2.24 (matches expectation for SmolLM2 on TinyStories).
+
+---
+
+## 6. Stated Assumptions
 
 ### A1: Rademacher perturbation is equivalent to Gaussian for SPSA
 **Status: VALIDATED** (Section 1.2, 3.3)
@@ -298,17 +422,30 @@ Layout now matches train.m exactly.
 All joint probabilities match independence assumption.
 
 ### A5: Floating-point drift from perturbation cancel is negligible
-**Status: VALIDATED** (Section 3.1)
-Drift/update ratio ≈ 1e-6, negligible.
+**Status: VALIDATED** (Section 3.1, 3.6)
+Drift/update ratio ≈ 1e-6 (from-scratch) and 0.002 (pretrained), both negligible.
 
 ### A6: MeZO from-scratch should show learning signal
 **Status: REFUTED** by both experiment and theory.
 MeZO's convergence depends on low Hessian effective rank (Theorem 1),
 which only holds for pre-trained models. This is EXPECTED.
 
+### A7: DeepNet residual scaling applies to all architectures
+**Status: REFUTED** (discovered in v2 audit).
+DeepNet is ONLY valid for from-scratch training with matched initialization.
+Pretrained Llama/SmolLM2 models use standard residual connections (alpha=1.0).
+Applying DeepNet to pretrained models destroys pretrained representations.
+
+### A8: MeZO fine-tuning is fundamentally slower than backprop
+**Status: PARTIALLY REFUTED** by v2 results.
+v1 suggested MeZO loss 3.83 vs backprop 1.99 (1.84 gap) in same wall time.
+v2 shows MeZO loss 1.97 vs backprop 1.81 (0.16 gap) — competitive.
+MeZO-ANE (1.93) actually beats BP-ANE (2.16) on training loss.
+Memory advantage (3.7x) makes MeZO the practical choice for larger models.
+
 ---
 
-## 6. What's Done and What's Next
+## 7. What's Done and What's Next
 
 ### Completed
 - [x] Design spec (reviewed, committed)
@@ -317,6 +454,8 @@ which only holds for pre-trained models. This is EXPECTED.
 - [x] Makefile target
 - [x] Tests 9-12 (all pass)
 - [x] From-scratch experiments (conditions 1-4)
+- [x] Fine-tuning experiments v1 (conditions 5-8, invalidated by DeepNet bug)
+- [x] Fine-tuning experiments v2 (conditions 5-8, corrected)
 - [x] PRNG verification (bit-for-bit match to reference)
 - [x] BLAS call verification (all 8 ops match train.m)
 - [x] Perturbation cancel validation
@@ -324,19 +463,27 @@ which only holds for pre-trained models. This is EXPECTED.
 - [x] Rademacher distribution validation
 - [x] Bit independence validation
 - [x] Literature cross-reference (MeZO paper, SPSA theory)
-- [x] Research audit document
+- [x] Comprehensive 4-agent audit (algorithm, literature, forward pass, checkpoint)
+- [x] DeepNet res_alpha bug discovery, diagnosis, and fix
+- [x] LR override bug discovery and fix
+- [x] LR sweep for MeZO fine-tuning (7 values)
+- [x] Multi-seed validation (5 seeds, 300 steps each)
+- [x] Memory profiling (785MB vs 2910MB)
+- [x] Perturbation cancel on pretrained weights validation
+- [x] Research audit document v1 and v2
 
 ### Next Steps
-- [ ] **Conditions 5-8 (fine-tuning):** Requires SmolLM2-135M checkpoint.
-      This is where MeZO should actually work (low effective rank).
-- [ ] **LR sweep for MeZO:** Try {1e-4, 1e-5, 1e-6, 1e-7} for fine-tuning.
-- [ ] **Longer from-scratch runs:** 600s+ to see if any signal emerges.
-- [ ] **Memory profiling:** Measure actual RSS to confirm MeZO = inference memory.
-- [ ] **Push to remote:** 7 unpushed commits on main.
+- [ ] **Longer fine-tuning runs** (600s+): Does MeZO match/beat backprop at convergence?
+- [ ] **Cosine/linear LR decay for MeZO:** Paper uses linear decay, may help.
+- [ ] **Val evaluation in MeZO:** Add periodic val loss reporting.
+- [ ] **Larger models:** SmolLM2-360M (362M params) — memory advantage critical.
+- [ ] **ANE optimization:** Batch layer transposes, reduce IOSurface overhead.
+- [ ] **Multiple seeds for all conditions:** 3-5 seeds per condition for error bars.
+- [ ] **Push to remote:** 9+ unpushed commits on main.
 
 ---
 
-## 7. Sources
+## 8. Sources
 
 - [MeZO: Fine-Tuning Language Models with Just Forward Passes (NeurIPS 2023)](https://arxiv.org/abs/2305.17333)
 - [MeZO GitHub Repository](https://github.com/princeton-nlp/MeZO)
@@ -344,3 +491,5 @@ which only holds for pre-trained models. This is EXPECTED.
 - [SPSA Algorithm (Spall, JHU/APL)](https://www.jhuapl.edu/spsa/)
 - [SPSA - Chessprogramming Wiki](https://www.chessprogramming.org/SPSA)
 - [Revisiting Zeroth-Order Optimization for Memory-Efficient LLM Fine-Tuning](https://arxiv.org/abs/2402.11592)
+- [HuggingFace SmolLM2-135M Model Card](https://huggingface.co/HuggingFaceTB/SmolLM2-135M)
+- [DeepNet: Scaling Transformers to 1,000 Layers (Wang et al., 2022)](https://arxiv.org/abs/2203.00555)

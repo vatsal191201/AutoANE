@@ -269,11 +269,11 @@ int main(int argc, char *argv[]) {
         int warmup_steps = 100;
         float grad_clip = 1.0f;
         float loss_scale = 256.0f;  // prevents fp16 gradient underflow in ANE backward
-        float res_alpha = 1.0f / sqrtf(2.0f * NLAYERS);
+        float res_alpha = 1.0f / sqrtf(2.0f * NLAYERS);  // DeepNet default; use --no-deepnet for pretrained models
         float min_lr_frac = 0.1f;
         double time_budget_sec = 0;  // 0 = unlimited (use --steps instead)
 
-        bool do_resume = false, from_scratch = false;
+        bool do_resume = false, from_scratch = false, no_deepnet = false;
         bool use_cpu_attn_bwd = false;  // CPU fp32 SDPA backward (fixes attention gradient underflow)
         bool use_cpu_bwd = false;       // CPU fp32 for ALL backward dx ops (ANE forward only)
         bool ane_matmul_only = false;   // ANE for linear projections only, CPU for RoPE/attn/SiLU/residual
@@ -309,6 +309,7 @@ int main(int argc, char *argv[]) {
             else if (strcmp(argv[i], "--time") == 0 && i+1<argc) time_budget_sec = atof(argv[++i]);
             else if (strcmp(argv[i], "--clamp") == 0 && i+1<argc) act_clamp = atof(argv[++i]);
             else if (strcmp(argv[i], "--sanitize") == 0) grad_sanitize = true;
+            else if (strcmp(argv[i], "--no-deepnet") == 0) no_deepnet = true;
             else if (strcmp(argv[i], "--adaptive") == 0 && i+1<argc) adaptive_thresh = atof(argv[++i]);
             else if (strcmp(argv[i], "--adaptive-window") == 0 && i+1<argc) adaptive_window = atoi(argv[++i]);
             else if (strcmp(argv[i], "--seed") == 0 && i+1<argc) init_seed = atol(argv[++i]);
@@ -316,6 +317,10 @@ int main(int argc, char *argv[]) {
         if (cpu_only) use_cpu_bwd = true;            // CPU-only implies CPU backward
         if (ane_matmul_only) use_cpu_bwd = true;   // ANE matmul-only implies CPU backward
         if (use_cpu_bwd) use_cpu_attn_bwd = true;  // CPU backward implies CPU attention backward
+        if (no_deepnet) {
+            res_alpha = 1.0f;  // Standard residual for pretrained Llama/SmolLM2 models
+            printf("DeepNet disabled: res_alpha=1.0 (standard residual connections)\n");
+        }
         if (!cpu_only) {
             if (!ane_init()) {
                 fprintf(stderr, "ANE initialization failed. Use --cpu-only or install macOS 15+.\n");
@@ -589,14 +594,11 @@ int main(int argc, char *argv[]) {
                     }
                     {
                         // W2: surface [HIDDEN, SEQ+DIM], weight W2 is [DIM,HIDDEN], transposed=[HIDDEN,DIM]
-                        // W2 original layout: W2[row][col] = W2[d][h], d=0..DIM-1, h=0..HIDDEN-1
-                        // W2t[h][d] = W2[d][h] — transpose to [HIDDEN,DIM] for the matmul kernel
+                        // W2: use pre-transposed W2t_buf for vectorized staging
                         IOSurfaceLock(pls[L].w2Fwd_in, 0, NULL);
                         _Float16 *buf = (_Float16*)IOSurfaceGetBaseAddress(pls[L].w2Fwd_in);
-                        // W2 is stored as [DIM rows, HIDDEN cols], we need W2t[HIDDEN,DIM]
                         for (int h = 0; h < HIDDEN; h++)
-                            for (int d = 0; d < DIM; d++)
-                                buf[h*W2_FWD_SP + SEQ + d] = (_Float16)lw[L].W2[d*HIDDEN + h];
+                            cvt_f32_f16(buf + h*W2_FWD_SP + SEQ, W2t_buf[L] + h*DIM, DIM);
                         IOSurfaceUnlock(pls[L].w2Fwd_in, 0, NULL);
                     }
                 } else {
@@ -1491,8 +1493,7 @@ int main(int argc, char *argv[]) {
                         { IOSurfaceLock(pls[L].w2Fwd_in, 0, NULL);
                           _Float16 *buf = (_Float16*)IOSurfaceGetBaseAddress(pls[L].w2Fwd_in);
                           for (int h = 0; h < HIDDEN; h++)
-                              for (int d = 0; d < DIM; d++)
-                                  buf[h*W2_FWD_SP + SEQ + d] = (_Float16)lw[L].W2[d*HIDDEN + h];
+                              cvt_f32_f16(buf + h*W2_FWD_SP + SEQ, W2t_buf[L] + h*DIM, DIM);
                           IOSurfaceUnlock(pls[L].w2Fwd_in, 0, NULL); }
                     } else {
                         // Fused: stage into fused kernel surfaces

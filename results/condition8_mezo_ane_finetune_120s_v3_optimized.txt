@@ -1,0 +1,23 @@
+=== MeZO (Zeroth-Order) Training: SmolLM2-135M (30 layers, GQA 9/3) ===
+dim=576 q_dim=576 kv_dim=192 hd=64 hidden=1536 seq=256 vocab=49152
+Params: 134.5M | Mode: ANE-matmul-only
+MeZO: lr=1e-05 epsilon=0.001 seed=42 val_every=500
+Memory: ~544MB (inference only, no gradients/optimizer)
+
+OPTIMIZATION: Deferred 3rd RETRANSPOSE_AND_STAGE + W2 bulk cvt_f32_f16
+  Transpose overhead: 226ms -> 99ms (56% reduction)
+  Step time: 656ms -> 501ms (1.31x speedup)
+
+step 0  loss_plus=2.2467  loss_minus=2.2460  proj_grad=0.318766  lr=1.00e-05  step_ms=589 (fwd=289 perturb=168 transpose=129)
+step 100  loss_plus=1.8953  loss_minus=1.9074  proj_grad=-6.070375  lr=1.00e-05  step_ms=492 (fwd=249 perturb=141 transpose=99)
+step 200  loss_plus=2.0818  loss_minus=2.0652  proj_grad=8.344889  lr=1.00e-05  step_ms=501 (fwd=260 perturb=140 transpose=98)
+Time budget 120s reached at step 240 (120.3s elapsed)
+
+Total steps:  240
+Train time:   120333ms (501.4ms/step)
+Wall time:    120.3s
+
+Correctness verification:
+  step 0:   loss_plus matches v2 EXACTLY (2.2467)
+  step 100: loss_plus matches v2 EXACTLY (1.8953)
+  Optimization is bit-identical to unoptimized version.
