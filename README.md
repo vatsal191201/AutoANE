@@ -474,7 +474,7 @@ MLX is better for: raw GPU throughput on large models, broader ecosystem, rapid 
 
 1. Does the step-count advantage hold with larger datasets? Chinchilla predicts a crossover where larger models become optimal — but at what data scale?
 2. ~~Can zeroth-order training (MeZO) leverage ANE's fast forward passes?~~ **Answered: No with matmul kernels.** But conv1x1 is 3x faster on ANE ([Orion](https://arxiv.org/abs/2603.06728)), and MP-LoRA halves forward passes ([MobiZO](https://aclanthology.org/2025.emnlp-main.1022/)). See [ANE Strengths Plan](docs/ANE_STRENGTHS_PLAN.md).
-3. **Conv1x1 + MP-LoRA + P-GAP on ANE**: Estimated ~11x speedup over current best (593ms → ~50ms/step). Concrete plan with literature-backed numbers in [docs/ANE_STRENGTHS_PLAN.md](docs/ANE_STRENGTHS_PLAN.md). This is the highest-impact next step.
+3. **Conv1x1 + FZOO/AGZO + MP-LoRA on ANE**: Estimated ~11x speedup over current best (593ms → ~50ms/step). FZOO's batched one-sided Rademacher trick (18x fewer forward passes) is a drop-in since we already use Rademacher. AGZO is validated on NPU hardware (Ascend 910B2). Concrete plan in [docs/ANE_STRENGTHS_PLAN.md](docs/ANE_STRENGTHS_PLAN.md).
 4. Mega-kernel fusion (N transformer layers in one MIL program) achieves 3-4x forward speedup ([maderix/ANE PR #24](https://github.com/maderix/ANE/issues/24)). Can this be combined with runtime weight injection?
 5. Function parameter IOSurfaces are 30% faster than our spatial packing ([maderix/ANE PR #22](https://github.com/maderix/ANE/pull/22)). Worth implementing?
 6. INT8 quantization halves IOSurface size — does this move the memory pressure ceiling from DIM=1536 to DIM=2048+?
@@ -484,15 +484,42 @@ MLX is better for: raw GPU throughput on large models, broader ecosystem, rapid 
 
 ## Related Work
 
+### Core References
+
 | Project | Key Finding | Relevance |
 |---------|------------|-----------|
 | [MeZO](https://arxiv.org/abs/2305.17333) (NeurIPS 2023) | In-place ZO-SGD, inference-only memory for LLM fine-tuning. | Foundation for our MeZO implementation. |
 | [MobiZO](https://arxiv.org/abs/2409.15520) (EMNLP 2025) | MP-LoRA on Qualcomm NPU, 4.3x speedup via parallelized perturbations. | Same concept (ZO+LoRA on NPU), deployed on Hexagon. |
-| [Orion](https://github.com/mechramc/Orion) (Murai Labs) | ANE training, adapter-as-input, 20 ANE constraints, 3x via 1x1 conv. | Same hardware. Our LoRA-split is similar to adapter-as-input. |
+| [Orion](https://github.com/mechramc/Orion) (Murai Labs) | ANE training, adapter-as-input, 20 ANE constraints, 3x via 1x1 conv, 170+ tok/s GPT-2. | Same hardware. Our LoRA-split is similar to adapter-as-input. |
 | [imperatormk/ane-train](https://github.com/imperatormk/ane-train) | Runtime weight injection via IOSurface matmul inputs — compile once, train forever. | Documents critical IOSurface constraints (ascending slot sizes, Ci multiple of 32). |
 | [maderix/ANE PR #24](https://github.com/maderix/ANE/issues/24) | Mega-kernel fusion: 4.17x forward speedup. XPC overhead ~160us/eval is the bottleneck. | Fusion + runtime weights is the key open question. |
 | [maderix/ANE PR #35](https://github.com/maderix/ANE/pull/35) | M5 ANE support: 128-byte IOSurface alignment. | M5 compatibility for future work. |
 | [thebasedcapital/ane-infer](https://github.com/thebasedcapital/ane-infer) | 25 `_ANEClient` methods documented. `doEvaluateDirectWithModel:` bypasses daemon. | Note: `_ANEChainingRequest` is dead on macOS 15+ (requires Espresso IR from disk-compiled models). |
+
+### ZO Optimizer Advances (2025-2026)
+
+| Paper | Key Finding | Relevance |
+|-------|------------|-----------|
+| [AGZO](https://arxiv.org/abs/2601.17261) (arXiv 2026) | Activation-guided subspace ZO; first ZO benchmarked on NPU (Ascend 910B2, avg 0.709 on Pangu-1B). | Validates ZO+NPU; activation-guided perturbation is complementary to conv1x1. |
+| [FZOO](https://arxiv.org/abs/2506.09034) (arXiv 2025) | Rademacher + batched one-sided estimates; 18x fewer forward passes than MeZO on RoBERTa-large. | **Drop-in improvement**: we already use Rademacher perturbations. |
+| [P-GAP](https://arxiv.org/abs/2510.18228) (arXiv 2025) | Gradient-aligned perturbation, 5.2x faster convergence. | Reduces step count; stacks with conv1x1 speedup. |
+| [NoProp](https://arxiv.org/abs/2503.24322) (arXiv 2025) | No full forward/backward pass; diffusion-inspired block-local learning. | Alternative: per-block ANE fine-tuning without full graph compilation. |
+
+### On-Device / Mobile Training (2024-2026)
+
+| Paper | Key Finding | Relevance |
+|-------|------------|-----------|
+| [FwdLLM](https://arxiv.org/abs/2308.13894) (USENIX ATC 2024) | Forward-only federated LLM fine-tuning; 14.6x memory reduction; LLaMA on commodity mobile. | Same core idea (ZO+LoRA+mobile); validates federated path. |
+| [MobileFineTuner](https://arxiv.org/abs/2512.08211) (arXiv 2025) | End-to-end C++ fine-tuning on phones; GPT-2/Gemma 3/Qwen 2.5; energy-aware scheduling. | Peer comparison (backprop-based); energy scheduling applicable. |
+| [Scaling NPU Test-Time Compute](https://arxiv.org/abs/2509.23324) (EUROSYS 2026) | 19x mixed-precision GEMM speedup; LUT-based softmax/dequant on mobile NPU. | Tile quantization + LUT ops directly applicable to ANE. |
+| [On-Device ZO](https://arxiv.org/abs/2511.11362) (arXiv 2025) | Theory: MeZO enables significantly larger models within on-chip memory vs backprop. | Validates our memory advantage thesis at scale. |
+
+### ANE Tools & Libraries
+
+| Project | Key Finding | Relevance |
+|---------|------------|-----------|
+| [Anemll](https://github.com/Anemll/Anemll) | Open-source ANE inference: LLaMA/Qwen/Gemma 3; 47-62 tok/s on 1B; ANEMLL-Dedup ~50% size. | Reference ANE implementation. |
+| [anemll-bench](https://github.com/Anemll/anemll-bench) | ANE benchmarking with memory bandwidth metrics. | Could validate our conv1x1 speedup claims. |
 
 ---
 

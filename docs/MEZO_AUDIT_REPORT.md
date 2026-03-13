@@ -436,7 +436,7 @@ The MeZO paper (Table 1) validates MeZO+LoRA on OPT-13B: SST-2 89.6%, RTE 67.9%,
 
 | Paper | Venue | Contribution | Relation to Our Work |
 |-------|-------|-------------|---------------------|
-| [Orion](https://arxiv.org/abs/2603.06728) | arXiv 2026 | ANE training, adapter-as-input, 20 constraints, 3x via 1x1 conv | Same hardware, our LoRA-split is similar to adapter-as-input |
+| [Orion](https://arxiv.org/abs/2603.06728) | arXiv 2026 | ANE training, adapter-as-input, 20 constraints, 3x via 1x1 conv, 170+ tok/s GPT-2 inference | Same hardware, our LoRA-split is similar to adapter-as-input |
 | [MobiZO](https://aclanthology.org/2025.emnlp-main.1022/) | EMNLP 2025 | MP-LoRA on Qualcomm NPU, 4.3x speedup via parallelized perturbations | Same concept (ZO+LoRA on NPU), deployed on ExecuTorch |
 | [ZO2](https://arxiv.org/abs/2503.12668) | arXiv 2025 | CPU-GPU offloading for ZO, fine-tunes OPT-175B on 18GB GPU | Same principle (ZO for memory-constrained), GPU-focused |
 | [DistZO2](https://arxiv.org/abs/2507.03211) | arXiv 2025 | Distributed parallel ZO2 | Extension of ZO2 to multi-GPU |
@@ -445,8 +445,23 @@ The MeZO paper (Table 1) validates MeZO+LoRA on OPT-13B: SST-2 89.6%, RTE 67.9%,
 | [Sparse MeZO](https://arxiv.org/abs/2402.15751) | ICLR 2025 | 0.1% sparse subset, 3.5x speedup | Potential future improvement |
 | [SubZero](https://openaccess.thecvf.com/content/ICCV2025/papers/Yu_Zeroth-Order_Fine-Tuning_of_LLMs_in_Random_Subspaces_ICCV_2025_paper.pdf) | ICCV 2025 | Random subspace ZO, works with LoRA | Potential future improvement |
 | [P-GAP](https://arxiv.org/abs/2510.18228) | arXiv 2025 | Gradient-aligned perturbation, 5.2x convergence | Potential future improvement |
-| [AGZO](https://arxiv.org/abs/2601.17261) | arXiv 2026 | Activation-guided subspace perturbation | Potential future improvement |
+| [AGZO](https://arxiv.org/abs/2601.17261) | arXiv 2026 | Activation-guided ZO, tested on Ascend NPU (avg 0.709 on Pangu-1B) | **Directly relevant**: first ZO method benchmarked on NPU hardware |
 | [ZO Fine-tuner](https://arxiv.org/abs/2510.00419) | arXiv 2025 | Learned adaptive perturbation strategy | Potential future improvement |
+| [FZOO](https://arxiv.org/abs/2506.09034) | arXiv 2025 | Rademacher perturbations + batched one-sided estimates, 18x fewer forward passes than MeZO on RoBERTa-large | **Directly applicable**: our perturbations are already Rademacher; FZOO's batched one-sided trick halves forward passes |
+| [FwdLLM](https://arxiv.org/abs/2308.13894) | USENIX ATC 2024 | Federated forward-only LLM fine-tuning via "perturbed inference", 14.6x memory reduction, adaptive load allocation | Validates federated ZO on mobile; directly combines with our LoRA-split |
+| [NoProp](https://arxiv.org/abs/2503.24322) | arXiv 2025 | Training without full forward or backward propagation; diffusion-inspired block-local learning | Alternative forward-free paradigm; could enable per-block ANE fine-tuning |
+| [MobileFineTuner](https://arxiv.org/abs/2512.08211) | arXiv 2025 | End-to-end C++ LLM fine-tuning framework on commodity phones (GPT-2, Gemma 3, Qwen 2.5) | Peer comparison; uses backprop + sharding, we use ZO — complementary approaches |
+| [On-Device ZO Fine-Tuning](https://arxiv.org/abs/2511.11362) | arXiv 2025 | Theoretical analysis of MeZO vs backprop model capacity under on-chip memory constraints | Validates our memory advantage thesis for larger models |
+| [Scaling NPU Test-Time Compute](https://arxiv.org/abs/2509.23324) | EUROSYS 2026 | 19x mixed-precision GEMM speedup on mobile NPU, LUT-based softmax/dequant | Tile quantization and LUT ops directly applicable to ANE inference path |
+
+### 10.4 ANE-Specific Tools and Libraries
+
+| Project | Source | Description | Relevance |
+|---------|--------|-------------|-----------|
+| [Anemll](https://github.com/Anemll/Anemll) | GitHub | Open-source ANE inference pipeline: LLaMA, Qwen, Gemma 3; ANEMLL-Dedup (~50% size reduction); 47-62 tok/s on 1B models | Reference ANE inference implementation; validates our MIL approach |
+| [anemll-bench](https://github.com/Anemll/anemll-bench) | GitHub | ANE benchmarking tool with memory bandwidth metrics | Could validate our conv1x1 speedup claims |
+| [maderix/ANE](https://github.com/maderix/ANE) | GitHub | Backpropagation on ANE via reverse-engineered private APIs | Peer comparison; demonstrates ANE training is feasible |
+| [Backprop-Free Training Survey](https://github.com/UbiquitousLearning/Backpropagation_Free_Training_Survey) | GitHub | Comprehensive survey of forward-only and backprop-free methods | Reference for alternative approaches |
 
 ### 10.4 Architecture References
 
@@ -471,18 +486,23 @@ The MeZO paper (Table 1) validates MeZO+LoRA on OPT-13B: SST-2 89.6%, RTE 67.9%,
 
 1. **1x1 convolution**: ANE achieves ~3x matmul throughput via Conv2d (Orion). Not yet implemented.
 2. **MP-LoRA (MobiZO)**: Parallelize +eps/-eps in a single forward pass. Would halve forward cost.
-3. **P-GAP/AGZO**: Gradient-aligned perturbations could reduce required step count 5x.
-4. **Larger models**: MeZO's memory advantage is untested at 1B+ on 8GB devices.
-5. **Longer training**: MeZO convergence at 20K+ steps on TinyStories.
+3. **FZOO one-sided batching**: Batched one-sided gradient estimates with Rademacher perturbations — 18x fewer forward passes than MeZO on RoBERTa-large. Our perturbations are already Rademacher; this is a drop-in improvement.
+4. **AGZO activation-guided perturbations**: Restrict perturbations to the activation-informed subspace. Already validated on Ascend 910B2 NPU (Pangu-1B). Complementary to conv1x1.
+5. **P-GAP**: Gradient-aligned perturbations could reduce required step count 5x.
+6. **Tile quantization (Scaling NPU paper)**: Hardware-aware group quantization aligned to NPU memory access patterns — 19x GEMM speedup on mobile NPU.
+7. **Larger models**: MeZO's memory advantage is untested at 1B+ on 8GB devices.
+8. **Longer training**: MeZO convergence at 20K+ steps on TinyStories.
 
 ### Optimal ANE Training Stack (Proposed)
 
 ```
-P-GAP + LoRA + adapter-as-input + 1x1 conv
-  = gradient-aligned perturbations (5x fewer steps)
+FZOO/AGZO + LoRA + adapter-as-input + 1x1 conv + tile quantization
+  = one-sided batched Rademacher estimates (18x fewer forward passes)
+    OR activation-guided subspace perturbations (proven on NPU)
   + small adapter matrices only (0.5% of params perturbed)
   + zero retranspose (adapters as IOSurface inputs)
   + 3x matmul throughput (convolution primitive)
+  + tile-quantized base weights (19x GEMM speedup potential)
 ```
 
 If realized, this could make MeZO-ANE competitive with backprop-CPU at 1B+ params while using inference-only memory (~4GB vs ~11GB+ for backprop).

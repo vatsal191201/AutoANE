@@ -150,13 +150,41 @@ A MacBook Pro battery (100 Wh) could run:
 
 ## Literature Supporting This Plan
 
+### Core References
+
 | Paper | Key Data Point | How It Supports Our Plan |
 |-------|---------------|------------------------|
-| [Orion](https://arxiv.org/abs/2603.06728) | Conv1x1 = 3x, adapter-as-input works | Validates Phase 1 + Phase 2 |
+| [Orion](https://arxiv.org/abs/2603.06728) | Conv1x1 = 3x, adapter-as-input works, 170+ tok/s GPT-2, 20 ANE constraints | Validates Phase 1 + Phase 2 |
 | [maderix ANE benchmarks](https://maderix.substack.com/p/inside-the-m4-apple-neural-engine-615) | 19 TFLOPS, 94% deep graph, 32MB SRAM | Validates throughput targets |
-| [MobiZO](https://aclanthology.org/2025.emnlp-main.1022/) | MP-LoRA 4.3x, ExecuTorch deployed | Validates Phase 3 |
+| [MobiZO](https://aclanthology.org/2025.emnlp-main.1022/) | MP-LoRA 4.3x, ExecuTorch deployed on Qualcomm Hexagon NPU | Validates Phase 3 |
 | [P-GAP](https://arxiv.org/abs/2510.18228) | 5.2x convergence, 22.4% GPU hours | Validates Phase 4 |
-| [ZO2](https://arxiv.org/abs/2503.12668) | OPT-175B on 18GB GPU via ZO offloading | Validates ZO for memory-constrained |
 | [Apple Foundation Models](https://machinelearning.apple.com/research/apple-foundation-models-tech-report-2025) | 3B on-device, LoRA adapters, federated | Validates use case |
-| [N3L](https://medium.com/@ayushmanmukherjee12/n3l-the-no-backprop-revolution-for-cpu-npu-training-e3ee9ea3713a) | Forward-only local learning on CPU/NPU | Alternative forward-only approach |
 | [Apple Federated Learning](https://machinelearning.apple.com/research/federated-personalization) | On-device personalization deployed | Production validation of use case |
+
+### New ZO Optimizer Advances (2025-2026)
+
+| Paper | Key Data Point | How It Supports Our Plan |
+|-------|---------------|------------------------|
+| [AGZO](https://arxiv.org/abs/2601.17261) | Activation-guided subspace perturbations; tested on Ascend 910B2 NPU (avg 0.709 on Pangu-1B) | **First ZO method benchmarked on NPU hardware** — validates ZO+NPU feasibility; activation-guided perturbation is complementary to our conv1x1 approach |
+| [FZOO](https://arxiv.org/abs/2506.09034) | Rademacher perturbations + batched one-sided estimates; 18x fewer forward passes than MeZO on RoBERTa-large, 3x average accuracy improvement | **Directly applicable**: we already use Rademacher perturbations; FZOO's one-sided batched trick halves forward passes and could stack with MP-LoRA |
+| [On-Device ZO Fine-Tuning](https://arxiv.org/abs/2511.11362) | Theoretical analysis showing MeZO enables significantly larger models within on-chip memory vs backprop | Validates our memory advantage thesis; MeZO's edge grows with model size |
+| [ZO2](https://arxiv.org/abs/2503.12668) | OPT-175B on 18GB GPU via ZO offloading | Validates ZO for memory-constrained settings |
+| [NoProp](https://arxiv.org/abs/2503.24322) | Training without full forward/backward pass; diffusion-inspired block-local learning | Alternative paradigm: per-block ANE fine-tuning without full graph compilation |
+
+### On-Device / Mobile Training (2024-2026)
+
+| Paper | Key Data Point | How It Supports Our Plan |
+|-------|---------------|------------------------|
+| [FwdLLM](https://arxiv.org/abs/2308.13894) | Forward-only federated LLM fine-tuning via "perturbed inference"; 14.6x memory reduction; LLaMA fine-tuning on commodity mobile | **Directly relevant**: same core idea (ZO + LoRA + mobile); validates federated deployment path |
+| [MobileFineTuner](https://arxiv.org/abs/2512.08211) | End-to-end C++ framework; fine-tunes GPT-2/Gemma 3/Qwen 2.5 on Pixel phones; parameter sharding + energy-aware scheduling | Peer comparison (backprop-based); their energy-aware scheduling is relevant to our low-power ANE use case |
+| [Scaling NPU Test-Time Compute](https://arxiv.org/abs/2509.23324) | 19x mixed-precision GEMM speedup on mobile NPU; LUT-based softmax/dequant; tile quantization | **Hardware techniques applicable to ANE**: tile quantization aligns with ANE memory access patterns; LUT ops bypass ANE's limited general-purpose compute |
+| [N3L](https://medium.com/@ayushmanmukherjee12/n3l-the-no-backprop-revolution-for-cpu-npu-training-e3ee9ea3713a) | Forward-only local learning on CPU/NPU; sketched gradients + per-block updates | Alternative forward-only approach; block-local updates could map to ANE mega-kernels |
+| [MobiLLM](https://arxiv.org/abs/2502.20421) | Server-assisted side tuning with forward-backward decoupling | Hybrid approach if pure on-device is too slow |
+
+### ANE Tools & Libraries
+
+| Project | Key Data Point | How It Supports Our Plan |
+|---------|---------------|------------------------|
+| [Anemll](https://github.com/Anemll/Anemll) | Open-source ANE inference: LLaMA/Qwen/Gemma 3; 47-62 tok/s on 1B; ANEMLL-Dedup ~50% size reduction | Reference ANE implementation; validates our MIL pipeline approach |
+| [anemll-bench](https://github.com/Anemll/anemll-bench) | ANE benchmarking with memory bandwidth metrics | Could independently validate our conv1x1 speedup claims |
+| [Backprop-Free Training Survey](https://github.com/UbiquitousLearning/Backpropagation_Free_Training_Survey) | Comprehensive survey of forward-only methods | Taxonomy of approaches; identifies which techniques fit NPU constraints |
