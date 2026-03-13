@@ -388,16 +388,79 @@ The research literature points to a fundamentally better approach: **MeZO + LoRA
 If realized, MeZO+LoRA-ANE at ~410ms would be **faster than MeZO-CPU (814ms)** and
 competitive with backprop-CPU (602ms), while using inference-only memory (~1.5GB).
 
-**Additional optimizations:**
-- Express all matmuls as 1x1 convolutions (ANE's native primitive, 3x throughput)
-- Use Orion's adapter-as-input architecture (zero recompilation)
-- MeZO-SVRG (ICML 2024) for 2x faster convergence
+**Additional optimizations from recent literature (v6):**
 
-## Sources (v5)
+1. **MobiZO's MP-LoRA** (EMNLP 2025): Multi-Perturbed LoRA parallelizes +ε/-ε
+   perturbations in a SINGLE forward pass by replicating only the small LoRA B matrix.
+   4.3x speedup over MeZO. Already deployed on Qualcomm Hexagon NPU via ExecuTorch.
+   Directly applicable to ANE — run both perturbation paths through one compiled graph.
 
-- [Orion: Characterizing and Programming Apple's ANE for LLM Training](https://arxiv.org/abs/2603.06728)
-- [Deploying Transformers on the Apple Neural Engine (Apple ML Research)](https://machinelearning.apple.com/research/neural-engine-transformers)
-- [AMD NPU Training — first published NPU training paper](https://arxiv.org/abs/2504.03083)
-- [ZO-Bench: Revisiting ZO Optimization for LLM Fine-Tuning (ICML 2024)](https://arxiv.org/abs/2402.11592)
+2. **P-GAP** (arXiv:2510.18228): Gradient-aligned perturbations in projected subspace.
+   Reduces GPU hours to 22.4% of MeZO+LoRA. 5.2x faster convergence. Combines with
+   LoRA for P-GAP+LoRA at 9.1GB (vs 73.5GB full FT). Key idea: perturbations aligned
+   with gradient direction have lower variance → fewer steps needed.
+
+3. **AGZO** (arXiv:2601.17261): Activation-guided ZO. Constrains perturbations to the
+   subspace spanned by input activations (the gradient lives there by construction).
+   Higher cosine similarity with true gradient. Works on Qwen3-0.6B/4B, same memory as MeZO.
+
+4. **DiZO** (arXiv:2502.03304): Per-layer adaptive ZO. 48% less GPU time, sometimes
+   beats first-order. SST-2: 92.5% on OPT-2.7B (vs MeZO 90.0%).
+
+5. **MeSP** (arXiv:2602.13069): Structured backprop for LoRA. Computes IDENTICAL
+   gradients to backprop but with 62% less memory (136MB vs 361MB on Qwen2.5-0.5B).
+   If backprop gradients fit, MeSP dominates MeZO on both speed and accuracy.
+
+6. **1x1 convolution** (Apple ML Research + Orion): ANE's native primitive is convolution.
+   Expressing Linear as 1x1 Conv2d yields 3x throughput. Combined with
+   adapter-as-input, this is the key to making ANE forward faster than CPU.
+
+**Optimal ANE training stack (proposed):**
+```
+P-GAP + LoRA + adapter-as-input + 1x1 conv
+  = gradient-aligned perturbations (5x fewer steps)
+  + small adapter matrices only (2% of params perturbed)
+  + zero retranspose (adapters as IOSurface inputs)
+  + 3x matmul throughput (convolution primitive)
+```
+
+## Related Work: On-Device ZO Training Landscape (v6)
+
+| Paper | Venue | Key Contribution | ANE Relevance |
+|-------|-------|-----------------|---------------|
+| MeZO | NeurIPS 2023 | In-place ZO-SGD, inference memory | Foundation |
+| MobiZO | EMNLP 2025 | MP-LoRA + ExecuTorch, 4.3x speedup | High — NPU-deployed |
+| P-GAP | arXiv 2025 | Gradient-aligned perturbation, 5.2x conv. | High — fewer steps |
+| AGZO | arXiv 2026 | Activation-guided subspace perturbation | High — forward-only |
+| DiZO | arXiv 2025 | Layer-adaptive ZO, 48% less GPU time | Medium |
+| MeSP | arXiv 2026 | Structured backprop for LoRA, 62% less mem | Alt. to ZO for ANE |
+| Orion | arXiv 2026 | ANE training, adapter-as-input, 20 constraints | Direct — same HW |
+| llm.npu | ASPLOS 2025 | NPU prefill 22.4x speedup, 1000+ tok/s | Inference baseline |
+| On-Device ZO | arXiv 2025 | MeZO enables 2-25x larger models on-device | Motivation |
+| AMD NPU Train | arXiv 2025 | First NPU training paper, GPT-2 124M | Peer comparison |
+| Sparse MeZO | ICLR 2024 | 0.1% sparse subset, 3.5x speedup | Medium |
+| SubZero | ICCV 2025 | Random subspace ZO, works with LoRA | Medium |
+| ZO Fine-tuner | arXiv 2025 | Learned perturbation strategy, 82% win rate | Medium |
+| MaZO | EMNLP 2025 | Masked ZO for multi-task | Low |
+
+## Sources
+
+- [MeZO: Fine-Tuning LLMs with Just Forward Passes (NeurIPS 2023)](https://arxiv.org/abs/2305.17333)
+- [MobiZO: Efficient LLM Fine-Tuning at the Edge (EMNLP 2025)](https://arxiv.org/abs/2409.15520)
+- [P-GAP: Projected Gradient-Aligned Perturbations (arXiv 2025)](https://arxiv.org/abs/2510.18228)
+- [AGZO: Activation-Guided Zeroth-Order Optimization (arXiv 2026)](https://arxiv.org/abs/2601.17261)
+- [DiZO: Divergence-driven Zeroth-Order Optimization (arXiv 2025)](https://arxiv.org/abs/2502.03304)
+- [MeSP: Memory-Efficient Structured Backpropagation (arXiv 2026)](https://arxiv.org/abs/2602.13069)
+- [Orion: Programming Apple's ANE for LLM Training (arXiv 2026)](https://arxiv.org/abs/2603.06728)
+- [llm.npu: Fast On-device LLM Inference with NPUs (ASPLOS 2025)](https://arxiv.org/abs/2407.05858)
+- [On-Device Fine-Tuning via Backprop-Free ZO (arXiv 2025)](https://arxiv.org/abs/2511.11362)
+- [AMD NPU Training (arXiv 2025)](https://arxiv.org/abs/2504.03083)
+- [Sparse MeZO (ICLR 2024)](https://arxiv.org/abs/2402.15751)
+- [SubZero: ZO in Random Subspaces (ICCV 2025)](https://arxiv.org/abs/2402.15751)
+- [ZO-Bench (ICML 2024)](https://arxiv.org/abs/2402.11592)
+- [ZO Fine-tuner: Learned ZO Optimizer (arXiv 2025)](https://arxiv.org/abs/2510.00419)
+- [Deploying Transformers on Apple Neural Engine (Apple ML Research)](https://machinelearning.apple.com/research/neural-engine-transformers)
 - [Apple Foundation Models Tech Report 2025](https://arxiv.org/abs/2507.13575)
 - [Inside the M4 Apple Neural Engine (maderix)](https://maderix.substack.com/p/inside-the-m4-apple-neural-engine-615)
+- [MobiZO GitHub](https://github.com/leigao97/MobiZO)
+- [maderix/ANE GitHub](https://github.com/maderix/ANE)

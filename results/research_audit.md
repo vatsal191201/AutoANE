@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-12/13
 **Auditor:** Comprehensive automated + manual review
-**Status:** All critical checks PASS (v2: post-DeepNet fix)
+**Status:** All critical checks PASS (v6: comprehensive literature review + optimal ANE stack)
 
 ---
 
@@ -613,6 +613,10 @@ Accuracy: MeZO+LoRA on LLaMA-7B SST-2=95.0% (vs full-param MeZO SST-2=92.7%).
 - [x] v5: Root cause analysis — full-param MeZO is architecturally mismatched with ANE
 - [x] v5: Literature review — ANE strengths, Orion paper, MeZO+LoRA, adapter-as-input
 - [x] v5: Identified MeZO+LoRA as the correct approach for ANE (plays to ANE strengths)
+- [x] v6: Comprehensive literature review of 14 papers (2024-2026) on ZO optimization + NPU training
+- [x] v6: Identified optimal ANE training stack: P-GAP + LoRA + adapter-as-input + 1x1 conv
+- [x] v6: Surveyed MobiZO (EMNLP 2025), P-GAP, AGZO, DiZO, MeSP techniques
+- [x] v6: Added Related Work table and 19-source bibliography to analysis.md
 
 ### Next Steps
 - [ ] **MeZO + LoRA on ANE (HIGHEST PRIORITY):** Full-parameter MeZO is a bad fit for ANE.
@@ -621,6 +625,11 @@ Accuracy: MeZO+LoRA on LLaMA-7B SST-2=95.0% (vs full-param MeZO SST-2=92.7%).
       adapters as IOSurface inputs → zero retranspose. Estimated step time ~410ms (vs
       1200ms full MeZO-ANE). Would finally make ANE FASTER than CPU for ZO training.
       MeZO+LoRA is proven (NeurIPS 2023): LLaMA-7B SST-2 95.0%, OPT-13B SST-2 89.6%.
+- [ ] **P-GAP + LoRA (v6 finding):** Gradient-aligned perturbations reduce steps by 5.2x.
+      Combined with LoRA on ANE, the optimal stack is:
+      P-GAP + LoRA + adapter-as-input + 1x1 conv.
+- [ ] **MobiZO MP-LoRA (v6 finding):** Parallelize +ε/-ε in single forward pass.
+      4.3x speedup, already deployed on Qualcomm NPU. Directly applicable to ANE.
 - [ ] **1x1 convolution matmuls:** ANE is a convolution engine. Expressing Linear layers as
       1x1 Conv2d yields 3x throughput (Apple ML Research documentation). Currently using
       matmul dispatches. This alone could make ANE forward faster than CPU.
@@ -628,7 +637,7 @@ Accuracy: MeZO+LoRA on LLaMA-7B SST-2=95.0% (vs full-param MeZO SST-2=92.7%).
       accuracy improvement. Combined with LoRA on ANE, this addresses both speed and
       convergence weaknesses simultaneously.
 - [ ] **Multiple seeds for all conditions:** 3-5 seeds per condition for error bars.
-- [ ] **Push to remote:** 12+ unpushed commits on main.
+- [ ] **Push to remote:** 13+ unpushed commits on main.
 
 ---
 
@@ -651,3 +660,11 @@ Accuracy: MeZO+LoRA on LLaMA-7B SST-2=95.0% (vs full-param MeZO SST-2=92.7%).
 - [ZO-Bench: Revisiting ZO Optimization for LLM Fine-Tuning (ICML 2024)](https://arxiv.org/abs/2402.11592)
 - [Apple Foundation Models Tech Report 2025 (arXiv:2507.13575)](https://arxiv.org/abs/2507.13575)
 - [Inside the M4 Apple Neural Engine (maderix benchmarks)](https://maderix.substack.com/p/inside-the-m4-apple-neural-engine-615)
+- [MobiZO: Efficient LLM Fine-Tuning at the Edge (EMNLP 2025)](https://arxiv.org/abs/2409.15520)
+- [P-GAP: Projected Gradient-Aligned Perturbations (arXiv 2025)](https://arxiv.org/abs/2510.18228)
+- [AGZO: Activation-Guided Zeroth-Order Optimization (arXiv 2026)](https://arxiv.org/abs/2601.17261)
+- [DiZO: Divergence-driven Zeroth-Order Optimization (arXiv 2025)](https://arxiv.org/abs/2502.03304)
+- [MeSP: Memory-Efficient Structured Backpropagation (arXiv 2026)](https://arxiv.org/abs/2602.13069)
+- [llm.npu: Fast On-device LLM Inference with NPUs (ASPLOS 2025)](https://arxiv.org/abs/2407.05858)
+- [On-Device Fine-Tuning via Backprop-Free ZO (arXiv 2025)](https://arxiv.org/abs/2511.11362)
+- [ZO Fine-tuner: Learned ZO Optimizer (arXiv 2025)](https://arxiv.org/abs/2510.00419)
