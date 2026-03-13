@@ -741,6 +741,11 @@ or P-GAP/AGZO for better gradient estimation.
 - [x] v8: BP+LoRA ANE rerun (thermal controlled) — still 1445ms/step, IO stalls not thermal
 - [x] v8: BP+LoRA CPU convergence curve — val=1.972 at step 100 (far ahead of MeZO)
 - [x] v8: 9 new conditions (20-28)
+- [x] v9: FFN LoRA implementation (W1/W2/W3 adapters, --lora-ffn flag)
+- [x] v9: FFN LoRA experiment — val@250=2.0474 vs attn-only 2.0506 (FFN helps marginally)
+- [x] v9: Full MeZO lr=1e-4 — worse than LoRA (val=2.074 at step 50)
+- [x] v9: Epsilon sweep — eps=1e-3 optimal, 1e-2 and 1e-4 both slightly worse
+- [x] v9: 5 new conditions (29-33)
 
 ### Next Steps
 - [x] ~~**MeZO + LoRA on ANE (HIGHEST PRIORITY):**~~ **DONE in v7.** Implemented merge and

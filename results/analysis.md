@@ -143,6 +143,22 @@ Still slow: 1445ms/step (vs CPU 603ms) due to IO spikes at steps 0, 40, 100.
 thermal=nominal throughout — NOT thermal throttling. Root cause: periodic IO stalls
 in ANE backward pass (io_fwd spikes to 600-964ms on ~3 steps out of 69).
 
+### FFN LoRA (attn+FFN adapters, SmolLM2-360M) — v9
+
+| # | Method | Adapter Params | ms/step | Val@100 | Val@250 |
+|---|--------|---------------|---------|---------|---------|
+| 24 | MeZO+LoRA-split r8 (attn) | 2,294K | 463 | 2.0594 | 2.0506 |
+| 33 | MeZO+LoRA-split r8 (attn+FFN) | 6,144K | 1006 | 2.0530 | **2.0474** |
+
+FFN LoRA adds W1/W2/W3 adapters (6.1M total adapter params = 1.7% of model).
+FFN helps break through the attn-only plateau but at 2.2x step cost.
+**Wall-time tradeoff:** FFN gets to val=2.047 in 5 min; attn-only gets 2.045 in 10 min.
+The FFN adapters provide marginally better convergence but are slower per step.
+
+**Other v9 experiments:**
+- Full MeZO at lr=1e-4 (condition 29): val=2.074 at step 50, worse than LoRA
+- Epsilon sweep: eps=1e-3 is optimal (1e-2 and 1e-4 both slightly worse)
+
 ## Per-Step Timing Breakdown
 
 ### From-Scratch (4-layer, 36.4M)
