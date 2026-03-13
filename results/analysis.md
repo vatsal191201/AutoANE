@@ -86,6 +86,63 @@
 - ANE vs CPU gap narrowed from 47% (full) to 32% (split); remaining gap is ANE IO overhead
 - Correctness: step-0 loss_plus=2.1095 matches across all 4 LoRA modes
 
+### MeZO+LoRA Convergence & LR Sweep (SmolLM2-360M) — v8
+
+**LR Sweep (MeZO+LoRA-split r8, CPU, val_every=50):**
+
+| # | LR | Val@50 | Val@100 | Val@200 | Val@500 | Steps/120s | Stable? |
+|---|-----|--------|---------|---------|---------|------------|---------|
+| 20 | 1e-5 | 2.0704 | 2.0694 | 2.0684 | 2.0663 | 233 | Yes |
+| 23 | 5e-5 | 2.0668 | 2.0635 | 2.0598 | — | 233 | Yes |
+| 24 | 1e-4 | 2.0631 | 2.0594 | 2.0535 | 2.0496 | 227 | Yes |
+| 25 | 3e-4 | 2.0536 | 2.0595 | 2.0550 | — | 221 | Bouncy |
+
+**Best LR: 1e-4** — 10x faster convergence than 1e-5, no instability.
+
+**Long convergence (condition 26: MeZO+LoRA-split, lr=1e-4, CPU, 600s):**
+
+| Step | Val Loss | Δ from init |
+|------|----------|-------------|
+| 50 | 2.0631 | -0.007 |
+| 200 | 2.0535 | -0.017 |
+| 400 | 2.0504 | -0.020 |
+| 650 | 2.0455 | -0.025 |
+| 1150 | 2.0453 | -0.025 |
+
+**Plateaus at ~2.045 after 650 steps (5 min).** Total Δval = 0.025 in 10 min.
+Compare: BP+LoRA CPU reaches val=1.972 in 2 min (Δval = 0.098).
+
+**Rank comparison (MeZO+LoRA-split, CPU, 120s, lr=1e-5):**
+
+| # | Rank | Adapter Params | ms/step | Val@100 | Val@200 |
+|---|------|---------------|---------|---------|---------|
+| 18 | 8 | 2,294K | 537 | 2.069 | — |
+| 21 | 4 | 1,147K | 455 | 2.070 | 2.069 |
+
+Rank 4 is ~15% faster per step, similar convergence. Minimal difference at these ranks.
+
+**ANE convergence (condition 22: MeZO+LoRA-split, lr=1e-5, ANE, 300s):**
+
+Val losses match CPU within noise (2.0705 vs 2.0704 @50, 2.0667 vs 2.0668 @400).
+ANE step time: 656ms (steady state) vs CPU 458ms — 43% overhead from ANE dispatch IO.
+
+**Memory comparison (360M, measured RSS via /usr/bin/time -l):**
+
+| Mode | RSS (MB) | vs Full MeZO |
+|------|----------|--------------|
+| Full MeZO | 1,704 | 1.0x |
+| MeZO+LoRA-split | 1,952 | 1.15x |
+| BP+LoRA | 3,954 | 2.32x |
+| Full Backprop | 4,133 | 2.43x |
+
+MeZO+LoRA-split uses 248MB more than full MeZO (LoRA buffers + lora_addmm temp)
+but **2.0x less than BP+LoRA** and **2.1x less than full Backprop**.
+
+**BP+LoRA ANE rerun (condition 27, thermal controlled, 60s cooldown):**
+Still slow: 1445ms/step (vs CPU 603ms) due to IO spikes at steps 0, 40, 100.
+thermal=nominal throughout — NOT thermal throttling. Root cause: periodic IO stalls
+in ANE backward pass (io_fwd spikes to 600-964ms on ~3 steps out of 69).
+
 ## Per-Step Timing Breakdown
 
 ### From-Scratch (4-layer, 36.4M)

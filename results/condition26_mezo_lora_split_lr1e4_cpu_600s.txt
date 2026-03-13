@@ -1,0 +1,82 @@
+=== MeZO (Zeroth-Order) Training: SmolLM2-360M (32 layers, GQA 15/5) ===
+dim=960 q_dim=960 kv_dim=320 hd=64 hidden=2560 seq=256 vocab=49152
+Params: 361.8M | Mode: CPU-only
+MeZO+LoRA: lr=0.0001 epsilon=0.001 seed=42 val_every=50 rank=8
+Memory: ~1457MB (inference only, no gradients/optimizer)
+[RESUMED from step 0, loss=0.0000]
+  (using CLI lr=0.0001 instead of checkpoint lr)
+LoRA: rank=8, adapter params=2293.8K, trainable RMS params=62.4K
+  Adapters on: Wq, Wk, Wv, Wo | Frozen: W1, W2, W3, embed
+  Perturbation: LoRA A/B + RMS only (~2356.2K params vs 361.8M full)
+  Mode: adapter-as-input (zero restaging, CPU-side LoRA correction)
+Tokens: 20000000 (train: 18000000, val: 2000000)
+Vocab compaction: 49152 -> 16893 active
+CPU-only mode: skipping ANE kernel compilation
+
+Starting MeZO training...
+
+step 0  loss_plus=2.1095  loss_minus=2.0987  proj_grad=5.407333  lr=1.00e-04  step_ms=695 (fwd=692 perturb=3 transpose=0)
+  [val_loss=2.0631 at step 50]
+  [ckpt saved, best_val=2.0631]
+  [val_loss=2.0594 at step 100]
+  [ckpt saved, best_val=2.0594]
+step 100  loss_plus=1.8508  loss_minus=1.8488  proj_grad=0.974059  lr=1.00e-04  step_ms=447 (fwd=445 perturb=2 transpose=0)
+  [val_loss=2.0560 at step 150]
+  [ckpt saved, best_val=2.0560]
+  [val_loss=2.0535 at step 200]
+  [ckpt saved, best_val=2.0535]
+step 200  loss_plus=1.8291  loss_minus=1.8255  proj_grad=1.830697  lr=1.00e-04  step_ms=454 (fwd=452 perturb=2 transpose=0)
+  [val_loss=2.0506 at step 250]
+  [ckpt saved, best_val=2.0506]
+  [val_loss=2.0519 at step 300]
+step 300  loss_plus=1.9137  loss_minus=1.9224  proj_grad=-4.360199  lr=1.00e-04  step_ms=452 (fwd=450 perturb=2 transpose=0)
+  [val_loss=2.0506 at step 350]
+  [ckpt saved, best_val=2.0506]
+  [val_loss=2.0504 at step 400]
+  [ckpt saved, best_val=2.0504]
+step 400  loss_plus=1.5713  loss_minus=1.5681  proj_grad=1.618385  lr=1.00e-04  step_ms=456 (fwd=454 perturb=2 transpose=0)
+  [val_loss=2.0505 at step 450]
+  [val_loss=2.0496 at step 500]
+  [ckpt saved, best_val=2.0496]
+step 500  loss_plus=1.6872  loss_minus=1.6968  proj_grad=-4.791141  lr=1.00e-04  step_ms=460 (fwd=458 perturb=2 transpose=0)
+  [val_loss=2.0466 at step 550]
+  [ckpt saved, best_val=2.0466]
+  [val_loss=2.0461 at step 600]
+  [ckpt saved, best_val=2.0461]
+step 600  loss_plus=1.5835  loss_minus=1.5842  proj_grad=-0.306010  lr=1.00e-04  step_ms=466 (fwd=464 perturb=2 transpose=0)
+  [val_loss=2.0455 at step 650]
+  [ckpt saved, best_val=2.0455]
+  [val_loss=2.0463 at step 700]
+step 700  loss_plus=1.8243  loss_minus=1.8199  proj_grad=2.220511  lr=1.00e-04  step_ms=459 (fwd=457 perturb=2 transpose=0)
+  [val_loss=2.0468 at step 750]
+  [val_loss=2.0466 at step 800]
+step 800  loss_plus=2.0948  loss_minus=2.1007  proj_grad=-2.933264  lr=1.00e-04  step_ms=454 (fwd=453 perturb=2 transpose=0)
+  [val_loss=2.0483 at step 850]
+  [val_loss=2.0486 at step 900]
+step 900  loss_plus=2.1281  loss_minus=2.1250  proj_grad=1.564979  lr=1.00e-04  step_ms=491 (fwd=489 perturb=2 transpose=0)
+  [val_loss=2.0493 at step 950]
+  [val_loss=2.0471 at step 1000]
+step 1000  loss_plus=1.7524  loss_minus=1.7545  proj_grad=-1.024127  lr=1.00e-04  step_ms=464 (fwd=461 perturb=2 transpose=0)
+  [val_loss=2.0490 at step 1050]
+  [val_loss=2.0476 at step 1100]
+step 1100  loss_plus=2.3926  loss_minus=2.3924  proj_grad=0.086546  lr=1.00e-04  step_ms=450 (fwd=448 perturb=2 transpose=0)
+  [val_loss=2.0453 at step 1150]
+  [ckpt saved, best_val=2.0453]
+Time budget 600s reached at step 1150 (601.5s elapsed)
+
+=== MeZO Efficiency Report ===
+Total steps:  1150
+Train time:   531223ms (461.9ms/step)
+Wall time:    601.5s
+
+---
+final_loss_plus:  2.276193
+final_loss_minus: 2.281680
+training_seconds: 531.2
+total_seconds:    601.5
+num_steps:        1150
+num_params_M:     361.8
+mode:             mezo-cpu-lora-split
+epsilon:          0.001
+lr:               9.99997e-05
+lora_rank:        8

@@ -1,0 +1,63 @@
+=== MeZO (Zeroth-Order) Training: SmolLM2-360M (32 layers, GQA 15/5) ===
+dim=960 q_dim=960 kv_dim=320 hd=64 hidden=2560 seq=256 vocab=49152
+Params: 361.8M | Mode: ANE-matmul-only
+MeZO+LoRA: lr=1e-05 epsilon=0.001 seed=42 val_every=50 rank=8
+Memory: ~1457MB (inference only, no gradients/optimizer)
+[RESUMED from step 0, loss=0.0000]
+  (using CLI lr=1e-05 instead of checkpoint lr)
+LoRA: rank=8, adapter params=2293.8K, trainable RMS params=62.4K
+  Adapters on: Wq, Wk, Wv, Wo | Frozen: W1, W2, W3, embed
+  Perturbation: LoRA A/B + RMS only (~2356.2K params vs 361.8M full)
+  Mode: adapter-as-input (zero restaging, CPU-side LoRA correction)
+Tokens: 20000000 (train: 18000000, val: 2000000)
+Vocab compaction: 49152 -> 16893 active
+
+Compiling ANE forward kernels...
+  Compiling wqFwd (DIM->Q_DIM)...
+  Compiling wkvFwd (DIM->KV_DIM)...
+  Compiling woFwd (Q_DIM->DIM)...
+  Compiling w13Fwd (DIM->HIDDEN)...
+  Compiling w2Fwd (HIDDEN->DIM)...
+Compiled 5 kernels in 2586ms
+Initial weight staging complete
+
+Starting MeZO training...
+
+step 0  loss_plus=2.1095  loss_minus=2.0987  proj_grad=5.408883  lr=1.00e-05  step_ms=9116 (fwd=9078 perturb=38 transpose=0)
+  [val_loss=2.0705 at step 50]
+  [ckpt saved, best_val=2.0705]
+  [val_loss=2.0695 at step 100]
+  [ckpt saved, best_val=2.0695]
+step 100  loss_plus=1.8636  loss_minus=1.8610  proj_grad=1.279712  lr=1.00e-05  step_ms=714 (fwd=710 perturb=3 transpose=0)
+  [val_loss=2.0689 at step 150]
+  [ckpt saved, best_val=2.0689]
+  [val_loss=2.0684 at step 200]
+  [ckpt saved, best_val=2.0684]
+step 200  loss_plus=1.8444  loss_minus=1.8430  proj_grad=0.690758  lr=1.00e-05  step_ms=586 (fwd=583 perturb=2 transpose=0)
+  [val_loss=2.0678 at step 250]
+  [ckpt saved, best_val=2.0678]
+  [val_loss=2.0676 at step 300]
+  [ckpt saved, best_val=2.0676]
+step 300  loss_plus=1.9212  loss_minus=1.9291  proj_grad=-3.923595  lr=1.00e-05  step_ms=610 (fwd=606 perturb=2 transpose=0)
+  [val_loss=2.0671 at step 350]
+  [ckpt saved, best_val=2.0671]
+  [val_loss=2.0667 at step 400]
+  [ckpt saved, best_val=2.0667]
+Time budget 300s reached at step 400 (301.9s elapsed)
+
+=== MeZO Efficiency Report ===
+Total steps:  400
+Train time:   262525ms (656.3ms/step)
+Wall time:    301.9s
+
+---
+final_loss_plus:  2.251726
+final_loss_minus: 2.258104
+training_seconds: 262.5
+total_seconds:    301.9
+num_steps:        400
+num_params_M:     361.8
+mode:             mezo-ane-lora-split
+epsilon:          0.001
+lr:               1e-05
+lora_rank:        8
