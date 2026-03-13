@@ -335,14 +335,69 @@ At 360M params, the full picture is:
 - MeZO's sole advantage: **2.4x less memory** (1.7GB vs 4.1GB)
 - At 360M, both methods fit in 8GB. MeZO's memory advantage only matters at ~1B+ params.
 
-## Next Steps
+### 10. Why full-parameter MeZO is a bad fit for ANE (v5 ROOT CAUSE ANALYSIS)
 
-1. **Longer fine-tuning runs** (600s+): Does MeZO val loss eventually converge given
-   enough steps? Current trajectory suggests 50K+ steps needed.
-2. **SmolLM2-1.7B or similar ~1B model:** The actual memory crossover point where
-   backprop doesn't fit on-device but MeZO does. This is the real test case.
-3. **MeZO-SVRG or Sparse MeZO:** Follow-up methods (ICML/ICLR 2024) claim 20% accuracy
-   improvement and 2x faster convergence. Would address MeZO's convergence weakness.
-4. **Multiple seeds:** 3-5 seeds per condition for error bars.
-5. **Alternative MeZO-ANE architecture:** Fused ANE kernels that avoid per-step restaging.
-   Current approach (separate matmul dispatches) is fundamentally mismatched with MeZO.
+Full-parameter MeZO has a fundamental architectural mismatch with ANE:
+
+1. **MeZO perturbs ALL weights every step** → requires restaging 7×L weight matrices
+   into IOSurfaces (fp32→fp16 transpose+copy) **twice per step**
+2. **ANE excels at static computation graphs** → weights should be baked at compile time,
+   not changing every step
+3. **ANE's native primitive is convolution** → 1x1 conv yields 3x throughput vs matmul,
+   but our implementation uses matmul dispatches
+4. **Per-dispatch IO overhead (~50μs)** accumulates: 7 dispatches × L layers × 2 fwd passes
+   = 420+ dispatches/step at 360M
+
+These costs are inherent to full-parameter ZO + ANE, not optimization bugs.
+
+## Path Forward: MeZO + LoRA on ANE (v5 PROPOSED)
+
+The research literature points to a fundamentally better approach: **MeZO + LoRA**.
+
+**Why this plays to ANE's strengths:**
+
+1. **Base weights stay frozen** → compiled/baked once, never restaged. This is ANE's
+   preferred operating mode. Zero transpose overhead for the base model.
+2. **Only small adapter matrices perturbed** → With LoRA rank 32 on SmolLM2-360M:
+   - Adapter params per projection: 2 × (960 × 32) = 61,440
+   - Q+K+V+O per layer: 245,760 params
+   - Total: 245,760 × 32 layers = **7.9M** (2.2% of full 361.8M)
+   - Estimated perturbation time: ~8ms (vs 376ms for full params = **47x reduction**)
+3. **Adapters as IOSurface inputs** (Orion paper technique, arXiv:2603.06728) → adapter
+   matrices are passed as inputs, not compiled weights. Updating them is a cheap
+   IOSurface write, not a retranspose+restage cycle.
+4. **Two forward passes** (MeZO's core requirement) are ANE's sweet spot —
+   deep graph pipelining achieves near-peak 19 TFLOPS at 2.8W.
+5. **Memory stays inference-only** → MeZO's key advantage preserved.
+
+**MeZO + LoRA is proven:** The original MeZO paper (NeurIPS 2023) tests this:
+- MeZO+LoRA on LLaMA-7B: SST-2 95.0%, RTE 74.9%, COPA 84.3%
+- MeZO+LoRA on OPT-13B: SST-2 89.6%, BoolQ 73.8%
+- The ZO-Bench paper (ICML 2024) confirms: "LoRA shows consistent robustness
+  when paired with various ZO algorithms"
+
+**Estimated MeZO+LoRA-ANE step time (360M):**
+
+| Component | Full MeZO-ANE | MeZO+LoRA-ANE (estimated) |
+|-----------|---------------|---------------------------|
+| Forward (2x) | 525ms | ~400ms (1x1 conv = 3x matmul speed) |
+| Perturbation (4x) | 376ms | ~8ms (2.2% of params) |
+| Transpose+stage | 478ms | ~0ms (adapters as IOSurface inputs) |
+| **Total** | **1200ms** | **~410ms** |
+
+If realized, MeZO+LoRA-ANE at ~410ms would be **faster than MeZO-CPU (814ms)** and
+competitive with backprop-CPU (602ms), while using inference-only memory (~1.5GB).
+
+**Additional optimizations:**
+- Express all matmuls as 1x1 convolutions (ANE's native primitive, 3x throughput)
+- Use Orion's adapter-as-input architecture (zero recompilation)
+- MeZO-SVRG (ICML 2024) for 2x faster convergence
+
+## Sources (v5)
+
+- [Orion: Characterizing and Programming Apple's ANE for LLM Training](https://arxiv.org/abs/2603.06728)
+- [Deploying Transformers on the Apple Neural Engine (Apple ML Research)](https://machinelearning.apple.com/research/neural-engine-transformers)
+- [AMD NPU Training — first published NPU training paper](https://arxiv.org/abs/2504.03083)
+- [ZO-Bench: Revisiting ZO Optimization for LLM Fine-Tuning (ICML 2024)](https://arxiv.org/abs/2402.11592)
+- [Apple Foundation Models Tech Report 2025](https://arxiv.org/abs/2507.13575)
+- [Inside the M4 Apple Neural Engine (maderix)](https://maderix.substack.com/p/inside-the-m4-apple-neural-engine-615)

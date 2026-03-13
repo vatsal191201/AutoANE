@@ -557,6 +557,19 @@ Code has cosine decay (lr decays from base to 0.1×base over total_steps).
 For our short runs (240-317 of ~100K total_steps), decay is <0.3% — effectively constant.
 The original assumption of "no schedule" was technically incorrect.
 
+### A11: ANE matmul throughput would dominate dispatch overhead at 360M+ params
+**Status: REFUTED** by v5 experiment (Section 5.5).
+Transpose overhead scaled superlinearly (4.8x for 2.69x more params). ANE forward
+is still slower than CPU even without transpose. The architectural mismatch is between
+MeZO's per-step weight perturbation and ANE's preference for static baked weights.
+**Solution: MeZO + LoRA, where only small adapters change per step.**
+
+### A12: Full-parameter perturbation is the only way to run MeZO
+**Status: INCORRECT.** The MeZO paper tests MeZO+LoRA (Section 4.4), which only perturbs
+LoRA adapter parameters. With rank 32 on 360M: ~7.9M adapter params (2.2% of full model).
+This reduces perturbation time by ~47x and eliminates base weight restaging entirely.
+Accuracy: MeZO+LoRA on LLaMA-7B SST-2=95.0% (vs full-param MeZO SST-2=92.7%).
+
 ---
 
 ## 7. What's Done and What's Next
@@ -597,17 +610,23 @@ The original assumption of "no schedule" was technically incorrect.
 - [x] v5: Memory profiling at 360M (MeZO 1720MB vs Backprop 4133MB)
 - [x] v5: Falsified hypothesis that ANE would overtake CPU at 360M
 - [x] v5: Identified superlinear transpose scaling (4.8x for 2.69x params)
+- [x] v5: Root cause analysis — full-param MeZO is architecturally mismatched with ANE
+- [x] v5: Literature review — ANE strengths, Orion paper, MeZO+LoRA, adapter-as-input
+- [x] v5: Identified MeZO+LoRA as the correct approach for ANE (plays to ANE strengths)
 
 ### Next Steps
-- [ ] **Long MeZO run (10K+ steps):** Does val loss converge to BP quality given enough steps?
-      Current trajectory: 0.005 drop per 900 steps. Need ~50K steps for val_loss=1.93.
-- [ ] **~1B model (SmolLM2-1.7B or similar):** Test the actual memory crossover — where
-      backprop doesn't fit on 8GB but MeZO still runs. This is MeZO's real value proposition.
-- [ ] **MeZO-SVRG or Sparse MeZO:** Follow-up methods may converge faster (ICML/ICLR 2024).
-      Would address MeZO's convergence weakness while preserving memory advantage.
-- [ ] **Fused ANE kernels for MeZO:** Current per-matmul dispatch is architecturally mismatched
-      with MeZO's per-step restaging requirement. Fused kernels could reduce dispatch count
-      from 224 per fwd to ~32 (one per layer), and correspondingly reduce restaging cost.
+- [ ] **MeZO + LoRA on ANE (HIGHEST PRIORITY):** Full-parameter MeZO is a bad fit for ANE.
+      MeZO+LoRA eliminates the two bottlenecks (perturbation + restaging) by only
+      perturbing small adapter matrices. Orion paper's adapter-as-input technique passes
+      adapters as IOSurface inputs → zero retranspose. Estimated step time ~410ms (vs
+      1200ms full MeZO-ANE). Would finally make ANE FASTER than CPU for ZO training.
+      MeZO+LoRA is proven (NeurIPS 2023): LLaMA-7B SST-2 95.0%, OPT-13B SST-2 89.6%.
+- [ ] **1x1 convolution matmuls:** ANE is a convolution engine. Expressing Linear layers as
+      1x1 Conv2d yields 3x throughput (Apple ML Research documentation). Currently using
+      matmul dispatches. This alone could make ANE forward faster than CPU.
+- [ ] **MeZO-SVRG + LoRA:** Variance-reduced ZO (ICML 2024) converges 2x faster with 20%
+      accuracy improvement. Combined with LoRA on ANE, this addresses both speed and
+      convergence weaknesses simultaneously.
 - [ ] **Multiple seeds for all conditions:** 3-5 seeds per condition for error bars.
 - [ ] **Push to remote:** 12+ unpushed commits on main.
 
@@ -626,3 +645,9 @@ The original assumption of "no schedule" was technically incorrect.
 - [MeZO-SVRG: Variance-reduced ZO optimization (ICML 2024)](https://proceedings.mlr.press/v235/gautam24a.html)
 - [Sparse MeZO: Efficient ZO with sparse updates (ICLR 2024)](https://arxiv.org/abs/2402.15751)
 - [SubZero: ZO Fine-Tuning in Random Subspaces (ICCV 2025)](https://openaccess.thecvf.com/content/ICCV2025/papers/Yu_Zeroth-Order_Fine-Tuning_of_LLMs_in_Random_Subspaces_ICCV_2025_paper.pdf)
+- [Orion: Characterizing and Programming Apple's ANE for LLM Training (arXiv:2603.06728)](https://arxiv.org/abs/2603.06728)
+- [Deploying Transformers on the Apple Neural Engine (Apple ML Research)](https://machinelearning.apple.com/research/neural-engine-transformers)
+- [Unlocking the AMD NPU for ML Training on the Client (arXiv:2504.03083)](https://arxiv.org/abs/2504.03083)
+- [ZO-Bench: Revisiting ZO Optimization for LLM Fine-Tuning (ICML 2024)](https://arxiv.org/abs/2402.11592)
+- [Apple Foundation Models Tech Report 2025 (arXiv:2507.13575)](https://arxiv.org/abs/2507.13575)
+- [Inside the M4 Apple Neural Engine (maderix benchmarks)](https://maderix.substack.com/p/inside-the-m4-apple-neural-engine-615)
