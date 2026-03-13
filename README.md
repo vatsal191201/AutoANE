@@ -473,8 +473,8 @@ MLX is better for: raw GPU throughput on large models, broader ecosystem, rapid 
 ## Open Questions
 
 1. Does the step-count advantage hold with larger datasets? Chinchilla predicts a crossover where larger models become optimal — but at what data scale?
-2. ~~Can zeroth-order training (MeZO) leverage ANE's fast forward passes?~~ **Answered: No for full-parameter MeZO** (IOSurface restaging dominates). MeZO+LoRA-split helps but convergence is too slow. See [MeZO Audit Report](docs/MEZO_AUDIT_REPORT.md).
-3. Can P-GAP (gradient-aligned perturbation) + LoRA + 1x1 conv make ZO-ANE competitive? Estimated 5x fewer steps + 3x faster matmul + zero restaging. This is the highest-impact untested direction.
+2. ~~Can zeroth-order training (MeZO) leverage ANE's fast forward passes?~~ **Answered: No with matmul kernels.** But conv1x1 is 3x faster on ANE ([Orion](https://arxiv.org/abs/2603.06728)), and MP-LoRA halves forward passes ([MobiZO](https://aclanthology.org/2025.emnlp-main.1022/)). See [ANE Strengths Plan](docs/ANE_STRENGTHS_PLAN.md).
+3. **Conv1x1 + MP-LoRA + P-GAP on ANE**: Estimated ~11x speedup over current best (593ms → ~50ms/step). Concrete plan with literature-backed numbers in [docs/ANE_STRENGTHS_PLAN.md](docs/ANE_STRENGTHS_PLAN.md). This is the highest-impact next step.
 4. Mega-kernel fusion (N transformer layers in one MIL program) achieves 3-4x forward speedup ([maderix/ANE PR #24](https://github.com/maderix/ANE/issues/24)). Can this be combined with runtime weight injection?
 5. Function parameter IOSurfaces are 30% faster than our spatial packing ([maderix/ANE PR #22](https://github.com/maderix/ANE/pull/22)). Worth implementing?
 6. INT8 quantization halves IOSurface size — does this move the memory pressure ceiling from DIM=1536 to DIM=2048+?
