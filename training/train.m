@@ -403,7 +403,7 @@ int main(int argc, char *argv[]) {
             float a_scale = 1.0f / sqrtf((float)r);
             size_t lora_params = 0;
             for (int L = 0; L < NLAYERS; L++) {
-                lora_layers[L] = lora_layer_alloc(r);
+                lora_layers[L] = lora_layer_alloc(r, false);
                 lora_adam[L] = lora_adam_alloc(r);
                 lora_grads_arr[L] = lora_grads_alloc(r);
                 // Copy base weights (frozen)

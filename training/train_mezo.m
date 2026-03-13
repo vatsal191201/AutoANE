@@ -144,9 +144,9 @@ static void perturb_all_weights(LayerWeights *lw, float *embed, float *rms_final
 static void perturb_lora_weights(LoRALayer *ll, LayerWeights *lw,
                                  float *rms_final, int nlayers, uint64_t seed, float scale) {
     xo_seed(seed);
-    // Perturb LoRA A/B matrices for each layer (attention projections only)
     for (int L = 0; L < nlayers; L++) {
         int r = ll[L].rank;
+        // Attention adapters
         perturb_buffer(ll[L].Aq, (size_t)r * DIM, scale);
         perturb_buffer(ll[L].Bq, (size_t)Q_DIM * r, scale);
         perturb_buffer(ll[L].Ak, (size_t)r * DIM, scale);
@@ -155,6 +155,15 @@ static void perturb_lora_weights(LoRALayer *ll, LayerWeights *lw,
         perturb_buffer(ll[L].Bv, (size_t)KV_DIM * r, scale);
         perturb_buffer(ll[L].Ao, (size_t)r * Q_DIM, scale);
         perturb_buffer(ll[L].Bo, (size_t)DIM * r, scale);
+        // FFN adapters (if present)
+        if (ll[L].has_ffn) {
+            perturb_buffer(ll[L].A1, (size_t)r * DIM, scale);
+            perturb_buffer(ll[L].B1, (size_t)HIDDEN * r, scale);
+            perturb_buffer(ll[L].A2, (size_t)r * HIDDEN, scale);
+            perturb_buffer(ll[L].B2, (size_t)DIM * r, scale);
+            perturb_buffer(ll[L].A3, (size_t)r * DIM, scale);
+            perturb_buffer(ll[L].B3, (size_t)HIDDEN * r, scale);
+        }
         // RMS norms are still trainable (small, always perturbed)
         perturb_buffer(lw[L].rms_att, DIM, scale);
         perturb_buffer(lw[L].rms_ffn, DIM, scale);
@@ -170,6 +179,11 @@ static void lora_merge_all(LayerWeights *lw, LoRALayer *ll, int nlayers) {
         lora_merge_weight(lw[L].Wk, ll[L].Wk_base, ll[L].Bk, ll[L].Ak, KV_DIM, r, DIM);
         lora_merge_weight(lw[L].Wv, ll[L].Wv_base, ll[L].Bv, ll[L].Av, KV_DIM, r, DIM);
         lora_merge_weight(lw[L].Wo, ll[L].Wo_base, ll[L].Bo, ll[L].Ao, DIM, r, Q_DIM);
+        if (ll[L].has_ffn) {
+            lora_merge_weight(lw[L].W1, ll[L].W1_base, ll[L].B1, ll[L].A1, HIDDEN, r, DIM);
+            lora_merge_weight(lw[L].W2, ll[L].W2_base, ll[L].B2, ll[L].A2, DIM, r, HIDDEN);
+            lora_merge_weight(lw[L].W3, ll[L].W3_base, ll[L].B3, ll[L].A3, HIDDEN, r, DIM);
+        }
     }
 }
 
@@ -285,6 +299,7 @@ int main(int argc, char *argv[]) {
         bool lr_from_cli = false;
         bool use_lora = false;
         bool lora_split = false;  // adapter-as-input: no merge, no restage
+        bool lora_ffn = false;    // also apply LoRA to W1, W2, W3
         int lora_rank = 8;
         long init_seed = 42;
         int val_every = 500;
@@ -306,6 +321,7 @@ int main(int argc, char *argv[]) {
             else if (strcmp(argv[i], "--lora") == 0) use_lora = true;
             else if (strcmp(argv[i], "--lora-split") == 0) { use_lora = true; lora_split = true; }
             else if (strcmp(argv[i], "--lora-rank") == 0 && i+1 < argc) lora_rank = atoi(argv[++i]);
+            else if (strcmp(argv[i], "--lora-ffn") == 0) lora_ffn = true;
         }
 
         if (!cpu_only && !ane_matmul_only) cpu_only = true;  // Default to CPU-only
@@ -377,13 +393,14 @@ int main(int argc, char *argv[]) {
 
         // === LoRA initialization ===
         LoRALayer lora_layers[NLAYERS];
+        (void)0;  // FFN LoRA uses same lora_tmp buffer (rank*SEQ)
         if (use_lora) {
             int r = lora_rank;
             float a_scale = 1.0f / sqrtf((float)r);
             srand48(init_seed + 12345);  // Separate seed for LoRA init
             size_t lora_params = 0;
             for (int L = 0; L < NLAYERS; L++) {
-                lora_layers[L] = lora_layer_alloc(r);
+                lora_layers[L] = lora_layer_alloc(r, lora_ffn);
                 // Copy base weights (frozen)
                 memcpy(lora_layers[L].Wq_base, lw[L].Wq, WQ_SZ * 4);
                 memcpy(lora_layers[L].Wk_base, lw[L].Wk, WK_SZ * 4);
@@ -396,14 +413,29 @@ int main(int argc, char *argv[]) {
                 for (size_t i = 0; i < (size_t)r * Q_DIM; i++) lora_layers[L].Ao[i] = a_scale * (2 * drand48() - 1);
                 // B matrices stay zero (calloc)
                 lora_params += 2 * (size_t)r * DIM * 3 + 2 * (size_t)r * Q_DIM + 2 * (size_t)r * KV_DIM * 2;
+                if (lora_ffn) {
+                    memcpy(lora_layers[L].W1_base, lw[L].W1, W1_SZ * 4);
+                    memcpy(lora_layers[L].W2_base, lw[L].W2, W2_SZ * 4);
+                    memcpy(lora_layers[L].W3_base, lw[L].W3, W3_SZ * 4);
+                    // A1[rank,DIM], B1[HIDDEN,rank], A3[rank,DIM], B3[HIDDEN,rank]
+                    for (size_t i = 0; i < (size_t)r * DIM; i++) lora_layers[L].A1[i] = a_scale * (2 * drand48() - 1);
+                    for (size_t i = 0; i < (size_t)r * DIM; i++) lora_layers[L].A3[i] = a_scale * (2 * drand48() - 1);
+                    // A2[rank,HIDDEN]
+                    float a2_scale = 1.0f / sqrtf((float)r);
+                    for (size_t i = 0; i < (size_t)r * HIDDEN; i++) lora_layers[L].A2[i] = a2_scale * (2 * drand48() - 1);
+                    // B matrices stay zero (calloc)
+                    lora_params += 2 * (size_t)r * DIM * 2 + 2 * (size_t)r * HIDDEN + (size_t)HIDDEN * r * 2 + (size_t)DIM * r;
+                }
             }
             size_t rms_params = (size_t)NLAYERS * 2 * DIM + DIM;
             printf("LoRA: rank=%d, adapter params=%.1fK, trainable RMS params=%.1fK\n",
                    r, (float)lora_params / 1e3, (float)rms_params / 1e3);
-            printf("  Adapters on: Wq, Wk, Wv, Wo | Frozen: W1, W2, W3, embed\n");
+            if (lora_ffn) printf("  Adapters on: Wq, Wk, Wv, Wo, W1, W2, W3 | Frozen: embed\n");
+            else printf("  Adapters on: Wq, Wk, Wv, Wo | Frozen: W1, W2, W3, embed\n");
             printf("  Perturbation: LoRA A/B + RMS only (~%.1fK params vs %.1fM full)\n",
                    (float)(lora_params + rms_params) / 1e3, total_p / 1e6);
             if (lora_split) printf("  Mode: adapter-as-input (zero restaging, CPU-side LoRA correction)\n");
+            // FFN LoRA split uses same lora_tmp buffer (allocated later)
         }
 
         // === mmap token data ===
@@ -646,7 +678,8 @@ int main(int argc, char *argv[]) {
 
             if (!cpu_only && !lora_split) {
                 t0 = mach_absolute_time();
-                if (use_lora) { RETRANSPOSE_ATTN_ONLY(); }
+                if (use_lora && !lora_ffn) { RETRANSPOSE_ATTN_ONLY(); }
+                else if (use_lora && lora_ffn) { RETRANSPOSE_AND_STAGE(); }
                 else { RETRANSPOSE_AND_STAGE(); }
                 t_transpose += tb_ms(mach_absolute_time() - t0);
             }
@@ -734,6 +767,11 @@ int main(int argc, char *argv[]) {
                                 HIDDEN, SEQ, DIM, 1.0f, lw[L].W1, DIM, xnorm_buf, SEQ, 0.0f, h1, SEQ);
                     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                                 HIDDEN, SEQ, DIM, 1.0f, lw[L].W3, DIM, xnorm_buf, SEQ, 0.0f, h3, SEQ);
+                    if (lora_split && lora_ffn) {
+                        LoRALayer *ll = &lora_layers[L];
+                        lora_addmm(h1, ll->A1, ll->B1, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM);
+                        lora_addmm(h3, ll->A3, ll->B3, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM);
+                    }
                 } else {
                     io_write_dyn_acts(pls[L].w1Fwd_in, xnorm_buf, DIM, SEQ, W13_FWD_SP);
                     ane_eval_req(dk.w13Fwd, plr[L].w1Fwd);
@@ -742,6 +780,12 @@ int main(int argc, char *argv[]) {
                     io_write_dyn_acts(pls[L].w3Fwd_in, xnorm_buf, DIM, SEQ, W13_FWD_SP);
                     ane_eval_req(dk.w13Fwd, plr[L].w3Fwd);
                     io_read_dyn(dk.w13Fwd->ioOut, h3, HIDDEN, SEQ);
+
+                    if (lora_split && lora_ffn) {
+                        LoRALayer *ll = &lora_layers[L];
+                        lora_addmm(h1, ll->A1, ll->B1, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM);
+                        lora_addmm(h3, ll->A3, ll->B3, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM);
+                    }
                 }
 
                 // SiLU(h1) * h3
@@ -754,10 +798,18 @@ int main(int argc, char *argv[]) {
                 if (cpu_only) {
                     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                                 DIM, SEQ, HIDDEN, 1.0f, lw[L].W2, HIDDEN, silu_out, SEQ, 0.0f, o_out, SEQ);
+                    if (lora_split && lora_ffn) {
+                        LoRALayer *ll = &lora_layers[L];
+                        lora_addmm(o_out, ll->A2, ll->B2, silu_out, lora_tmp, DIM, ll->rank, HIDDEN);
+                    }
                 } else {
                     io_write_dyn_acts(pls[L].w2Fwd_in, silu_out, HIDDEN, SEQ, W2_FWD_SP);
                     ane_eval_req(dk.w2Fwd, plr[L].w2Fwd);
                     io_read_dyn(dk.w2Fwd->ioOut, o_out, DIM, SEQ);
+                    if (lora_split && lora_ffn) {
+                        LoRALayer *ll = &lora_layers[L];
+                        lora_addmm(o_out, ll->A2, ll->B2, silu_out, lora_tmp, DIM, ll->rank, HIDDEN);
+                    }
                 }
 
                 // Residual 2: x = x + res_alpha * ffn_out (DeepNet scaled residual)
@@ -785,7 +837,8 @@ int main(int argc, char *argv[]) {
 
             if (!cpu_only && !lora_split) {
                 t0 = mach_absolute_time();
-                if (use_lora) { RETRANSPOSE_ATTN_ONLY(); }
+                if (use_lora && !lora_ffn) { RETRANSPOSE_ATTN_ONLY(); }
+                else if (use_lora && lora_ffn) { RETRANSPOSE_AND_STAGE(); }
                 else { RETRANSPOSE_AND_STAGE(); }
                 t_transpose += tb_ms(mach_absolute_time() - t0);
             }
@@ -863,6 +916,11 @@ int main(int argc, char *argv[]) {
                                 HIDDEN, SEQ, DIM, 1.0f, lw[L].W1, DIM, xnorm_buf, SEQ, 0.0f, h1, SEQ);
                     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                                 HIDDEN, SEQ, DIM, 1.0f, lw[L].W3, DIM, xnorm_buf, SEQ, 0.0f, h3, SEQ);
+                    if (lora_split && lora_ffn) {
+                        LoRALayer *ll = &lora_layers[L];
+                        lora_addmm(h1, ll->A1, ll->B1, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM);
+                        lora_addmm(h3, ll->A3, ll->B3, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM);
+                    }
                 } else {
                     io_write_dyn_acts(pls[L].w1Fwd_in, xnorm_buf, DIM, SEQ, W13_FWD_SP);
                     ane_eval_req(dk.w13Fwd, plr[L].w1Fwd);
@@ -871,6 +929,12 @@ int main(int argc, char *argv[]) {
                     io_write_dyn_acts(pls[L].w3Fwd_in, xnorm_buf, DIM, SEQ, W13_FWD_SP);
                     ane_eval_req(dk.w13Fwd, plr[L].w3Fwd);
                     io_read_dyn(dk.w13Fwd->ioOut, h3, HIDDEN, SEQ);
+
+                    if (lora_split && lora_ffn) {
+                        LoRALayer *ll = &lora_layers[L];
+                        lora_addmm(h1, ll->A1, ll->B1, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM);
+                        lora_addmm(h3, ll->A3, ll->B3, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM);
+                    }
                 }
 
                 for (int i = 0; i < HIDDEN * SEQ; i++) {
@@ -881,10 +945,18 @@ int main(int argc, char *argv[]) {
                 if (cpu_only) {
                     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                                 DIM, SEQ, HIDDEN, 1.0f, lw[L].W2, HIDDEN, silu_out, SEQ, 0.0f, o_out, SEQ);
+                    if (lora_split && lora_ffn) {
+                        LoRALayer *ll = &lora_layers[L];
+                        lora_addmm(o_out, ll->A2, ll->B2, silu_out, lora_tmp, DIM, ll->rank, HIDDEN);
+                    }
                 } else {
                     io_write_dyn_acts(pls[L].w2Fwd_in, silu_out, HIDDEN, SEQ, W2_FWD_SP);
                     ane_eval_req(dk.w2Fwd, plr[L].w2Fwd);
                     io_read_dyn(dk.w2Fwd->ioOut, o_out, DIM, SEQ);
+                    if (lora_split && lora_ffn) {
+                        LoRALayer *ll = &lora_layers[L];
+                        lora_addmm(o_out, ll->A2, ll->B2, silu_out, lora_tmp, DIM, ll->rank, HIDDEN);
+                    }
                 }
 
                 vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ * DIM));
@@ -925,7 +997,8 @@ int main(int argc, char *argv[]) {
             //    Only restage here if validation is about to run (needs updated weights).
             if (!cpu_only && val_every > 0 && (step + 1) % val_every == 0 && val_tokens > SEQ + 1) {
                 t0 = mach_absolute_time();
-                if (use_lora) { RETRANSPOSE_ATTN_ONLY(); }
+                if (use_lora && !lora_ffn) { RETRANSPOSE_ATTN_ONLY(); }
+                else if (use_lora && lora_ffn) { RETRANSPOSE_AND_STAGE(); }
                 else { RETRANSPOSE_AND_STAGE(); }
                 t_transpose += tb_ms(mach_absolute_time() - t0);
             }
@@ -1006,6 +1079,11 @@ int main(int argc, char *argv[]) {
                         if (cpu_only) {
                             cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans, HIDDEN,SEQ,DIM, 1.0f, lw[L].W1,DIM, xnorm_buf,SEQ, 0.0f, h1,SEQ);
                             cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans, HIDDEN,SEQ,DIM, 1.0f, lw[L].W3,DIM, xnorm_buf,SEQ, 0.0f, h3,SEQ);
+                            if (lora_split && lora_ffn) {
+                                LoRALayer *ll = &lora_layers[L];
+                                lora_addmm(h1, ll->A1, ll->B1, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM);
+                                lora_addmm(h3, ll->A3, ll->B3, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM);
+                            }
                         } else {
                             io_write_dyn_acts(pls[L].w1Fwd_in, xnorm_buf, DIM, SEQ, W13_FWD_SP);
                             ane_eval_req(dk.w13Fwd, plr[L].w1Fwd);
@@ -1013,14 +1091,27 @@ int main(int argc, char *argv[]) {
                             io_write_dyn_acts(pls[L].w3Fwd_in, xnorm_buf, DIM, SEQ, W13_FWD_SP);
                             ane_eval_req(dk.w13Fwd, plr[L].w3Fwd);
                             io_read_dyn(dk.w13Fwd->ioOut, h3, HIDDEN, SEQ);
+                            if (lora_split && lora_ffn) {
+                                LoRALayer *ll = &lora_layers[L];
+                                lora_addmm(h1, ll->A1, ll->B1, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM);
+                                lora_addmm(h3, ll->A3, ll->B3, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM);
+                            }
                         }
                         for (int i = 0; i < HIDDEN*SEQ; i++) { float s = h1[i]/(1.0f+expf(-h1[i])); silu_out[i] = s*h3[i]; }
                         if (cpu_only) {
                             cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans, DIM,SEQ,HIDDEN, 1.0f, lw[L].W2,HIDDEN, silu_out,SEQ, 0.0f, o_out,SEQ);
+                            if (lora_split && lora_ffn) {
+                                LoRALayer *ll = &lora_layers[L];
+                                lora_addmm(o_out, ll->A2, ll->B2, silu_out, lora_tmp, DIM, ll->rank, HIDDEN);
+                            }
                         } else {
                             io_write_dyn_acts(pls[L].w2Fwd_in, silu_out, HIDDEN, SEQ, W2_FWD_SP);
                             ane_eval_req(dk.w2Fwd, plr[L].w2Fwd);
                             io_read_dyn(dk.w2Fwd->ioOut, o_out, DIM, SEQ);
+                            if (lora_split && lora_ffn) {
+                                LoRALayer *ll = &lora_layers[L];
+                                lora_addmm(o_out, ll->A2, ll->B2, silu_out, lora_tmp, DIM, ll->rank, HIDDEN);
+                            }
                         }
                         vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ*DIM));
                     }

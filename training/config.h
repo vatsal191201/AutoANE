@@ -198,30 +198,50 @@ static void layer_grads_free(LayerGrads *g) {
 // Merge-based: W_eff = W_base + B@A, no forward/backward changes needed
 typedef struct {
     int rank;
+    bool has_ffn;      // Whether this layer also has FFN adapters
     float *Aq, *Bq;   // Wq: A[rank,DIM], B[Q_DIM,rank]
     float *Ak, *Bk;   // Wk: A[rank,DIM], B[KV_DIM,rank]
     float *Av, *Bv;   // Wv: A[rank,DIM], B[KV_DIM,rank]
     float *Ao, *Bo;   // Wo: A[rank,Q_DIM], B[DIM,rank]
     float *Wq_base, *Wk_base, *Wv_base, *Wo_base;
+    // FFN adapters (NULL if !has_ffn)
+    float *A1, *B1;   // W1: A[rank,DIM], B[HIDDEN,rank]
+    float *A2, *B2;   // W2: A[rank,HIDDEN], B[DIM,rank]
+    float *A3, *B3;   // W3: A[rank,DIM], B[HIDDEN,rank]
+    float *W1_base, *W2_base, *W3_base;
 } LoRALayer;
 
 typedef struct { AdamState Aq, Bq, Ak, Bk, Av, Bv, Ao, Bo; } LoRAAdam;
 typedef struct { float *Aq, *Bq, *Ak, *Bk, *Av, *Bv, *Ao, *Bo; } LoRAGrads;
 
-static LoRALayer lora_layer_alloc(int rank) {
-    LoRALayer l; l.rank = rank;
+static LoRALayer lora_layer_alloc(int rank, bool ffn) {
+    LoRALayer l; l.rank = rank; l.has_ffn = ffn;
     l.Aq=(float*)safe_calloc((size_t)rank*DIM,4);     l.Bq=(float*)safe_calloc((size_t)Q_DIM*rank,4);
     l.Ak=(float*)safe_calloc((size_t)rank*DIM,4);     l.Bk=(float*)safe_calloc((size_t)KV_DIM*rank,4);
     l.Av=(float*)safe_calloc((size_t)rank*DIM,4);     l.Bv=(float*)safe_calloc((size_t)KV_DIM*rank,4);
     l.Ao=(float*)safe_calloc((size_t)rank*Q_DIM,4);   l.Bo=(float*)safe_calloc((size_t)DIM*rank,4);
     l.Wq_base=(float*)safe_malloc(WQ_SZ*4); l.Wk_base=(float*)safe_malloc(WK_SZ*4);
     l.Wv_base=(float*)safe_malloc(WV_SZ*4); l.Wo_base=(float*)safe_malloc(WO_SZ*4);
+    if (ffn) {
+        l.A1=(float*)safe_calloc((size_t)rank*DIM,4);     l.B1=(float*)safe_calloc((size_t)HIDDEN*rank,4);
+        l.A2=(float*)safe_calloc((size_t)rank*HIDDEN,4);  l.B2=(float*)safe_calloc((size_t)DIM*rank,4);
+        l.A3=(float*)safe_calloc((size_t)rank*DIM,4);     l.B3=(float*)safe_calloc((size_t)HIDDEN*rank,4);
+        l.W1_base=(float*)safe_malloc(W1_SZ*4); l.W2_base=(float*)safe_malloc(W2_SZ*4);
+        l.W3_base=(float*)safe_malloc(W3_SZ*4);
+    } else {
+        l.A1=NULL; l.B1=NULL; l.A2=NULL; l.B2=NULL; l.A3=NULL; l.B3=NULL;
+        l.W1_base=NULL; l.W2_base=NULL; l.W3_base=NULL;
+    }
     return l;
 }
 static void lora_layer_free(LoRALayer *l) {
     free(l->Aq);free(l->Bq);free(l->Ak);free(l->Bk);
     free(l->Av);free(l->Bv);free(l->Ao);free(l->Bo);
     free(l->Wq_base);free(l->Wk_base);free(l->Wv_base);free(l->Wo_base);
+    if (l->has_ffn) {
+        free(l->A1);free(l->B1);free(l->A2);free(l->B2);free(l->A3);free(l->B3);
+        free(l->W1_base);free(l->W2_base);free(l->W3_base);
+    }
 }
 static LoRAAdam lora_adam_alloc(int rank) {
     LoRAAdam a;
