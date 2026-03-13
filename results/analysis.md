@@ -63,6 +63,29 @@
 - Memory: MeZO uses **2.4x less** than Backprop (1720 vs 4133 MB)
 - Val convergence: Backprop reaches 1.79 in 100 steps; MeZO only reaches 2.07
 
+### MeZO+LoRA Fine-Tuning (SmolLM2-360M, 361.8M params) — v7
+
+| # | Method | Hardware | Steps | ms/step | Perturb (ms) | Transpose (ms) | Val Loss |
+|---|--------|----------|-------|---------|--------------|-----------------|----------|
+| 13 | BP+LoRA r8 | CPU | 191 | 586 | — | — | 1.925 |
+| 14 | BP+LoRA r8 | ANE | 74 | 1344 | — | — | — |
+| 15 | MeZO+LoRA r8 | CPU | 200 | 576 | 56 | 0 | 2.068 |
+| 16 | MeZO+LoRA r8 | ANE | 143 | 807 | 65 | 106 | 2.070 |
+| 17 | MeZO+LoRA r32 | CPU | 55 | 1142 | 123 | 0 | — |
+| 18 | MeZO+LoRA-split r8 | CPU | 205 | 537 | 2 | 0 | 2.069 |
+| 19 | MeZO+LoRA-split r8 | ANE | 159 | 708 | 3 | 0 | 2.070 |
+
+**MeZO+LoRA HPs:** lr=1e-5, epsilon=1e-3, rank=8, adapters on Wq/Wk/Wv/Wo, FFN frozen
+**BP+LoRA HPs:** lr=3e-4, Adam, accum=10, warmup=10, rank=8, --no-deepnet
+
+**Key MeZO+LoRA findings (v7):**
+- **LoRA-split ANE: 708ms** vs full MeZO-ANE 1200ms (**41% faster**)
+- Transpose overhead **eliminated entirely** (478ms → 0ms) via adapter-as-input
+- Perturbation **193x faster** (579ms → 3ms) by only perturbing 2.3M adapter params
+- **Rank 8 > rank 32** for MeZO: lower dim = lower ZO variance = better signal
+- ANE vs CPU gap narrowed from 47% (full) to 32% (split); remaining gap is ANE IO overhead
+- Correctness: step-0 loss_plus=2.1095 matches across all 4 LoRA modes
+
 ## Per-Step Timing Breakdown
 
 ### From-Scratch (4-layer, 36.4M)

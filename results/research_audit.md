@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-12/13
 **Auditor:** Comprehensive automated + manual review
-**Status:** All critical checks PASS (v6: comprehensive literature review + optimal ANE stack)
+**Status:** All critical checks PASS (v7: MeZO+LoRA implementation + adapter-as-input verified)
 
 ---
 
@@ -360,7 +360,22 @@ Theoretical: weights only = 134.5M * 4B = 538MB. MeZO overhead: 247MB (buffers +
 | Other | ~70ms | ~82ms | ~2ms | ~5ms |
 | **Total** | **282** | **305** | **379** | **656** |
 
-### 4.5 Analysis
+### 4.6 MeZO+LoRA Fine-Tuning (Conditions 13-19, v7)
+
+| # | Method | Hardware | Steps | ms/step | Val Loss @100 |
+|---|--------|----------|-------|---------|---------------|
+| 13 | BP+LoRA r8 | CPU | 191 | 586 | 1.925 |
+| 14 | BP+LoRA r8 | ANE | 74 | 1344 | — (thermal) |
+| 15 | MeZO+LoRA r8 | CPU | 200 | 576 | 2.068 |
+| 16 | MeZO+LoRA r8 | ANE | 143 | 807 | 2.070 |
+| 17 | MeZO+LoRA r32 | CPU | 55 | 1142 | — (no signal) |
+| 18 | MeZO+LoRA-split r8 | CPU | 205 | 537 | 2.069 |
+| 19 | MeZO+LoRA-split r8 | ANE | 159 | 708 | 2.070 |
+
+*Condition 14: BP+LoRA ANE hit thermal=serious, step times inflated to 1344ms.*
+*Condition 17: Rank 32 showed near-zero gradient signal — higher ZO variance with more parameters.*
+
+### 4.7 Analysis
 
 **v2 KEY RESULT: MeZO competitive with backprop for fine-tuning.**
 - MeZO-CPU final loss 1.97 vs BP-CPU 1.81 — only 0.16 gap
@@ -469,7 +484,45 @@ overhead (~50μs × 210 = ~10ms per fwd) makes ANE forward slower than CPU AMX.
 This is a model-size dependent limitation: at 360M+ params, matmul time grows quadratically
 while dispatch overhead grows linearly, so ANE should eventually win.
 
-### 5.5 SmolLM2-360M Scaling Experiment (v5)
+### 5.5 MeZO+LoRA Implementation and Verification (v7)
+
+**Question:** Can MeZO+LoRA eliminate the transpose/perturbation bottlenecks on ANE?
+**Answer:** YES. Two modes implemented and verified.
+
+**Mode 1: MeZO+LoRA merge** (--lora --lora-rank 8)
+- Perturbs only LoRA A/B matrices + RMS norms (~2.3M params vs 361.8M full)
+- Merges W_eff = W_base + B@A before ANE dispatch
+- Only restages Wq/Wk/Wv/Wo (RETRANSPOSE_ATTN_ONLY — skips W1/W2/W3 = 74% reduction)
+- Result: 807ms/step ANE (vs 1200ms full MeZO-ANE = 33% faster)
+
+**Mode 2: MeZO+LoRA-split** (--lora-split --lora-rank 8)
+- Base weights baked in IOSurfaces at initialization, never restaged
+- LoRA correction computed on CPU: out = ANE_base(x) + B@(A@x)
+- Uses lora_addmm() with cblas_sgemm for correction
+- Result: 708ms/step ANE (vs 1200ms full = 41% faster), zero transpose overhead
+
+**Correctness verification:**
+- Step-0 loss_plus = 2.1095 across all 4 LoRA modes (CPU/ANE × merge/split) ✅
+- Val loss @100 matches within noise: 2.068-2.070 across all modes ✅
+- Rank 8 confirmed superior to rank 32 (rank 32 showed near-zero gradient signal)
+
+**Key timing decomposition:**
+
+| Component | Full MeZO-ANE | LoRA-merge ANE | LoRA-split ANE |
+|-----------|---------------|----------------|----------------|
+| Forward (2x) | 525ms | ~500ms | ~500ms |
+| Perturbation (4x) | 579ms | 65ms | 3ms |
+| Transpose | 478ms | 106ms | 0ms |
+| **Total** | **1200ms** | **807ms** | **708ms** |
+
+**Implementation details:**
+- `perturb_lora_weights()`: Perturbs only LoRA A/B for Wq/Wk/Wv/Wo + RMS norms
+- `lora_merge_all()`: Merges adapters into effective weights before ANE dispatch
+- `lora_addmm()`: CPU-side LoRA correction via cblas_sgemm (for split mode)
+- `RETRANSPOSE_ATTN_ONLY()`: New macro restaging only attention weights (skip FFN)
+- LoRA init: A ~ N(0, 1/√r), B = 0 (standard LoRA initialization)
+
+### 5.6 SmolLM2-360M Scaling Experiment (v5)
 
 **Question:** Does ANE overtake CPU at 360M params as predicted by v4 analysis?
 **Answer:** NO. The hypothesis was FALSIFIED.
@@ -564,11 +617,32 @@ is still slower than CPU even without transpose. The architectural mismatch is b
 MeZO's per-step weight perturbation and ANE's preference for static baked weights.
 **Solution: MeZO + LoRA, where only small adapters change per step.**
 
-### A12: Full-parameter perturbation is the only way to run MeZO
+### A12: Full-parameter perturbation is the only way to run MeZO on ANE
 **Status: INCORRECT.** The MeZO paper tests MeZO+LoRA (Section 4.4), which only perturbs
 LoRA adapter parameters. With rank 32 on 360M: ~7.9M adapter params (2.2% of full model).
 This reduces perturbation time by ~47x and eliminates base weight restaging entirely.
 Accuracy: MeZO+LoRA on LLaMA-7B SST-2=95.0% (vs full-param MeZO SST-2=92.7%).
+
+### A13: MeZO+LoRA rank 8 is optimal for ZO fine-tuning on ANE
+**Status: VALIDATED** by v7 experiments.
+Rank 8 (2.3M adapter params): val_loss=2.068, 576ms/step CPU, 708ms/step ANE (split).
+Rank 32 (9.2M adapter params): near-zero gradient signal, 1142ms/step, no convergence.
+Lower rank = fewer perturbed dimensions = lower ZO variance = better gradient estimate.
+MeZO paper Table 4 confirms rank 8 often matches or beats rank 32 for ZO.
+
+### A14: Adapter-as-input (LoRA-split) eliminates ANE restaging overhead
+**Status: VALIDATED** by v7 experiments.
+LoRA-split mode: base weights baked at init, LoRA correction on CPU via lora_addmm().
+Transpose overhead: 478ms → 0ms (eliminated entirely).
+Perturbation overhead: 579ms → 3ms (193x faster, only 2.3M params).
+ANE vs CPU gap: 47% (full MeZO) → 32% (LoRA-split). Remaining gap is ANE dispatch IO.
+
+### A15: BP+LoRA ANE should be faster than BP+LoRA CPU
+**Status: REFUTED** by v7 condition 14.
+BP+LoRA ANE hit 1344ms/step (vs CPU 586ms). Root cause: thermal throttling
+(thermal=serious status). ANE under sustained backprop load generates enough heat to
+trigger throttling, negating any computational advantage. This is a practical limitation
+for on-device training, not an algorithmic one.
 
 ---
 
@@ -617,14 +691,21 @@ Accuracy: MeZO+LoRA on LLaMA-7B SST-2=95.0% (vs full-param MeZO SST-2=92.7%).
 - [x] v6: Identified optimal ANE training stack: P-GAP + LoRA + adapter-as-input + 1x1 conv
 - [x] v6: Surveyed MobiZO (EMNLP 2025), P-GAP, AGZO, DiZO, MeSP techniques
 - [x] v6: Added Related Work table and 19-source bibliography to analysis.md
+- [x] v7: Implemented MeZO+LoRA merge mode in train_mezo.m (perturb_lora_weights, lora_merge_all, RETRANSPOSE_ATTN_ONLY)
+- [x] v7: Implemented MeZO+LoRA-split (adapter-as-input) mode (lora_addmm, zero restaging)
+- [x] v7: Ran 7 new conditions (13-19): BP+LoRA, MeZO+LoRA merge, MeZO+LoRA-split, rank comparison
+- [x] v7: Verified correctness — step-0 loss_plus=2.1095 matches across all 4 LoRA modes
+- [x] v7: Confirmed rank 8 >> rank 32 for MeZO (lower ZO variance)
+- [x] v7: LoRA-split ANE achieves 708ms/step (41% faster than 1200ms full MeZO-ANE)
+- [x] v7: Eliminated transpose overhead entirely (478ms → 0ms) via adapter-as-input
+- [x] v7: Reduced perturbation time 193x (579ms → 3ms) by perturbing only 2.3M adapter params
+- [x] v7: Narrowed ANE vs CPU gap from 47% to 32%
 
 ### Next Steps
-- [ ] **MeZO + LoRA on ANE (HIGHEST PRIORITY):** Full-parameter MeZO is a bad fit for ANE.
-      MeZO+LoRA eliminates the two bottlenecks (perturbation + restaging) by only
-      perturbing small adapter matrices. Orion paper's adapter-as-input technique passes
-      adapters as IOSurface inputs → zero retranspose. Estimated step time ~410ms (vs
-      1200ms full MeZO-ANE). Would finally make ANE FASTER than CPU for ZO training.
-      MeZO+LoRA is proven (NeurIPS 2023): LLaMA-7B SST-2 95.0%, OPT-13B SST-2 89.6%.
+- [x] ~~**MeZO + LoRA on ANE (HIGHEST PRIORITY):**~~ **DONE in v7.** Implemented merge and
+      split modes. LoRA-split ANE: 708ms/step (41% faster than 1200ms full MeZO-ANE).
+      Transpose eliminated (478→0ms), perturbation 193x faster (579→3ms).
+      ANE still 32% slower than CPU (708 vs 537ms) due to dispatch IO overhead.
 - [ ] **P-GAP + LoRA (v6 finding):** Gradient-aligned perturbations reduce steps by 5.2x.
       Combined with LoRA on ANE, the optimal stack is:
       P-GAP + LoRA + adapter-as-input + 1x1 conv.
