@@ -1,0 +1,39 @@
+=== MeZO (Zeroth-Order) Training: SmolLM2-135M (30 layers, GQA 9/3) ===
+dim=576 q_dim=576 kv_dim=192 hd=64 hidden=1536 seq=256 vocab=49152
+Params: 134.5M | Mode: CPU-only
+MeZO: lr=1e-05 epsilon=0.001 seed=42 val_every=100
+Memory: ~544MB (inference only, no gradients/optimizer)
+[RESUMED from step 0, loss=0.0000]
+  (using CLI lr=1e-05 instead of checkpoint lr)
+Tokens: 20000000 (train: 18000000, val: 2000000)
+Vocab compaction: 49152 -> 16893 active
+CPU-only mode: skipping ANE kernel compilation
+
+Starting MeZO training...
+
+step 0  loss_plus=2.2467  loss_minus=2.2464  proj_grad=0.186801  lr=1.00e-05  step_ms=485 (fwd=217 perturb=266 transpose=0)
+  [val_loss=2.2496 at step 100]
+  [ckpt saved, best_val=2.2496]
+step 100  loss_plus=1.8954  loss_minus=1.9077  proj_grad=-6.144583  lr=1.00e-05  step_ms=363 (fwd=209 perturb=152 transpose=0)
+  [val_loss=2.2487 at step 200]
+  [ckpt saved, best_val=2.2487]
+step 200  loss_plus=2.0814  loss_minus=2.0650  proj_grad=8.185625  lr=1.00e-05  step_ms=366 (fwd=218 perturb=145 transpose=0)
+  [val_loss=2.2486 at step 300]
+  [ckpt saved, best_val=2.2486]
+step 300  loss_plus=2.1170  loss_minus=2.1192  proj_grad=-1.113057  lr=1.00e-05  step_ms=386 (fwd=211 perturb=173 transpose=0)
+  [val_loss=2.2466 at step 400]
+  [ckpt saved, best_val=2.2466]
+step 400  loss_plus=1.8455  loss_minus=1.8499  proj_grad=-2.187431  lr=1.00e-05  step_ms=372 (fwd=215 perturb=154 transpose=0)
+  [val_loss=2.2462 at step 500]
+  [ckpt saved, best_val=2.2462]
+step 500  loss_plus=1.9695  loss_minus=1.9648  proj_grad=2.355158  lr=1.00e-05  step_ms=376 (fwd=225 perturb=148 transpose=0)
+  [val_loss=2.2453 at step 600]
+  [ckpt saved, best_val=2.2453]
+step 600  loss_plus=1.7305  loss_minus=1.7411  proj_grad=-5.345463  lr=1.00e-05  step_ms=375 (fwd=223 perturb=149 transpose=0)
+  [val_loss=2.2467 at step 700]
+step 700  loss_plus=1.9461  loss_minus=1.9541  proj_grad=-4.021883  lr=1.00e-05  step_ms=379 (fwd=224 perturb=152 transpose=0)
+  [val_loss=2.2446 at step 800]
+  [ckpt saved, best_val=2.2446]
+step 800  loss_plus=2.1950  loss_minus=2.2028  proj_grad=-3.928900  lr=1.00e-05  step_ms=380 (fwd=227 perturb=150 transpose=0)
+  [val_loss=2.2450 at step 900]
+step 900  loss_plus=2.3450  loss_minus=2.3433  proj_grad=0.805616  lr=1.00e-05  step_ms=379 (fwd=225 perturb=151 transpose=0)

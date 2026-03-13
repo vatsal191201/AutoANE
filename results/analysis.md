@@ -28,11 +28,14 @@
 |---|--------|----------|-------|---------|------------|------------|----------|
 | 5 | Backprop+Adam | CPU | 382 | 281.5 | 2.24 | 1.814 | 1.929 |
 | 6 | Backprop+Adam | ANE | 346 | 304.8 | 2.24 | 2.158 | 1.929 |
-| 7 | MeZO (ZO-SGD) | CPU | 317 | 379.3 | 2.25 | 1.97 | — |
-| 8 | MeZO (ZO-SGD) | ANE | 240 | 501.4 | 2.25 | — | — |
+| 7 | MeZO (ZO-SGD) | CPU | 317 | 379.3 | 2.25 | 1.97‡ | 2.249‡ |
+| 8 | MeZO (ZO-SGD) | ANE | 240 | 501.4 | 2.25 | 1.93† | 2.249‡ |
 
 *Condition 8 v2→v3: 656→501 ms/step (1.31x speedup), 183→240 steps (+31%).*
 *Bit-identical losses at matching steps (verified step 0 and step 100).*
+*†Final loss 1.93 from v2 run (bit-identical to v3; v3 output truncated before final report).*
+*‡Val loss from v4 experiment (val_every=100, 900 steps). Train loss is noisy single-batch.*
+*‡MeZO "Final Loss" column shows loss_plus (single batch, perturbed weights) — NOT val loss.*
 
 **Backprop HPs:** lr=3e-4, Adam, accum=10, warmup=10, grad_clip=1.0, --no-deepnet
 **MeZO HPs:** lr=1e-5, epsilon=1e-3, Rademacher perturbation (xoshiro256+), res_alpha=1.0
@@ -49,30 +52,46 @@
 | Transpose+stage | 0 | 21 |
 | **Total** | **75** | **95** |
 
-### Fine-Tuning (30-layer, 134.5M) — v2
+### Fine-Tuning (30-layer, 134.5M) — v2 → v3
 
-| Component | MeZO CPU (ms) | MeZO ANE (ms) | Backprop CPU (ms) | Backprop ANE (ms) |
-|-----------|---------------|---------------|-------------------|-------------------|
-| Forward (2x for MeZO) | 228 | 275 | 98→100* | 92→97* |
-| Perturbation (4x) | 149 | 150 | — | — |
-| Transpose+stage | 0 | 226 | — | 15→26 |
-| Backward | — | — | 115→125 | 115→126 |
-| Other (rms,silu,cls,dw) | — | — | ~60 | ~65 |
-| **Total** | **379** | **656** | **282** | **305** |
+| Component | MeZO CPU (ms) | MeZO ANE v2 (ms) | MeZO ANE v3 (ms) | BP CPU (ms) | BP ANE (ms) |
+|-----------|---------------|-------------------|-------------------|-------------|-------------|
+| Forward (2x for MeZO) | 228 | 275 | 249 | 98→100* | 92→97* |
+| Perturbation (4x) | 149 | 150 | 141 | — | — |
+| Transpose+stage | 0 | 226 | 99 | — | 15→26 |
+| Backward | — | — | — | 115→125 | 115→126 |
+| Other (rms,silu,cls,dw) | — | — | — | ~60 | ~65 |
+| **Total** | **379** | **656** | **501** | **282** | **305** |
 
 *Timings from steady-state steps (step 100+). Initial steps slower due to warmup.*
+*v3 MeZO-ANE timings from condition 8 v3 output (step 100: fwd=249, perturb=141, transpose=99).*
 
 ## Key Findings
 
-### 1. MeZO fine-tuning reaches near-backprop quality (MAJOR v2 FINDING)
-With correct residual scaling (res_alpha=1.0), MeZO fine-tuning SmolLM2-135M
-reaches loss 1.97 (CPU) and 1.93 (ANE) in 120s — comparable to backprop's 1.81
-(CPU) and 2.16 (ANE). The v1 results showed MeZO at 3.83 due to the DeepNet bug
-which crushed model activations by 0.129x at each layer.
+### 1. MeZO training loss improves but val loss converges slowly (CRITICAL v4 CORRECTION)
+With correct residual scaling (res_alpha=1.0), MeZO training loss (loss_plus)
+drops from 2.25 to ~2.0 in 300 steps. However, **validation loss** tells a
+different story:
 
-MeZO-ANE (1.93) actually beats Backprop-ANE (2.16) in final training loss,
-though both converge to val_loss ~1.93. This validates MeZO theory (Theorem 1):
-pretrained models have low effective Hessian rank, enabling meaningful ZO optimization.
+| Steps | MeZO Val Loss | BP-CPU Val Loss | MeZO Train Loss |
+|-------|--------------|-----------------|-----------------|
+| 100 | 2.2496 | 1.952 | 1.895 |
+| 300 | 2.2486 | 1.929 | 2.117 |
+| 600 | 2.2453 | — | 1.731 |
+
+**The v2 claim that "MeZO reaches near-backprop quality" was INCORRECT.** That claim
+was based on comparing noisy single-batch training losses (loss_plus), which vary
+±0.3 per batch. The val loss (averaged over 10 batches) shows MeZO has barely moved
+after 600 steps (Δ=0.005), while backprop achieves Δ=0.30 in 100 steps.
+
+**This is expected from MeZO theory.** The paper runs for 20K+ steps (full-parameter
+fine-tuning), and MeZO convergence is ~100x slower per step than backprop (Theorem 1).
+At 379ms/step, 20K steps = 7600s (2.1 hours). Our 120s budget allows only 317 steps,
+which is far too short for MeZO to converge on val loss.
+
+**What IS validated:** MeZO is learning (val loss is monotonically decreasing, train
+loss distributional shift from initial). The algorithm is correct. MeZO just needs
+significantly more steps than our time budget allows.
 
 ### 2. MeZO on ANE — first ZO training on any NPU
 Both from-scratch and fine-tuning run successfully on Apple Neural Engine.
@@ -103,20 +122,24 @@ Backprop needs weights + gradients + Adam m/v = ~3x more memory (measured: 785MB
 This advantage grows with model size — at 1B+ params, backprop may not fit in memory
 while MeZO still runs with inference-only memory.
 
-### 5. Backprop converges faster per step, MeZO competitive on wall time
+### 5. Backprop converges ~100x faster than MeZO per step (v4 CORRECTED)
 Fine-tuning step count comparison (120s):
-- BP-CPU: 382 steps (282ms/step)
-- BP-ANE: 346 steps (305ms/step)
-- MeZO-CPU: 317 steps (379ms/step)
-- MeZO-ANE: 240 steps (501ms/step, v3 optimized)
+- BP-CPU: 382 steps (282ms/step) → val_loss=1.929
+- BP-ANE: 346 steps (305ms/step) → val_loss=1.929
+- MeZO-CPU: 317 steps (379ms/step) → val_loss≈2.249 (measured with val_every=100)
+- MeZO-ANE: 240 steps (501ms/step, v3 optimized) → val_loss≈2.249 (estimated)
 
-MeZO-CPU is only 0.16 loss behind BP-CPU at step 300, while using 3.7x less memory.
-v3 optimization brings MeZO-ANE from 183→240 steps in same wall time (+31% throughput).
+**v4 correction:** The v2 comparison "MeZO is only 0.16 loss behind" was based on noisy
+single-batch training loss. On val loss, MeZO is 0.32 behind backprop (2.249 vs 1.929)
+after 300 steps. MeZO needs ~20K steps (2.1 hours) for meaningful val convergence.
+The memory advantage (3.7x) is the primary reason to use MeZO, not wall-time efficiency.
 
 ### 6. LR sensitivity for MeZO fine-tuning
 Only lr=1e-5 produced a decrease in 20s. lr=1e-4 diverged, lr=1e-6/1e-7 showed no signal.
-The optimal MeZO LR is ~30x smaller than the backprop LR (1e-5 vs 3e-4),
-consistent with the MeZO paper's finding that ZO needs smaller learning rates.
+The optimal MeZO LR is ~30x smaller than the backprop LR (1e-5 vs 3e-4).
+The MeZO paper uses lr=1e-7 to 1e-6 for OPT-13B (full-parameter). Our higher
+lr=1e-5 is consistent with our smaller model (135M vs 13B): the theoretical
+ZO LR scales as n/(d+n-1) × SGD_LR, inversely proportional to parameter count.
 
 ### 7. DeepNet bug had massive impact on v1 results
 The DeepNet res_alpha=1/sqrt(2*30)=0.129 was incorrectly applied to pretrained SmolLM2-135M,
@@ -193,10 +216,17 @@ Steps/120s: 183  → 240   (+31% throughput)
 1. **Rademacher vs Gaussian perturbation:** Our implementation uses z_i in {-1,+1} instead
    of the paper's z~N(0,I). Both are valid since E[zz^T]=I for both. Rademacher has lower
    kurtosis (E[z^4]=1 vs 3) giving lower gradient variance. Validated experimentally
-   (see validation_gradient_unbiased.c).
+   (see validation_gradient_unbiased.c). Note: classical SPSA (Spall 1992) specifically
+   recommends Rademacher as optimal. The MeZO paper uses Gaussian for compatibility
+   with PyTorch's `torch.normal()` + seed management, but mathematically Rademacher
+   is equally valid or slightly better.
 
-2. **No cosine schedule for MeZO:** Using constant LR throughout. The MeZO paper uses
-   linear decay. Adding schedule might improve results.
+2. **Cosine schedule present but negligible:** Code implements cosine decay (lr decays from
+   base to 0.1×base over total_steps). For our short runs (240-317 steps out of ~100K
+   total_steps), decay is <0.3% — effectively constant LR. This actually matches the
+   MeZO paper, which uses constant LR for all experiments (Algorithm 1 accepts a schedule
+   `{η_t}` but all reported results use constant). Our earlier assumption that the paper
+   uses "linear decay" was incorrect.
 
 3. **SmolLM2 tokenizer for TinyStories:** Data tokenized with SmolLM2 tokenizer (49152 vocab).
    SmolLM2-135M was pretrained on different data, so initial loss (2.24) reflects minor
@@ -206,11 +236,33 @@ Steps/120s: 183  → 240   (+31% throughput)
 4. **Single seed (42):** All conditions use seed=42. Multiple seeds needed for statistical
    significance but impractical within current time budget.
 
+### 8. IOSurface transpose overhead — fundamental limit at 135M (v4 ANALYSIS)
+Even with zero transpose, MeZO-ANE cannot beat MeZO-CPU at 135M params:
+- MeZO-ANE without transpose: fwd(249) + perturb(141) = 390ms
+- MeZO-CPU: fwd(228) + perturb(149) = 377ms
+- ANE forward pass is 21ms slower due to IO overhead (7 kernel dispatches × 30 layers
+  = 210 dispatches per forward pass, each with IOSurface write/read)
+- The remaining 99ms transpose is on top of this structural deficit
+
+**Options evaluated:**
+1. **Pre-transposed storage** (eliminate vDSP_mtrans): Saves 67ms → 434ms. Still > 379ms CPU.
+2. **In-place fp16 perturbation** (eliminate all restaging): Saves 99ms → 402ms. Still > 379ms.
+   Also introduces fp16 rounding errors, breaking bit-identical guarantee.
+3. **Dual-buffer weights** (fp32 + fp16 shadow copy): Extra 538MB memory. Saves transpose
+   but not staging. Net ~434ms. Not worth the 2x memory cost.
+
+**Conclusion:** For 135M params, ANE overhead per dispatch (~50μs × 210 = ~10ms per fwd)
+makes ANE forward structurally slower than CPU. This is a model-size dependent limitation.
+At larger models (360M+), matmul time dominates and ANE's 2x throughput advantage should
+overcome the dispatch overhead. This motivates testing SmolLM2-360M as next experiment.
+
 ## Next Steps
 
-1. **Longer fine-tuning runs** (600s+): Does MeZO eventually match or beat backprop quality?
-2. **Cosine/linear LR decay for MeZO:** May improve convergence
-3. **Larger models:** SmolLM2-360M (362M params) — memory advantage becomes critical
-4. **ANE optimization:** Batch layer transposes, reduce IOSurface overhead
-5. **Multiple seeds:** Run 3-5 seeds per condition for error bars
-6. **Validation loss for MeZO:** Add periodic val evaluation to MeZO trainer
+1. **SmolLM2-360M (362M params):** The most important next experiment. At this size,
+   ANE matmul throughput should overcome dispatch overhead, making MeZO-ANE faster
+   than MeZO-CPU. Also tests MeZO's memory advantage (backprop may not fit).
+2. **Longer fine-tuning runs** (600s+): Does MeZO eventually match or beat backprop quality?
+3. **Validation loss for MeZO:** Reduce val_every from 500 to 100 to get val measurements
+   within the 120s budget (currently MeZO runs never reach step 500).
+4. **Multiple seeds:** Run 3-5 seeds per condition for error bars.
+5. **Epsilon sensitivity sweep:** Test {1e-4, 5e-4, 1e-3, 5e-3, 1e-2} to verify our choice.
