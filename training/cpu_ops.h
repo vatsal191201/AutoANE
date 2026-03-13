@@ -291,11 +291,14 @@ static void cpu_sdpa_backward(
 
 // RoPE forward (in-place): apply rotation to Q/K
 // Data layout: [DIM, SEQ] channel-first, DIM = nheads * hd
+#ifndef ROPE_THETA
+#define ROPE_THETA 10000.0f  // default Llama; SmolLM2 uses 100000, Qwen3 uses 1000000
+#endif
 static void rope_forward_inplace(float *x, int seq, int dim, int hd) {
     int nheads = dim / hd;
     for (int h = 0; h < nheads; h++) {
         for (int i = 0; i < hd/2; i++) {
-            float freq = 1.0f / powf(10000.0f, 2.0f * i / (float)hd);
+            float freq = 1.0f / powf(ROPE_THETA, 2.0f * i / (float)hd);
             for (int p = 0; p < seq; p++) {
                 float theta = p * freq;
                 float cos_t = cosf(theta), sin_t = sinf(theta);
@@ -360,7 +363,7 @@ static void rope_backward_inplace(float *dx, int seq, int dim, int hd) {
     int nheads = dim / hd;
     for (int h = 0; h < nheads; h++) {
         for (int i = 0; i < hd/2; i++) {
-            float freq = 1.0f / powf(10000.0f, 2.0f * i / (float)hd);
+            float freq = 1.0f / powf(ROPE_THETA, 2.0f * i / (float)hd);
             for (int p = 0; p < seq; p++) {
                 float theta = p * freq;
                 float cos_t = cosf(theta), sin_t = sinf(theta);

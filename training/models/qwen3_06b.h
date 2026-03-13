@@ -15,5 +15,7 @@
 #define NLAYERS 28
 #define VOCAB 151936
 
+#define ROPE_THETA 1000000.0f
+
 #define CKPT_PATH "ane_qwen3_06b_dyn_ckpt.bin"
 #define DEFAULT_DATA_PATH "../tinystories_data00.bin"

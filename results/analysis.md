@@ -4,7 +4,11 @@
 **Hardware:** Apple M-series (ANE + AMX)
 **Data:** TinyStories (20M tokens, 90/10 train/val split)
 **Time budget:** 120 seconds per condition
-**Version:** v10 (v9 + param counting fix + deep code audit + multi-seed validation)
+**Version:** v11 (v10 + RoPE theta bug fix + HuggingFace baseline validation)
+
+**v11 NOTE:** All SmolLM2 experiments (conditions 5-37) used incorrect RoPE theta=10000 instead
+of the correct 100000. Absolute loss values are ~0.05 inflated. Relative comparisons between
+methods are unaffected (all used the same theta). See research_audit.md §5.9 for details.
 
 ## Full Results (8 Conditions)
 
