@@ -628,6 +628,24 @@ This is a reporting/documentation bug only. Fixed in v10.
 
 **Verification:** After fix, step-0 loss_plus=2.1095, loss_minus=2.0987 — identical to pre-fix.
 
+### 5.8 Known Limitations (v10 code audit)
+
+1. **No LoRA checkpoint persistence:** LoRA A/B matrices are never saved to disk.
+   If training is interrupted and resumed with `--resume --lora-split`, all LoRA progress
+   is lost. In merge mode, the merged effective weights are saved, preserving some information.
+
+2. **Unnecessary cembed rebuild in merge mode:** In `use_lora && !lora_split` mode,
+   `cembed` is freed and rebuilt after LoRA perturbation, but `embed` was never modified
+   (only LoRA A/B and RMS norms are perturbed). This wastes ~180MB alloc+copy per forward
+   pass (2x per step) at 360M. Not a correctness bug.
+
+3. **`--lora-ffn` silently ignored without `--lora`:** Fixed in v10 — `--lora-ffn` now
+   implies `use_lora=true, lora_split=true` if neither `--lora` nor `--lora-split` given.
+
+4. **Checkpoint overwrite:** Training saves to `CKPT_PATH` (same as HF-converted checkpoint),
+   overwriting the original on best-validation improvement. Must re-convert from HF to
+   get a clean checkpoint for reproducibility.
+
 ---
 
 ## 6. Stated Assumptions

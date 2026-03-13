@@ -321,7 +321,7 @@ int main(int argc, char *argv[]) {
             else if (strcmp(argv[i], "--lora") == 0) use_lora = true;
             else if (strcmp(argv[i], "--lora-split") == 0) { use_lora = true; lora_split = true; }
             else if (strcmp(argv[i], "--lora-rank") == 0 && i+1 < argc) lora_rank = atoi(argv[++i]);
-            else if (strcmp(argv[i], "--lora-ffn") == 0) lora_ffn = true;
+            else if (strcmp(argv[i], "--lora-ffn") == 0) { lora_ffn = true; if (!use_lora) { use_lora = true; lora_split = true; } }
         }
 
         if (!cpu_only && !ane_matmul_only) cpu_only = true;  // Default to CPU-only
