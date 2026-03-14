@@ -132,10 +132,14 @@ Three LoRA modes implemented:
 **LoRA-split** is the key innovation: base weights are baked into IOSurfaces at initialization and never restaged. LoRA correction is computed on CPU via `lora_addmm`: `out += B @ (A @ x)`. This eliminates the transpose bottleneck entirely.
 
 **Adapter parameters (rank 8, SmolLM2-360M):**
-- Per projection: 2 × (960 × 8) = 15,360 params
-- Q+K+V+O per layer: 4 × 15,360 = 61,440 params
-- Total 32 layers: 32 × 61,440 = 1,966,080 params (0.5% of 361.8M)
-- With RMS norms: 1,966,080 + 32 × 2 × 960 + 960 = ~2.03M perturbed params
+- Wq: A[960×8] + B[8×960] = 15,360 params
+- Wk: A[960×8] + B[8×320] = 10,240 params (kv_dim=320, not 960)
+- Wv: A[960×8] + B[8×320] = 10,240 params (kv_dim=320, not 960)
+- Wo: A[960×8] + B[8×960] = 15,360 params
+- Per layer: 15,360 + 10,240 + 10,240 + 15,360 = 51,200 params
+- Total 32 layers: 32 × 51,200 = **1,638,400 params** (0.45% of 361.8M)
+- With RMS norms: 1,638,400 + 32 × 2 × 960 + 960 = **~1,700,800 perturbed params**
+- **Verified**: binary reports `adapter params=1638.4K, trainable RMS params=62.4K`
 
 ### 4.3 Forward Pass Components
 
@@ -437,7 +441,7 @@ The MeZO paper (Table 1) validates MeZO+LoRA on OPT-13B: SST-2 89.6%, RTE 67.9%,
 | Paper | Venue | Contribution | Relation to Our Work |
 |-------|-------|-------------|---------------------|
 | [Orion](https://arxiv.org/abs/2603.06728) | arXiv 2026 | ANE training, adapter-as-input, 20 constraints, 3x via 1x1 conv, 170+ tok/s GPT-2 inference | Same hardware, our LoRA-split is similar to adapter-as-input |
-| [MobiZO](https://arxiv.org/abs/2409.15520) | arXiv 2024 (venue unverified) | MP-LoRA on Qualcomm NPU, 4.3x speedup via parallelized perturbations | Same concept (ZO+LoRA on NPU), deployed on ExecuTorch |
+| [MobiZO](https://aclanthology.org/2025.emnlp-main.1022/) | **EMNLP 2025** (verified via ACL Anthology, DOI: 10.18653/v1/2025.emnlp-main.1022) | MP-LoRA on Qualcomm NPU, 4.3x speedup via parallelized perturbations | Same concept (ZO+LoRA on NPU), deployed on ExecuTorch |
 | [ZO2](https://arxiv.org/abs/2503.12668) | arXiv 2025 | CPU-GPU offloading for ZO, fine-tunes OPT-175B on 18GB GPU | Same principle (ZO for memory-constrained), GPU-focused |
 | [DistZO2](https://arxiv.org/abs/2507.03211) | arXiv 2025 | Distributed parallel ZO2 | Extension of ZO2 to multi-GPU |
 | [MobiLLM](https://arxiv.org/abs/2502.20421) | arXiv 2025 | Server-assisted side tuning on mobile | Alternative to on-device ZO |

@@ -93,6 +93,8 @@
 | Step | 0 | Clean (unconverted from HF) |
 | File size | 4,341,853,536 bytes | **EXACT MATCH** with computed: header(96) + 32×layer(117,987,840) + rms_final(11,520) + embed(566,231,040) |
 
+**Storage format:** Each parameter uses **12 bytes** = 4 bytes float32 weight + 4 bytes float32 Adam m + 4 bytes float32 Adam v. The Adam optimizer state is pre-allocated in the checkpoint format (from `hf_to_ane.py` lines 125-149). For MeZO training (which does not use Adam), 67% of the checkpoint (2.89 GB) is zeros. A minimal MeZO-only checkpoint would be 1.45 GB (float32 weights only).
+
 **verify_all.py: 27/27 checks PASSED**
 
 ---
@@ -477,7 +479,7 @@ For MeZO-SGD with full parameters (no LoRA), the paper's range {1e-5, 1e-6, 1e-7
 
 **Key findings:**
 1. lr=1e-4 is **unambiguously optimal** — 5/5 seed dominance over both alternatives
-2. lr=1e-4 achieves **6x more improvement** than lr=3e-4 or lr=1e-5 (0.0133 vs 0.0017-0.0022)
+2. lr=1e-4 achieves **6-8x more improvement** than alternatives (0.0133 vs 0.0017 for lr=3e-4 [7.8x] and 0.0022 for lr=1e-5 [6.0x])
 3. lr=3e-4 has **highest variance** (std=0.0061), suggesting instability at higher LR
 4. lr=1e-5 has **lowest variance** (std=0.0005) but converges too slowly
 5. This matches the MeZO paper's LoRA recommendation: lr=1e-4/5e-5 (§7d)
@@ -618,9 +620,9 @@ The paper is **internally inconsistent** on epsilon for LoRA — different table
 | 500 | 2.0538 | -0.0180 (0.87%) | 0.4e-5/step |
 | 600 | **2.0524** | **-0.0194 (0.94%)** | 1.4e-5/step |
 | 700 | 2.0535 | -0.0183 (0.88%) | -1.1e-5/step |
-| 800 | 2.0525 | -0.0193 (0.94%) | 1.0e-5/step |
+| 800 | 2.0525 | -0.0193 (0.93%) | 1.0e-5/step |
 | 900 | 2.0527 | -0.0191 (0.92%) | -0.2e-5/step |
-| 1000 | 2.0525 | -0.0193 (0.94%) | 0.2e-5/step |
+| 1000 | 2.0525 | -0.0193 (0.93%) | 0.2e-5/step |
 
 ### Curve Fitting Results
 
@@ -690,7 +692,7 @@ Saved at `/tmp/mezo_convergence_analysis.png` and analysis script at `/tmp/mezo_
 | Orion: delta reload 8.5x (494ms vs 4200ms) | arXiv:2603.06728 | **VERIFIED** |
 | Orion: 170+ tok/s GPT-2 on M4 Max | arXiv:2603.06728 | **VERIFIED** |
 | MobiZO: 4.3x speedup | arXiv:2409.15520 | **VERIFIED** |
-| MobiZO: EMNLP 2025 venue | — | **UNVERIFIED** → changed to "arXiv 2024" |
+| MobiZO: EMNLP 2025 venue | ACL Anthology | **VERIFIED** — EMNLP 2025, Suzhou, China. DOI: 10.18653/v1/2025.emnlp-main.1022 |
 | MobiZO: Qualcomm Hexagon NPU + ExecuTorch | arXiv:2409.15520 | **VERIFIED** |
 | maderix: 19 TFLOPS FP16 | maderix substack | **PARTIALLY VERIFIED** — substack says 19, GitHub README says 15.8 |
 | maderix: 94% utilization at 32+ layers | maderix substack | **VERIFIED** |
@@ -734,7 +736,7 @@ Saved at `/tmp/mezo_convergence_analysis.png` and analysis script at `/tmp/mezo_
 | # | Assumption | Evidence |
 |---|-----------|----------|
 | X1 | Conv1x1 gives 3x speedup on ANE | **MEASURED: 0.41x to 1.79x** on this hardware. Narrower projections (KV_DIM=320) are SLOWER with conv. |
-| X2 | MobiZO was published at EMNLP 2025 | **UNVERIFIED**: no venue information on arXiv page. |
+| ~~X2~~ | ~~MobiZO was published at EMNLP 2025~~ | **VERIFIED** (2026-03-14): ACL Anthology confirms EMNLP 2025, Suzhou, China. DOI: 10.18653/v1/2025.emnlp-main.1022. Moved to validated. |
 | X3 | lr=3e-4 from HF checkpoint is appropriate for MeZO-SGD | **PARTIALLY INVALIDATED**: lr=3e-4 works for short runs (50 steps) but causes instability at 100-250 steps. lr=1e-4 is 2.4x better over 500 steps. (§7c) |
 
 ### Unverified Assumptions (Stated as Open)
@@ -794,10 +796,10 @@ Saved at `/tmp/mezo_convergence_analysis.png` and analysis script at `/tmp/mezo_
 4. **Conv1x1 is NOT a 3x win** on this hardware — measured 1.4x average, and LOSES for narrow projections.
 5. **Conv1x1 is a zero-error drop-in replacement** — bit-identical outputs vs matmul across all 5 projection shapes.
 6. **MeZO convergence is real but slow** — 0.019 val_loss reduction in 1000 steps with lr=1e-4 (0.94% improvement). Best fit is exponential (R²=0.923) with asymptote at ~2.051. Convergence plateaus around step 600 due to cosine LR decay. Statistically significant: p=0.009 at step 10 across 5 seeds. (§7e)
-7. **Memory advantage is 3.3x** — MeZO: 1,717 MB vs Backprop: 6,664 MB.
+7. **Memory advantage is 3.3-3.9x** — MeZO full-param: 1,717 MB (3.9x), MeZO+LoRA-split: 2,028 MB (3.3x), vs Backprop: 6,664 MB. (Source: fresh_experiments_v12.md, measured RSS)
 8. **lr=1e-4 is optimal for MeZO+LoRA-split** — 2.4x better than lr=3e-4 over 500 steps (seed=42). **Cross-validated against MeZO paper**: official repo recommends lr=1e-4/5e-5 for LoRA mode, exactly matching our finding. Paper's {1e-6, 1e-7} is for full-param MeZO only. (§7c, §7d)
 9. **MeZO algorithm independently cross-validated** — `verify_mezo_algorithm.py`: 9/9 tests pass. Gradient unbiasedness (corr=0.998), variance O(d) confirmed (slope=1.026 matching Lemma 2), update direction correct (100% trials reduce loss), SPSA accuracy (corr=0.999 vs true gradient), perturbation symmetry (fp32 restoration error 2.4e-7), PRNG reproducibility, full step structure (zero diff vs reference), Rademacher distribution properties, and 62.9% loss reduction in 500-step convergence test. (§7b, new script)
-10. **Multi-seed stability validated with DEFINITIVE LR comparison** — 5 seeds × 3 LRs × 500 steps: lr=1e-4 wins ALL 5 seeds vs both alternatives. Mean val@500 = 2.0585±0.0025. p=0.009 vs lr=3e-4, p=0.0004 vs lr=1e-5. Cohen's d = 2.50 and 6.14 (very large/extremely large effects). Matches MeZO paper LoRA recommendation. (§7c)
+10. **Multi-seed stability validated with DEFINITIVE LR comparison** — 5 seeds × 3 LRs × 500 steps: lr=1e-4 wins ALL 5 seeds vs both alternatives. Mean val@500 = 2.0585±0.0025. p=0.009 vs lr=3e-4, p=0.0004 vs lr=1e-5. Cohen's d = 2.50 and 6.14 (very large/extremely large effects). lr=1e-4 achieves 6-8x more improvement (7.8x vs lr=3e-4, 6.0x vs lr=1e-5). Matches MeZO paper LoRA recommendation. (§7c)
 11. **Cosine LR schedule is correctly implemented** — matches PyTorch CosineAnnealingLR exactly (501/501 values identical). All boundary conditions correct. NOTE: MeZO paper uses constant LR, not cosine — this is a known divergence (§7d). (§7c-LR)
 12. **MeZO hyperparameters cross-validated against FULL paper** — Our lr=1e-4 matches paper's LoRA recommendation (Tables 15, 16). Paper is internally inconsistent on eps for LoRA: OPT uses eps=1e-2 (Table 16), RoBERTa uses eps=1e-3 (Table 15). Our eps=1e-3 matches the RoBERTa setting. Meta-audit experiment confirmed eps=1e-2 ≈ eps=1e-3 (val_loss diff = 0.0003 over 100 steps). Paper uses Gaussian perturbation (not Rademacher), constant LR, batch=16-64, WD=0 (OPT)/0.1 (RoBERTa LoRA). (§7d, §16)
 13. **Constant LR is achievable without code changes** — Default total_steps=999999 means using --time instead of --steps gives effectively constant LR (deviation < 0.00001%). The convergence plateau at step 600 (§7e) was an artifact of passing --steps 1000, not a fundamental limitation. (§16)
@@ -869,7 +871,7 @@ Saved at `/tmp/mezo_convergence_analysis.png` and analysis script at `/tmp/mezo_
 | Cohen's d (2.50, 6.14) | §7c | Independent computation with pooled std |
 | p-values (0.009, 0.0004, 0.85) | §7c | Welch's t-test (scipy default, equal_var=False) confirmed |
 | Mean delta from baseline (0.0133, 0.0017, 0.0022) | §7c | Independent computation |
-| "6x more improvement" ratio | §7c | 0.0133/0.0022 = 6.0x confirmed |
+| "6-8x more improvement" ratio | §7c | 0.0133/0.0017 = 7.8x (vs 3e-4), 0.0133/0.0022 = 6.0x (vs 1e-5) confirmed |
 | All 10 convergence val_loss values | §7e | Cross-checked against raw output file |
 | Best val_loss = 2.0524 at step 600 | §7e | Confirmed from raw log |
 | All 10 logged LR values (1000-step run) | §7e | Recomputed from cosine formula, all 10 match at %.2e |
@@ -1041,3 +1043,118 @@ ALL verification scripts were run fresh during this meta-audit session:
 **Discrepancies fixed:** R² (reverted to 0.923), percentage (0.93%→0.94%), test specification (Welch's t-test noted), adapter param count bug documented.
 
 **No data integrity issues. No algorithmic bugs. No invalid conclusions.**
+
+---
+
+## 17. Quintuple-Check: Independent Verification Pass (2026-03-14, third pass)
+
+**Method:** Every claim re-verified from scratch using parallel independent agents (statistics, literature, C code audit) plus direct verification of all numerical values, web searches of original sources, and fresh re-runs of all verification scripts.
+
+### Verification Scripts Re-Run (ALL PASS)
+
+| Script | Tests | Result |
+|--------|-------|--------|
+| `tools/verify_ce_loss.py` | CE loss vs numpy/scipy | **ALL TESTS PASSED** |
+| `tools/verify_rope.py` | RoPE vs HuggingFace (7 tests) | **ALL TESTS PASSED** |
+| `tools/verify_lora.py` | LoRA math (5 checks) | **ALL CHECKS PASSED** |
+| `tools/verify_lr_schedule.py` | Cosine LR (6 tests) | **6/6 PASS** |
+| `tools/verify_mezo_algorithm.py` | MeZO algorithm (9 tests) | **9/9 PASS** |
+
+### Independent Statistics Recomputation (ALL MATCH)
+
+| Claim | Audit | Independent | Match? |
+|-------|-------|-------------|--------|
+| lr=1e-4 mean | 2.0585 | 2.05854 | **YES** |
+| lr=1e-4 std | 0.0025 | 0.00250 | **YES** |
+| lr=3e-4 mean | 2.0701 | 2.07014 | **YES** |
+| lr=3e-4 std | 0.0061 | 0.00606 | **YES** |
+| lr=1e-5 mean | 2.0696 | 2.06960 | **YES** |
+| lr=1e-5 std | 0.0005 | 0.00050 | **YES** |
+| p(1e-4 vs 3e-4) Welch | 0.009 | 0.00948 | **YES** |
+| p(1e-4 vs 1e-5) Welch | 0.0004 | 0.000426 | **YES** |
+| p(3e-4 vs 1e-5) Welch | 0.85 | 0.852 | **YES** |
+| Cohen's d (1e-4 vs 3e-4) | 2.50 | 2.504 | **YES** |
+| Cohen's d (1e-4 vs 1e-5) | 6.14 | 6.138 | **YES** |
+| Exponential A | 0.0207 | 0.02073 | **YES** |
+| Exponential k | 0.00346 | 0.003459 | **YES** |
+| R² | 0.923 | 0.9233 | **YES** |
+| Asymptote | ~2.051 | 2.0511 | **YES** |
+| Best val_loss | 2.0524 at step 600 | 2.0524 at step 600 | **YES** |
+
+### Architecture Verification Against HuggingFace (Web-Verified)
+
+SmolLM2-360M config.json fetched from HuggingFace (2026-03-14):
+
+| Parameter | Our Value | HuggingFace | Match |
+|-----------|-----------|-------------|-------|
+| hidden_size | 960 | 960 | **YES** |
+| intermediate_size | 2560 | 2560 | **YES** |
+| num_hidden_layers | 32 | 32 | **YES** |
+| num_attention_heads | 15 | 15 | **YES** |
+| num_key_value_heads | 5 | 5 | **YES** |
+| vocab_size | 49152 | 49152 | **YES** |
+| rope_theta | 100000 | 100000 | **YES** |
+
+### Literature Claims Web-Verified
+
+| Source | Claim | Verification | Result |
+|--------|-------|-------------|--------|
+| MeZO (arXiv:2305.17333) | NeurIPS 2023 oral | arxiv.org abstract | **CONFIRMED** |
+| MeZO | Malladi et al. | arxiv.org abstract | **CONFIRMED** |
+| MeZO official repo | constant LR, lr=1e-5, batch=16, eps=1e-3 | GitHub mezo.sh raw | **CONFIRMED** |
+| Orion (arXiv:2603.06728) | 20 ANE constraints | arxiv.org abstract | **CONFIRMED** |
+| Orion | Delta reload 8.5x (494ms vs 4200ms) | arxiv.org abstract | **CONFIRMED** |
+| Orion | 170+ tok/s GPT-2 M4 Max | arxiv.org abstract | **CONFIRMED** |
+| Orion | Adapter-as-input | arxiv.org abstract | **CONFIRMED** |
+| **MobiZO** | **EMNLP 2025** | **ACL Anthology** | **CONFIRMED** (DOI: 10.18653/v1/2025.emnlp-main.1022) |
+
+### Checkpoint Format Verified
+
+12 bytes per parameter = float32 weight (4B) + float32 Adam m (4B) + float32 Adam v (4B).
+- header(96) + 32 × 9,832,320 × 12 + 960 × 12 + 49,152 × 960 × 12 = **4,341,853,536** ✓
+- For MeZO: 67% (2.89 GB) is pre-allocated Adam state (zeros)
+
+### LoRA Param Count Verified
+
+Per layer: Wq(15,360) + Wk(10,240) + Wv(10,240) + Wo(15,360) = 51,200
+- × 32 layers = 1,638,400 (1,638.4K) ✓
+- + RMS trainable = 62,400 (62.4K) ✓
+- Total d = 1,700,800 ✓
+
+### Discrepancies Found and Fixed
+
+| # | Issue | Original | Corrected | Severity |
+|---|-------|----------|-----------|----------|
+| 1 | §7e pct at steps 800, 1000 | 0.94% | **0.93%** (0.0193/2.0718 = 0.9316%) | Minor |
+| 2 | §7c "6x more improvement" | 6x | **6-8x** (7.8x vs lr=3e-4, 6.0x vs lr=1e-5) | Minor |
+| 3 | §12 memory "3.3x — MeZO: 1,717 MB" | 3.3x with 1717 MB | **3.3-3.9x** (3.9x for full-param 1717MB, 3.3x for LoRA-split 2028MB) | Minor |
+| 4 | X2 MobiZO venue "UNVERIFIED" | Unverified | **VERIFIED**: EMNLP 2025, ACL Anthology | Medium |
+| 5 | §4 checkpoint format undocumented | No explanation of 12 bytes/param | **Documented**: float32 weight + Adam m + Adam v | Documentation |
+| 6 | MEZO_AUDIT_REPORT.md §4.2 LoRA params | 1,966,080 (assumed 960 for all projections) | **1,638,400** (Wk/Wv use kv_dim=320) | Medium |
+
+### Mini Training Experiment (2026-03-15)
+
+Fresh 15-step MeZO+LoRA-split run to validate end-to-end pipeline:
+```
+./train_mezo ane_smollm2_360m_clean.bin ../tinystories_smollm2_data00.bin \
+  --cpu --lora-split --lr 1e-4 --epsilon 1e-3 --seed 42 --steps 15 --val-every 5 \
+  --resume ane_smollm2_360m_clean.bin
+```
+
+| Metric | Expected | Observed | Match? |
+|--------|----------|----------|--------|
+| Baseline val_loss | 2.0718 | 2.0713 | ✅ (within 10-batch variance) |
+| adapter params | 1,638.4K | 1,638.4K | ✅ EXACT |
+| trainable RMS params | 62.4K | 62.4K | ✅ EXACT |
+| ms/step | ~435-593 | 452.5 | ✅ within range |
+| Architecture dims | 960/320/64/2560/32 | 960/320/64/2560/32 | ✅ EXACT |
+| Training loss decreasing | Yes | 2.0970 → 1.594 | ✅ |
+| Val loss stable (15 steps) | ~2.07 | 2.0713-2.0714 | ✅ |
+
+**Result**: End-to-end pipeline validated. All parameters match documented values.
+
+### Quintuple-Check Verdict
+
+**PASS** — All prior findings confirmed. Six documentation precision issues fixed (no data integrity or algorithmic issues). All verification scripts pass fresh. All statistics independently recomputed. All literature claims web-verified against original sources. Mini training experiment confirms end-to-end pipeline integrity.
+
+**Verified by:** 3 parallel independent agents + direct numerical verification + web source verification + live training experiment

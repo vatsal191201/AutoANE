@@ -59,7 +59,7 @@ The data format already fits: our activations are `[1, IC, 1, SEQ]` which is `[N
 **Evidence status for each factor:**
 - ~~3x conv1x1~~: **INVALIDATED** — measured 1.4x avg; Wk projection (960→320) conv is 2.4x SLOWER
 - 94% utilization: maderix deep graph benchmark — **NOT independently verified** on our model
-- 2x MP-LoRA: MobiZO (arXiv 2024) — **plausible** but not tested in our pipeline
+- 2x MP-LoRA: MobiZO (EMNLP 2025) — **plausible** but not tested in our pipeline
 - 3x FZOO: arXiv:2506.09034 — **claims 18x on RoBERTa-large**, but LLM fine-tuning may differ
 - Adapter-as-input: Orion demonstrated, we already have LoRA-split
 
@@ -162,7 +162,7 @@ A MacBook Pro battery (100 Wh) could run:
 |-------|---------------|------------------------|
 | [Orion](https://arxiv.org/abs/2603.06728) | Conv1x1 = 3x, adapter-as-input works, 170+ tok/s GPT-2, 20 ANE constraints | Validates Phase 1 + Phase 2 |
 | [maderix ANE benchmarks](https://maderix.substack.com/p/inside-the-m4-apple-neural-engine-615) | 19 TFLOPS, 94% deep graph, 32MB SRAM | Validates throughput targets |
-| [MobiZO](https://aclanthology.org/2025.emnlp-main.1022/) | MP-LoRA 4.3x, ExecuTorch deployed on Qualcomm Hexagon NPU | Validates Phase 3 |
+| [MobiZO](https://aclanthology.org/2025.emnlp-main.1022/) | MP-LoRA 4.3x, ExecuTorch deployed on Qualcomm Hexagon NPU (EMNLP 2025) | Validates Phase 3 |
 | [P-GAP](https://arxiv.org/abs/2510.18228) | 5.2x convergence, 22.4% GPU hours | Validates Phase 4 |
 | [Apple Foundation Models](https://machinelearning.apple.com/research/apple-foundation-models-tech-report-2025) | 3B on-device, LoRA adapters, federated | Validates use case |
 | [Apple Federated Learning](https://machinelearning.apple.com/research/federated-personalization) | On-device personalization deployed | Production validation of use case |
