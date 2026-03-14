@@ -489,7 +489,7 @@ MLX is better for: raw GPU throughput on large models, broader ecosystem, rapid 
 | Project | Key Finding | Relevance |
 |---------|------------|-----------|
 | [MeZO](https://arxiv.org/abs/2305.17333) (NeurIPS 2023) | In-place ZO-SGD, inference-only memory for LLM fine-tuning. | Foundation for our MeZO implementation. |
-| [MobiZO](https://arxiv.org/abs/2409.15520) (EMNLP 2025) | MP-LoRA on Qualcomm NPU, 4.3x speedup via parallelized perturbations. | Same concept (ZO+LoRA on NPU), deployed on Hexagon. |
+| [MobiZO](https://arxiv.org/abs/2409.15520) (arXiv 2024) | MP-LoRA on Qualcomm NPU, 4.3x speedup via parallelized perturbations. | Same concept (ZO+LoRA on NPU), deployed on Hexagon. |
 | [Orion](https://github.com/mechramc/Orion) (Murai Labs) | ANE training, adapter-as-input, 20 ANE constraints, 3x via 1x1 conv, 170+ tok/s GPT-2. | Same hardware. Our LoRA-split is similar to adapter-as-input. |
 | [imperatormk/ane-train](https://github.com/imperatormk/ane-train) | Runtime weight injection via IOSurface matmul inputs — compile once, train forever. | Documents critical IOSurface constraints (ascending slot sizes, Ci multiple of 32). |
 | [maderix/ANE PR #24](https://github.com/maderix/ANE/issues/24) | Mega-kernel fusion: 4.17x forward speedup. XPC overhead ~160us/eval is the bottleneck. | Fusion + runtime weights is the key open question. |

@@ -1014,7 +1014,7 @@ for different summation orders over DIM=960 elements.
 - [x] v5: Identified MeZO+LoRA as the correct approach for ANE (plays to ANE strengths)
 - [x] v6: Comprehensive literature review of 14 papers (2024-2026) on ZO optimization + NPU training
 - [x] v6: Identified optimal ANE training stack: P-GAP + LoRA + adapter-as-input + 1x1 conv
-- [x] v6: Surveyed MobiZO (EMNLP 2025), P-GAP, AGZO, DiZO, MeSP techniques
+- [x] v6: Surveyed MobiZO (arXiv 2024), P-GAP, AGZO, DiZO, MeSP techniques
 - [x] v6: Added Related Work table and 19-source bibliography to analysis.md
 - [x] v7: Implemented MeZO+LoRA merge mode in train_mezo.m (perturb_lora_weights, lora_merge_all, RETRANSPOSE_ATTN_ONLY)
 - [x] v7: Implemented MeZO+LoRA-split (adapter-as-input) mode (lora_addmm, zero restaging)
@@ -1116,7 +1116,7 @@ Cross-checked claims against original papers via web search. Key corrections:
 | Dimension-free convergence (Theorem 1) | CONFIRMED | — |
 | ANE dispatch overhead "~50μs" | **INCORRECT** | Corrected to ~95μs (maderix/Orion measurements) |
 | 1x1 Conv2d "3x throughput" from Apple blog | **INCORRECT SOURCE** | 3x from Orion paper, not Apple blog |
-| MobiZO 4.3x speedup (EMNLP 2025) | CONFIRMED | vs MeZO full-param (not MeZO+LoRA) |
+| MobiZO 4.3x speedup (arXiv 2024) | CONFIRMED | vs MeZO full-param (not MeZO+LoRA) |
 | P-GAP 22.4% GPU hours (arXiv:2510.18228) | CONFIRMED | Table 5, vs MeZO+LoRA on SQuAD |
 | Orion adapter-as-input (arXiv:2603.06728) | CONFIRMED | — |
 | LoRA init: A ~ Gaussian, B = 0 | CONFIRMED | Paper says "random Gaussian" (no specific sigma) |
@@ -1143,7 +1143,7 @@ Cross-checked claims against original papers via web search. Key corrections:
 - [ZO-Bench: Revisiting ZO Optimization for LLM Fine-Tuning (ICML 2024)](https://arxiv.org/abs/2402.11592)
 - [Apple Foundation Models Tech Report 2025 (arXiv:2507.13575)](https://arxiv.org/abs/2507.13575)
 - [Inside the M4 Apple Neural Engine (maderix benchmarks)](https://maderix.substack.com/p/inside-the-m4-apple-neural-engine-615)
-- [MobiZO: Efficient LLM Fine-Tuning at the Edge (EMNLP 2025)](https://arxiv.org/abs/2409.15520)
+- [MobiZO: Efficient LLM Fine-Tuning at the Edge (arXiv 2024)](https://arxiv.org/abs/2409.15520)
 - [P-GAP: Projected Gradient-Aligned Perturbations (arXiv 2025)](https://arxiv.org/abs/2510.18228)
 - [AGZO: Activation-Guided Zeroth-Order Optimization (arXiv 2026)](https://arxiv.org/abs/2601.17261)
 - [DiZO: Divergence-driven Zeroth-Order Optimization (arXiv 2025)](https://arxiv.org/abs/2502.03304)

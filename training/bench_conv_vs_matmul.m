@@ -659,9 +659,12 @@ int main(int argc, char *argv[]) {
     int iters = 500;
     printf("=== ANE Conv 1x1 vs Matmul Benchmark (%d iters) ===\n", iters);
 
-    // Skip shape benchmarks — already done in Experiment 9
-    // bench_shape("Wq projection",  1024, 1024, 256, iters);
-    // ...
+    // SmolLM2-360M shapes: DIM=960, Q_DIM=960, KV_DIM=320, HIDDEN=2560, SEQ=256
+    bench_shape("Wq (DIM->Q_DIM)",    960,  960,  256, iters);
+    bench_shape("Wk (DIM->KV_DIM)",   960,  320,  256, iters);
+    bench_shape("Wo (Q_DIM->DIM)",    960,  960,  256, iters);
+    bench_shape("W1 (DIM->HIDDEN)",   960,  2560, 256, iters);
+    bench_shape("W2 (HIDDEN->DIM)",   2560, 960,  256, iters);
 
     // Run enhanced delta compilation test
     test_delta_enhanced(1024, 1024, 256);

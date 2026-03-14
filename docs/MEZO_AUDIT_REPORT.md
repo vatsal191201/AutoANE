@@ -437,7 +437,7 @@ The MeZO paper (Table 1) validates MeZO+LoRA on OPT-13B: SST-2 89.6%, RTE 67.9%,
 | Paper | Venue | Contribution | Relation to Our Work |
 |-------|-------|-------------|---------------------|
 | [Orion](https://arxiv.org/abs/2603.06728) | arXiv 2026 | ANE training, adapter-as-input, 20 constraints, 3x via 1x1 conv, 170+ tok/s GPT-2 inference | Same hardware, our LoRA-split is similar to adapter-as-input |
-| [MobiZO](https://aclanthology.org/2025.emnlp-main.1022/) | EMNLP 2025 | MP-LoRA on Qualcomm NPU, 4.3x speedup via parallelized perturbations | Same concept (ZO+LoRA on NPU), deployed on ExecuTorch |
+| [MobiZO](https://arxiv.org/abs/2409.15520) | arXiv 2024 (venue unverified) | MP-LoRA on Qualcomm NPU, 4.3x speedup via parallelized perturbations | Same concept (ZO+LoRA on NPU), deployed on ExecuTorch |
 | [ZO2](https://arxiv.org/abs/2503.12668) | arXiv 2025 | CPU-GPU offloading for ZO, fine-tunes OPT-175B on 18GB GPU | Same principle (ZO for memory-constrained), GPU-focused |
 | [DistZO2](https://arxiv.org/abs/2507.03211) | arXiv 2025 | Distributed parallel ZO2 | Extension of ZO2 to multi-GPU |
 | [MobiLLM](https://arxiv.org/abs/2502.20421) | arXiv 2025 | Server-assisted side tuning on mobile | Alternative to on-device ZO |

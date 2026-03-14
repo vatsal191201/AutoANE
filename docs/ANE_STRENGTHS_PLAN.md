@@ -5,10 +5,10 @@
 | Strength | Number | Source |
 |----------|--------|--------|
 | Conv1x1 throughput vs matmul | **3x faster** | Orion (2603.06728), Constraint #17 |
-| Peak FP16 throughput | **19 TFLOPS** | maderix ANE benchmarks (M4) |
+| Peak FP16 throughput | **15.8–19 TFLOPS** | maderix ANE benchmarks (M4); README reports 15.8, substack deep-dive reports 19 |
 | Power efficiency | **6.6 TFLOPS/W** (80x better than A100) | maderix |
 | Deep graph pipelining | **94% utilization at 32+ layers** (vs 30% single-op) | maderix |
-| On-chip SRAM | **32 MB** (sweet spot: 24 MB working set) | maderix |
+| On-chip SRAM | **~32 MB** (estimated from perf cliff at 24–96 MB) | maderix (inferred, not directly measured) |
 | Dispatch overhead | **0.095 ms per dispatch** | Orion |
 | Classifier forward on ANE | **10.2x faster than CPU** | Orion |
 | Softmax (32K vocab) on ANE | **33.8x faster than CPU** | Orion |
@@ -42,19 +42,25 @@ The data format already fits: our activations are `[1, IC, 1, SEQ]` which is `[N
 
 **Projected with conv1x1 ANE + MP-LoRA:**
 
-| Component | Current (CPU matmul) | Projected (ANE conv1x1) | Speedup |
-|-----------|---------------------|------------------------|---------|
-| Linear projections | 435 ms | ~145 ms (3x from conv1x1) | 3x |
-| Deep graph pipelining | N/A (dispatch per layer) | ~50 ms (94% util, 32 layers) | 3x more |
-| MP-LoRA (MobiZO) | 2 fwd passes = 870 ms | 1 fwd pass for both ±eps | 2x |
-| Perturbation | 2 ms | 2 ms (CPU, unchanged) | 1x |
-| **Total per step** | **593 ms** | **~52 ms** | **~11x** |
-| **Steps in 120s** | **173** | **~2,300** | **13x more steps** |
+> **UPDATE 2026-03-14: Conv1x1 "3x" claim NOT reproduced on this hardware.**
+> Measured speedups: Wq 1.55x, Wk **0.41x** (matmul wins!), Wo 1.79x, W1 1.29x, W2 1.79x.
+> See [COMPREHENSIVE_AUDIT.md](COMPREHENSIVE_AUDIT.md) §7 for full benchmark.
 
-This isn't speculation. Each factor has measured data behind it:
-- 3x conv1x1: Orion Constraint #17, maderix benchmarks
-- 94% utilization: maderix deep graph benchmark (32+ layer chains)
-- 2x MP-LoRA: MobiZO (EMNLP 2025), measured 4.3x with additional inner-loop parallelism
+| Component | Current (CPU matmul) | ~~Original projection~~ | **Revised projection** | Actual speedup |
+|-----------|---------------------|------------------------|----------------------|---------------|
+| Linear projections | 435 ms | ~~145 ms (3x)~~ | **~310 ms (1.4x avg, hybrid matmul/conv)** | 1.4x measured |
+| Deep graph pipelining | N/A | ~~50 ms (94% util)~~ | **Unverified on our model** | ? |
+| MP-LoRA (MobiZO) | 2 fwd passes = 870 ms | 1 fwd pass for both ±eps | **1 fwd pass** | ~2x (plausible) |
+| FZOO one-sided batching | N/A | N/A | **~3x fewer forward passes** | Not tested |
+| Perturbation | 2 ms | 2 ms | **2 ms** | 1x |
+| **Total per step** | **593 ms** | ~~52 ms (11x)~~ | **~150-200 ms (3-4x)** | Conservative |
+| **Steps in 120s** | **173** | ~~2,300 (13x)~~ | **~600-800 (3.5-4.5x)** | Conservative |
+
+**Evidence status for each factor:**
+- ~~3x conv1x1~~: **INVALIDATED** — measured 1.4x avg; Wk projection (960→320) conv is 2.4x SLOWER
+- 94% utilization: maderix deep graph benchmark — **NOT independently verified** on our model
+- 2x MP-LoRA: MobiZO (arXiv 2024) — **plausible** but not tested in our pipeline
+- 3x FZOO: arXiv:2506.09034 — **claims 18x on RoBERTa-large**, but LLM fine-tuning may differ
 - Adapter-as-input: Orion demonstrated, we already have LoRA-split
 
 ### Why This Plays to ANE's Strengths
@@ -132,17 +138,17 @@ Gradient-aligned perturbations (P-GAP, arXiv 2510.18228):
 - 5.2x faster convergence than random perturbations
 - Reduces required steps from ~20K to ~4K
 
-## Expected End State
+## Expected End State (REVISED per benchmark results)
 
-| Metric | Current Best (LoRA-split CPU) | Target (Conv1x1 + MP-LoRA ANE) |
-|--------|------------------------------|-------------------------------|
-| ms/step | 593 | ~50 |
-| Steps/120s | 173 | ~2,300 |
-| Power | ~13W (CPU package) | ~2.8W (ANE only) |
-| Memory | 2.0 GB | ~1.5 GB (quantized base) |
-| Energy/step | ~7.7 J | ~0.14 J |
+| Metric | Current Best (LoRA-split CPU) | ~~Original Target~~ | **Revised Target** |
+|--------|------------------------------|--------------------|--------------------|
+| ms/step | 593 | ~~50~~ | **~150-200** |
+| Steps/120s | 173 | ~~2,300~~ | **~600-800** |
+| Power | ~13W (CPU package) | ~2.8W | ~2.8W (ANE only) |
+| Memory | 2.0 GB | ~1.5 GB | ~1.5 GB (quantized base) |
+| Energy/step | ~7.7 J | ~~0.14 J~~ | **~0.5 J** |
 
-**Energy per step drops 55x.** This is the metric that matters for on-device: not raw speed, but how much training you get per watt-hour.
+**Energy per step drops ~15x** (not 55x as originally projected). Still significant for on-device training.
 
 A MacBook Pro battery (100 Wh) could run:
 - Current CPU: ~46,000 steps (13W × ~9.5h, but throttles)

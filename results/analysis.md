@@ -520,7 +520,7 @@ competitive with backprop-CPU (602ms), while using inference-only memory (~1.5GB
 
 **Additional optimizations from recent literature (v6):**
 
-1. **MobiZO's MP-LoRA** (EMNLP 2025): Multi-Perturbed LoRA parallelizes +ε/-ε
+1. **MobiZO's MP-LoRA** (arXiv 2024): Multi-Perturbed LoRA parallelizes +ε/-ε
    perturbations in a SINGLE forward pass by replicating only the small LoRA B matrix.
    4.3x speedup over MeZO. Already deployed on Qualcomm Hexagon NPU via ExecuTorch.
    Directly applicable to ANE — run both perturbation paths through one compiled graph.
@@ -560,7 +560,7 @@ P-GAP + LoRA + adapter-as-input + 1x1 conv
 | Paper | Venue | Key Contribution | ANE Relevance |
 |-------|-------|-----------------|---------------|
 | MeZO | NeurIPS 2023 | In-place ZO-SGD, inference memory | Foundation |
-| MobiZO | EMNLP 2025 | MP-LoRA + ExecuTorch, 4.3x speedup | High — NPU-deployed |
+| MobiZO | arXiv 2024 | MP-LoRA + ExecuTorch, 4.3x speedup | High — NPU-deployed |
 | P-GAP | arXiv 2025 | Gradient-aligned perturbation, 5.2x conv. | High — fewer steps |
 | AGZO | arXiv 2026 | Activation-guided subspace perturbation | High — forward-only |
 | DiZO | arXiv 2025 | Layer-adaptive ZO, 48% less GPU time | Medium |
@@ -572,12 +572,12 @@ P-GAP + LoRA + adapter-as-input + 1x1 conv
 | Sparse MeZO | ICLR 2024 | 0.1% sparse subset, 3.5x speedup | Medium |
 | SubZero | ICCV 2025 | Random subspace ZO, works with LoRA | Medium |
 | ZO Fine-tuner | arXiv 2025 | Learned perturbation strategy, 82% win rate | Medium |
-| MaZO | EMNLP 2025 | Masked ZO for multi-task | Low |
+| MaZO | arXiv 2024 | Masked ZO for multi-task | Low |
 
 ## Sources
 
 - [MeZO: Fine-Tuning LLMs with Just Forward Passes (NeurIPS 2023)](https://arxiv.org/abs/2305.17333)
-- [MobiZO: Efficient LLM Fine-Tuning at the Edge (EMNLP 2025)](https://arxiv.org/abs/2409.15520)
+- [MobiZO: Efficient LLM Fine-Tuning at the Edge (arXiv 2024)](https://arxiv.org/abs/2409.15520)
 - [P-GAP: Projected Gradient-Aligned Perturbations (arXiv 2025)](https://arxiv.org/abs/2510.18228)
 - [AGZO: Activation-Guided Zeroth-Order Optimization (arXiv 2026)](https://arxiv.org/abs/2601.17261)
 - [DiZO: Divergence-driven Zeroth-Order Optimization (arXiv 2025)](https://arxiv.org/abs/2502.03304)
