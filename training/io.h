@@ -97,6 +97,14 @@ static void io_write_dyn_acts(IOSurfaceRef s, const float *act, int ic, int seq,
     IOSurfaceUnlock(s, 0, NULL);
 }
 
+// Write ONLY activations to conv1x1 input surface: [1, IC, 1, SEQ] contiguous fp16
+// No weights in the IOSurface — they are baked as BLOBFILE constants at compile time.
+static void io_write_conv_acts(IOSurfaceRef s, const float *act, int ic, int seq) {
+    IOSurfaceLock(s, 0, NULL);
+    cvt_f32_f16((_Float16*)IOSurfaceGetBaseAddress(s), act, ic * seq);
+    IOSurfaceUnlock(s, 0, NULL);
+}
+
 // Read output from dynamic matmul kernel: [1, OC, 1, SEQ]
 static void io_read_dyn(IOSurfaceRef s, float *out, int oc, int seq) {
     IOSurfaceLock(s, kIOSurfaceLockReadOnly, NULL);
@@ -149,6 +157,23 @@ static void free_kern(Kern *k) {
     [[NSFileManager defaultManager] removeItemAtPath:(__bridge id)k->tmpDir error:nil];
     CFRelease(k->model); CFRelease(k->request); CFRelease(k->tmpDir);
     free(k);
+}
+
+// Compile a conv1x1 kernel with weights baked as BLOBFILE constants.
+// Weight layout: [OC, IC, 1, 1] as fp16.
+// The returned Kern has IOSurfaces sized for activation-only I/O.
+static Kern *compile_conv1x1_kern(NSString *mil, const float *W, int ic, int oc, int seq) {
+    // Convert weight from fp32 [OC, IC] row-major to fp16 [OC, IC, 1, 1]
+    // The [OC, IC, 1, 1] layout is just [OC, IC] contiguous — same memory layout
+    int w_cnt = oc * ic;
+    _Float16 *w_fp16 = (_Float16*)safe_malloc(w_cnt * 2);
+    cvt_f32_f16(w_fp16, W, w_cnt);
+    NSData *blob = build_blob_fp16(w_fp16, w_cnt);
+    free(w_fp16);
+    NSDictionary *weights = @{@"@model_path/weights/w.bin": @{@"data": blob}};
+    // Input: [1, IC, 1, SEQ] fp16 = IC*SEQ*2 bytes (activation only)
+    // Output: [1, OC, 1, SEQ] fp16 = OC*SEQ*2 bytes
+    return compile_kern_mil_w(mil, weights, ic * seq * 2, oc * seq * 2);
 }
 static void ane_eval(Kern *k) {
     id mdl = (__bridge id)k->model; id req = (__bridge id)k->request; NSError *e = nil;

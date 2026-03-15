@@ -10,6 +10,32 @@
     "{\"coremlc-version\", \"3505.4.1\"}, {\"coremltools-component-milinternal\", \"\"}, " \
     "{\"coremltools-version\", \"9.0\"}})]\n{\n"
 
+// Conv 1x1: y = conv(x, W), weight baked as const BLOBFILE
+// Input: [1, IC, 1, SEQ] (activation only, no weights in IOSurface)
+// Weight: BLOBFILE constant [OC, IC, 1, 1]
+// Output: [1, OC, 1, SEQ]
+static NSString *gen_conv1x1_mil(int ic, int oc, int seq) {
+    NSMutableString *m = [NSMutableString string];
+    [m appendString:MIL_HDR];
+    [m appendFormat:@"    func main<ios18>(tensor<fp16, [1, %d, 1, %d]> x) {\n", ic, seq];
+
+    // Weight as baked const
+    [m appendFormat:@"        tensor<fp16, [%d, %d, 1, 1]> W = const()[name=string(\"W\"), val=tensor<fp16, [%d, %d, 1, 1]>(BLOBFILE(path=string(\"@model_path/weights/w.bin\"), offset=uint64(64)))];\n", oc, ic, oc, ic];
+
+    // Conv params
+    [m appendString:@"        tensor<int32, [2]> st = const()[name=string(\"st\"), val=tensor<int32, [2]>([1, 1])];\n"];
+    [m appendString:@"        tensor<int32, [4]> pd = const()[name=string(\"pd\"), val=tensor<int32, [4]>([0, 0, 0, 0])];\n"];
+    [m appendString:@"        tensor<int32, [2]> dl = const()[name=string(\"dl\"), val=tensor<int32, [2]>([1, 1])];\n"];
+    [m appendString:@"        int32 gr = const()[name=string(\"gr\"), val=int32(1)];\n"];
+    [m appendString:@"        string pt = const()[name=string(\"pt\"), val=string(\"valid\")];\n"];
+
+    // Conv 1x1
+    [m appendFormat:@"        tensor<fp16, [1, %d, 1, %d]> y = conv(dilations=dl, groups=gr, pad=pd, pad_type=pt, strides=st, weight=W, x=x)[name=string(\"y\")];\n", oc, seq];
+
+    [m appendString:@"    } -> (y);\n}\n"];
+    return m;
+}
+
 // Helper: generate a dynamic matmul within a MIL function
 static void gen_dyn_matmul(NSMutableString *m, const char *prefix,
                            int ic, int oc, int seq,

@@ -19,6 +19,14 @@ typedef struct {
     Kern *wkvFwd;      // xnorm @ Wk/Wv → K or V (DIM → KV_DIM) — shared kernel, separate surfaces
     Kern *w13Fwd;      // x2norm @ W1/W3 → h1 or h3 (DIM → HIDDEN) — shared kernel, separate surfaces
     Kern *w2Fwd;       // silu_out @ W2 → ffn_out (HIDDEN → DIM)
+    // Conv1x1 hybrid kernels (weights baked as BLOBFILE, activation-only IOSurface)
+    // Used for Wq, Wo, W1, W2, W3 when --conv-hybrid + --lora-split
+    // Per-layer: each layer gets its own compiled kernel with baked weights
+    Kern *wqConv[NLAYERS];   // DIM → Q_DIM conv1x1 (per layer, baked Wq^T)
+    Kern *woConv[NLAYERS];   // Q_DIM → DIM conv1x1 (per layer, baked Wo^T)
+    Kern *w1Conv[NLAYERS];   // DIM → HIDDEN conv1x1 (per layer, baked W1^T)
+    Kern *w2Conv[NLAYERS];   // HIDDEN → DIM conv1x1 (per layer, baked W2^T)
+    Kern *w3Conv[NLAYERS];   // DIM → HIDDEN conv1x1 (per layer, baked W3^T)
     // Backward kernels (unused in MeZO but kept for struct compatibility)
     Kern *ffnBwdW2t;
     Kern *ffnBwdW13t;
@@ -296,11 +304,13 @@ int main(int argc, char *argv[]) {
         float epsilon = 1e-3f;
         double time_budget_sec = 0;
         bool from_scratch = false, cpu_only = false, ane_matmul_only = false;
+        bool conv_hybrid = false; // conv1x1 for Wq,Wo,W1,W2,W3; matmul for Wk,Wv
         bool lr_from_cli = false;
         bool use_lora = false;
         bool lora_split = false;  // adapter-as-input: no merge, no restage
         bool lora_ffn = false;    // also apply LoRA to W1, W2, W3
         int lora_rank = 8;
+        int fzoo_K = 0;  // FZOO multi-perturbation: 0=disabled (standard MeZO), K>=1=use K directions
         long init_seed = 42;
         int val_every = 500;
         const char *data_path = DEFAULT_DATA_PATH;
@@ -322,8 +332,20 @@ int main(int argc, char *argv[]) {
             else if (strcmp(argv[i], "--lora-split") == 0) { use_lora = true; lora_split = true; }
             else if (strcmp(argv[i], "--lora-rank") == 0 && i+1 < argc) lora_rank = atoi(argv[++i]);
             else if (strcmp(argv[i], "--lora-ffn") == 0) { lora_ffn = true; if (!use_lora) { use_lora = true; lora_split = true; } }
+            else if (strcmp(argv[i], "--conv-hybrid") == 0) conv_hybrid = true;
+            else if (strcmp(argv[i], "--fzoo") == 0 && i+1 < argc) { fzoo_K = atoi(argv[++i]); }
         }
 
+        if (fzoo_K < 0) { fprintf(stderr, "ERROR: --fzoo K must be >= 1\n"); return 1; }
+        if (fzoo_K > 0 && fzoo_K < 1) { fprintf(stderr, "ERROR: --fzoo K must be >= 1\n"); return 1; }
+
+        // --conv-hybrid requires --lora-split (base weights frozen, baked at compile time)
+        if (conv_hybrid && !lora_split) {
+            fprintf(stderr, "ERROR: --conv-hybrid requires --lora-split (base weights must be frozen)\n");
+            return 1;
+        }
+
+        if (conv_hybrid) { ane_matmul_only = true; cpu_only = false; }  // conv-hybrid implies ANE mode
         if (!cpu_only && !ane_matmul_only) cpu_only = true;  // Default to CPU-only
         if (!cpu_only) {
             if (!ane_init()) {
@@ -339,9 +361,10 @@ int main(int argc, char *argv[]) {
                DIM, Q_DIM, KV_DIM, HD, HIDDEN, SEQ, VOCAB);
         double total_p = (double)NLAYERS * LAYER_PARAMS + DIM + (double)VOCAB * DIM;
         printf("Params: %.1fM | Mode: %s\n", total_p / 1e6,
-               cpu_only ? "CPU-only" : "ANE-matmul-only");
+               cpu_only ? "CPU-only" : (conv_hybrid ? "ANE-conv-hybrid" : "ANE-matmul-only"));
         if (use_lora) printf("MeZO+LoRA: lr=%g epsilon=%g seed=%ld val_every=%d rank=%d\n", lr, epsilon, init_seed, val_every, lora_rank);
         else printf("MeZO: lr=%g epsilon=%g seed=%ld val_every=%d\n", lr, epsilon, init_seed, val_every);
+        if (fzoo_K > 0) printf("FZOO: K=%d directions (%d forward passes/step, adaptive step size)\n", fzoo_K, fzoo_K + 1);
         printf("Memory: ~%.0fMB (inference only, no gradients/optimizer)\n",
                (total_p * 4 + SEQ * DIM * 4 * 10) / 1e6);
 
@@ -508,7 +531,67 @@ int main(int argc, char *argv[]) {
         float *Wqt_buf[NLAYERS], *Wkt_buf[NLAYERS], *Wvt_buf[NLAYERS], *Wot_buf[NLAYERS];
         float *W1t_buf[NLAYERS], *W2t_buf[NLAYERS], *W3t_buf[NLAYERS];
 
-        if (!cpu_only) {
+        if (!cpu_only && conv_hybrid) {
+            // Conv-hybrid mode: conv1x1 for Wq,Wo,W1,W2,W3 (baked weights, activation-only I/O)
+            //                   matmul for Wk,Wv (960→320 is 2.8x slower with conv)
+            printf("\nCompiling ANE conv-hybrid kernels...\n");
+            uint64_t t_compile = mach_absolute_time();
+
+            // Compile shared matmul kernel for Wk/Wv only (DIM→KV_DIM)
+            printf("  Compiling wkvFwd matmul (DIM->KV_DIM)...\n");
+            dk.wkvFwd = compile_kern_mil_w(gen_dyn_matmul_mil(DIM, KV_DIM, SEQ), @{},
+                DIM*WKV_FWD_SP*2, KV_DIM*SEQ*2);
+            if (!dk.wkvFwd) { fprintf(stderr, "wkvFwd compile failed\n"); return 1; }
+
+            // Generate MIL templates for conv kernels (same MIL per shape, different baked weights)
+            NSString *mil_wq_conv = gen_conv1x1_mil(DIM, Q_DIM, SEQ);
+            NSString *mil_wo_conv = gen_conv1x1_mil(Q_DIM, DIM, SEQ);
+            NSString *mil_w1_conv = gen_conv1x1_mil(DIM, HIDDEN, SEQ);
+            NSString *mil_w2_conv = gen_conv1x1_mil(HIDDEN, DIM, SEQ);
+            NSString *mil_w3_conv = gen_conv1x1_mil(DIM, HIDDEN, SEQ);
+
+            for (int L = 0; L < NLAYERS; L++) {
+                // Conv kernels: bake original base weights at compile time
+                // Weight layout for conv: W[OC, IC] → conv weight [OC, IC, 1, 1]
+                // Conv does y = W @ x, same as CPU sgemm: Wq[Q_DIM,DIM] @ xnorm[DIM,SEQ]
+                printf("  Layer %d: compiling 5 conv + matmul surfaces...\n", L);
+
+                // Wq conv: DIM → Q_DIM, weight = Wq[Q_DIM, DIM]
+                dk.wqConv[L] = compile_conv1x1_kern(mil_wq_conv, lw[L].Wq, DIM, Q_DIM, SEQ);
+                if (!dk.wqConv[L]) { fprintf(stderr, "wqConv[%d] compile failed\n", L); return 1; }
+
+                // Wo conv: Q_DIM → DIM, weight = Wo[DIM, Q_DIM]
+                dk.woConv[L] = compile_conv1x1_kern(mil_wo_conv, lw[L].Wo, Q_DIM, DIM, SEQ);
+                if (!dk.woConv[L]) { fprintf(stderr, "woConv[%d] compile failed\n", L); return 1; }
+
+                // W1 conv: DIM → HIDDEN, weight = W1[HIDDEN, DIM]
+                dk.w1Conv[L] = compile_conv1x1_kern(mil_w1_conv, lw[L].W1, DIM, HIDDEN, SEQ);
+                if (!dk.w1Conv[L]) { fprintf(stderr, "w1Conv[%d] compile failed\n", L); return 1; }
+
+                // W2 conv: HIDDEN → DIM, weight = W2[DIM, HIDDEN]
+                dk.w2Conv[L] = compile_conv1x1_kern(mil_w2_conv, lw[L].W2, HIDDEN, DIM, SEQ);
+                if (!dk.w2Conv[L]) { fprintf(stderr, "w2Conv[%d] compile failed\n", L); return 1; }
+
+                // W3 conv: DIM → HIDDEN, weight = W3[HIDDEN, DIM]
+                dk.w3Conv[L] = compile_conv1x1_kern(mil_w3_conv, lw[L].W3, DIM, HIDDEN, SEQ);
+                if (!dk.w3Conv[L]) { fprintf(stderr, "w3Conv[%d] compile failed\n", L); return 1; }
+
+                // Matmul surfaces for Wk/Wv only
+                Wkt_buf[L] = (float*)safe_malloc(WK_SZ * 4);
+                Wvt_buf[L] = (float*)safe_malloc(WV_SZ * 4);
+                Wqt_buf[L] = NULL; Wot_buf[L] = NULL;
+                W1t_buf[L] = NULL; W2t_buf[L] = NULL; W3t_buf[L] = NULL;
+
+                pls[L].wkFwd_in = make_surface(DIM * WKV_FWD_SP * 2);
+                pls[L].wvFwd_in = make_surface(DIM * WKV_FWD_SP * 2);
+                plr[L].wkFwd = make_request(dk.wkvFwd, pls[L].wkFwd_in);
+                plr[L].wvFwd = make_request(dk.wkvFwd, pls[L].wvFwd_in);
+            }
+
+            printf("Compiled %d kernels in %.0fms\n", g_compile_count,
+                   tb_ms(mach_absolute_time() - t_compile));
+
+        } else if (!cpu_only) {
             printf("\nCompiling ANE forward kernels...\n");
             uint64_t t_compile = mach_absolute_time();
             if (!compile_dynamic_kernels(&dk, 1.0f / sqrtf(2.0f * NLAYERS), true, false)) {
@@ -626,10 +709,182 @@ int main(int argc, char *argv[]) {
         } while(0)
 
         // Initial transpose + staging
-        if (!cpu_only) {
+        if (!cpu_only && conv_hybrid) {
+            // Conv-hybrid: only stage Wk/Wv matmul weights (frozen, one-time)
+            // Conv kernels (Wq,Wo,W1,W2,W3) have weights baked at compile time
+            for (int L = 0; L < NLAYERS; L++) {
+                transpose_weight(Wkt_buf[L], lw[L].Wk, KV_DIM, DIM);
+                transpose_weight(Wvt_buf[L], lw[L].Wv, KV_DIM, DIM);
+                { IOSurfaceLock(pls[L].wkFwd_in, 0, NULL);
+                  _Float16 *buf = (_Float16*)IOSurfaceGetBaseAddress(pls[L].wkFwd_in);
+                  for (int d = 0; d < DIM; d++)
+                      cvt_f32_f16(buf + d*WKV_FWD_SP + SEQ, Wkt_buf[L] + d*KV_DIM, KV_DIM);
+                  IOSurfaceUnlock(pls[L].wkFwd_in, 0, NULL); }
+                { IOSurfaceLock(pls[L].wvFwd_in, 0, NULL);
+                  _Float16 *buf = (_Float16*)IOSurfaceGetBaseAddress(pls[L].wvFwd_in);
+                  for (int d = 0; d < DIM; d++)
+                      cvt_f32_f16(buf + d*WKV_FWD_SP + SEQ, Wvt_buf[L] + d*KV_DIM, KV_DIM);
+                  IOSurfaceUnlock(pls[L].wvFwd_in, 0, NULL); }
+            }
+            printf("Initial weight staging complete (conv-hybrid: Wk/Wv matmul only)\n");
+        } else if (!cpu_only) {
             RETRANSPOSE_AND_STAGE();
             printf("Initial weight staging complete\n");
         }
+
+        // ===== Forward pass macro (shared by MeZO, FZOO, and validation) =====
+        // DO_FORWARD_PASS(input_toks, ctargets_arr, loss_var):
+        //   Runs full transformer forward pass and computes cross-entropy loss.
+        //   input_toks: uint16_t* input token array (length SEQ)
+        //   ctargets_arr: uint16_t* compact target token array (length SEQ)
+        //   loss_var: float variable to store the resulting loss
+        #define DO_FORWARD_PASS(input_toks, ctargets_arr, loss_var) do { \
+            embed_lookup(x_cur, embed, input_toks, DIM, SEQ, VOCAB); \
+            for (int L = 0; L < NLAYERS; L++) { \
+                rmsnorm(xnorm_buf, x_cur, lw[L].rms_att, DIM, SEQ); \
+                if (cpu_only) { \
+                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, \
+                                Q_DIM, SEQ, DIM, 1.0f, lw[L].Wq, DIM, xnorm_buf, SEQ, 0.0f, Q, SEQ); \
+                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, \
+                                KV_DIM, SEQ, DIM, 1.0f, lw[L].Wk, DIM, xnorm_buf, SEQ, 0.0f, K, SEQ); \
+                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, \
+                                KV_DIM, SEQ, DIM, 1.0f, lw[L].Wv, DIM, xnorm_buf, SEQ, 0.0f, V, SEQ); \
+                    if (lora_split) { \
+                        LoRALayer *ll = &lora_layers[L]; \
+                        lora_addmm(Q, ll->Aq, ll->Bq, xnorm_buf, lora_tmp, Q_DIM, ll->rank, DIM); \
+                        lora_addmm(K, ll->Ak, ll->Bk, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM); \
+                        lora_addmm(V, ll->Av, ll->Bv, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM); \
+                    } \
+                } else if (conv_hybrid) { \
+                    io_write_conv_acts(dk.wqConv[L]->ioIn, xnorm_buf, DIM, SEQ); \
+                    ane_eval(dk.wqConv[L]); \
+                    io_read_dyn(dk.wqConv[L]->ioOut, Q, Q_DIM, SEQ); \
+                    io_write_dyn_acts(pls[L].wkFwd_in, xnorm_buf, DIM, SEQ, WKV_FWD_SP); \
+                    ane_eval_req(dk.wkvFwd, plr[L].wkFwd); \
+                    io_read_dyn(dk.wkvFwd->ioOut, K, KV_DIM, SEQ); \
+                    io_write_dyn_acts(pls[L].wvFwd_in, xnorm_buf, DIM, SEQ, WKV_FWD_SP); \
+                    ane_eval_req(dk.wkvFwd, plr[L].wvFwd); \
+                    io_read_dyn(dk.wkvFwd->ioOut, V, KV_DIM, SEQ); \
+                    { LoRALayer *ll = &lora_layers[L]; \
+                    lora_addmm(Q, ll->Aq, ll->Bq, xnorm_buf, lora_tmp, Q_DIM, ll->rank, DIM); \
+                    lora_addmm(K, ll->Ak, ll->Bk, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM); \
+                    lora_addmm(V, ll->Av, ll->Bv, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM); } \
+                } else { \
+                    io_write_dyn_acts(pls[L].wqFwd_in, xnorm_buf, DIM, SEQ, WQ_FWD_SP); \
+                    ane_eval_req(dk.wqFwd, plr[L].wqFwd); \
+                    io_read_dyn(dk.wqFwd->ioOut, Q, Q_DIM, SEQ); \
+                    io_write_dyn_acts(pls[L].wkFwd_in, xnorm_buf, DIM, SEQ, WKV_FWD_SP); \
+                    ane_eval_req(dk.wkvFwd, plr[L].wkFwd); \
+                    io_read_dyn(dk.wkvFwd->ioOut, K, KV_DIM, SEQ); \
+                    io_write_dyn_acts(pls[L].wvFwd_in, xnorm_buf, DIM, SEQ, WKV_FWD_SP); \
+                    ane_eval_req(dk.wkvFwd, plr[L].wvFwd); \
+                    io_read_dyn(dk.wkvFwd->ioOut, V, KV_DIM, SEQ); \
+                    if (lora_split) { \
+                        LoRALayer *ll = &lora_layers[L]; \
+                        lora_addmm(Q, ll->Aq, ll->Bq, xnorm_buf, lora_tmp, Q_DIM, ll->rank, DIM); \
+                        lora_addmm(K, ll->Ak, ll->Bk, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM); \
+                        lora_addmm(V, ll->Av, ll->Bv, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM); \
+                    } \
+                } \
+                rope_forward_inplace(Q, SEQ, Q_DIM, HD); \
+                rope_forward_inplace(K, SEQ, KV_DIM, HD); \
+                gqa_tile_kv(k_tiled, K, SEQ); \
+                gqa_tile_kv(v_tiled, V, SEQ); \
+                cpu_sdpa_forward(Q, k_tiled, v_tiled, attn_out, HEADS, HD, SEQ); \
+                if (cpu_only) { \
+                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, \
+                                DIM, SEQ, Q_DIM, 1.0f, lw[L].Wo, Q_DIM, attn_out, SEQ, 0.0f, o_out, SEQ); \
+                    if (lora_split) { \
+                        LoRALayer *ll = &lora_layers[L]; \
+                        lora_addmm(o_out, ll->Ao, ll->Bo, attn_out, lora_tmp, DIM, ll->rank, Q_DIM); \
+                    } \
+                } else if (conv_hybrid) { \
+                    io_write_conv_acts(dk.woConv[L]->ioIn, attn_out, Q_DIM, SEQ); \
+                    ane_eval(dk.woConv[L]); \
+                    io_read_dyn(dk.woConv[L]->ioOut, o_out, DIM, SEQ); \
+                    { LoRALayer *ll = &lora_layers[L]; \
+                    lora_addmm(o_out, ll->Ao, ll->Bo, attn_out, lora_tmp, DIM, ll->rank, Q_DIM); } \
+                } else { \
+                    write_wo_fwd_acts(pls[L].woFwd_in, attn_out); \
+                    ane_eval_req(dk.woFwd, plr[L].woFwd); \
+                    io_read_dyn(dk.woFwd->ioOut, o_out, DIM, SEQ); \
+                    if (lora_split) { \
+                        LoRALayer *ll = &lora_layers[L]; \
+                        lora_addmm(o_out, ll->Ao, ll->Bo, attn_out, lora_tmp, DIM, ll->rank, Q_DIM); \
+                    } \
+                } \
+                vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ * DIM)); \
+                rmsnorm(xnorm_buf, x_cur, lw[L].rms_ffn, DIM, SEQ); \
+                if (cpu_only) { \
+                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, \
+                                HIDDEN, SEQ, DIM, 1.0f, lw[L].W1, DIM, xnorm_buf, SEQ, 0.0f, h1, SEQ); \
+                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, \
+                                HIDDEN, SEQ, DIM, 1.0f, lw[L].W3, DIM, xnorm_buf, SEQ, 0.0f, h3, SEQ); \
+                    if (lora_split && lora_ffn) { \
+                        LoRALayer *ll = &lora_layers[L]; \
+                        lora_addmm(h1, ll->A1, ll->B1, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM); \
+                        lora_addmm(h3, ll->A3, ll->B3, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM); \
+                    } \
+                } else if (conv_hybrid) { \
+                    io_write_conv_acts(dk.w1Conv[L]->ioIn, xnorm_buf, DIM, SEQ); \
+                    ane_eval(dk.w1Conv[L]); \
+                    io_read_dyn(dk.w1Conv[L]->ioOut, h1, HIDDEN, SEQ); \
+                    io_write_conv_acts(dk.w3Conv[L]->ioIn, xnorm_buf, DIM, SEQ); \
+                    ane_eval(dk.w3Conv[L]); \
+                    io_read_dyn(dk.w3Conv[L]->ioOut, h3, HIDDEN, SEQ); \
+                    if (lora_ffn) { \
+                        LoRALayer *ll = &lora_layers[L]; \
+                        lora_addmm(h1, ll->A1, ll->B1, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM); \
+                        lora_addmm(h3, ll->A3, ll->B3, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM); \
+                    } \
+                } else { \
+                    io_write_dyn_acts(pls[L].w1Fwd_in, xnorm_buf, DIM, SEQ, W13_FWD_SP); \
+                    ane_eval_req(dk.w13Fwd, plr[L].w1Fwd); \
+                    io_read_dyn(dk.w13Fwd->ioOut, h1, HIDDEN, SEQ); \
+                    io_write_dyn_acts(pls[L].w3Fwd_in, xnorm_buf, DIM, SEQ, W13_FWD_SP); \
+                    ane_eval_req(dk.w13Fwd, plr[L].w3Fwd); \
+                    io_read_dyn(dk.w13Fwd->ioOut, h3, HIDDEN, SEQ); \
+                    if (lora_split && lora_ffn) { \
+                        LoRALayer *ll = &lora_layers[L]; \
+                        lora_addmm(h1, ll->A1, ll->B1, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM); \
+                        lora_addmm(h3, ll->A3, ll->B3, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM); \
+                    } \
+                } \
+                for (int i = 0; i < HIDDEN * SEQ; i++) { \
+                    float s = h1[i] / (1.0f + expf(-h1[i])); \
+                    silu_out[i] = s * h3[i]; \
+                } \
+                if (cpu_only) { \
+                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, \
+                                DIM, SEQ, HIDDEN, 1.0f, lw[L].W2, HIDDEN, silu_out, SEQ, 0.0f, o_out, SEQ); \
+                    if (lora_split && lora_ffn) { \
+                        LoRALayer *ll = &lora_layers[L]; \
+                        lora_addmm(o_out, ll->A2, ll->B2, silu_out, lora_tmp, DIM, ll->rank, HIDDEN); \
+                    } \
+                } else if (conv_hybrid) { \
+                    io_write_conv_acts(dk.w2Conv[L]->ioIn, silu_out, HIDDEN, SEQ); \
+                    ane_eval(dk.w2Conv[L]); \
+                    io_read_dyn(dk.w2Conv[L]->ioOut, o_out, DIM, SEQ); \
+                    if (lora_ffn) { \
+                        LoRALayer *ll = &lora_layers[L]; \
+                        lora_addmm(o_out, ll->A2, ll->B2, silu_out, lora_tmp, DIM, ll->rank, HIDDEN); \
+                    } \
+                } else { \
+                    io_write_dyn_acts(pls[L].w2Fwd_in, silu_out, HIDDEN, SEQ, W2_FWD_SP); \
+                    ane_eval_req(dk.w2Fwd, plr[L].w2Fwd); \
+                    io_read_dyn(dk.w2Fwd->ioOut, o_out, DIM, SEQ); \
+                    if (lora_split && lora_ffn) { \
+                        LoRALayer *ll = &lora_layers[L]; \
+                        lora_addmm(o_out, ll->A2, ll->B2, silu_out, lora_tmp, DIM, ll->rank, HIDDEN); \
+                    } \
+                } \
+                vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ * DIM)); \
+            } \
+            rmsnorm(xnorm_buf, x_cur, rms_final, DIM, SEQ); \
+            cblas_sgemm(CblasRowMajor, CblasTrans, CblasTrans, \
+                        SEQ, CV, DIM, 1.0f, xnorm_buf, SEQ, cembed, DIM, 0.0f, logits, CV); \
+            (loss_var) = cross_entropy_loss(dlogits, logits, ctargets_arr, CV, SEQ); \
+        } while(0)
 
         // ===== MeZO Training Loop =====
         float last_loss_plus = 999.0f, last_loss_minus = 999.0f;
@@ -667,361 +922,232 @@ int main(int argc, char *argv[]) {
             // MeZO seed for this step
             uint64_t mezo_seed = (uint64_t)step * 1000003ULL + (uint64_t)init_seed;
 
-            // ===== 1. Perturb +epsilon =====
-            uint64_t t0 = mach_absolute_time();
-            if (use_lora) {
-                perturb_lora_weights(lora_layers, lw, rms_final, NLAYERS, mezo_seed, +epsilon);
-                if (!lora_split) lora_merge_all(lw, lora_layers, NLAYERS);
-            } else {
-                perturb_all_weights(lw, embed, rms_final, mezo_seed, +epsilon);
-            }
-            if (!lora_split) { free(cembed); cembed = vocab_compact_embed(embed, &vm, DIM); }
-            t_perturb += tb_ms(mach_absolute_time() - t0);
+            float loss_plus = 0, loss_minus = 0, proj_grad = 0;
+            uint64_t t0;
 
-            if (!cpu_only && !lora_split) {
+            if (fzoo_K > 0) {
+                // ===== FZOO: Multi-perturbation one-sided gradient estimation =====
+                // Step 1: Unperturbed forward pass -> loss_0
                 t0 = mach_absolute_time();
-                if (use_lora && !lora_ffn) { RETRANSPOSE_ATTN_ONLY(); }
-                else if (use_lora && lora_ffn) { RETRANSPOSE_AND_STAGE(); }
-                else { RETRANSPOSE_AND_STAGE(); }
-                t_transpose += tb_ms(mach_absolute_time() - t0);
-            }
+                float fzoo_losses[fzoo_K + 1];  // losses[0]=loss_0, losses[1..K]=perturbed
+                DO_FORWARD_PASS(input_tokens, ctargets, fzoo_losses[0]);
+                t_fwd += tb_ms(mach_absolute_time() - t0);
 
-            // ===== 2. Forward pass -> loss_plus =====
-            t0 = mach_absolute_time();
-            embed_lookup(x_cur, embed, input_tokens, DIM, SEQ, VOCAB);
+                // Step 2: K perturbed forward passes
+                for (int fk = 0; fk < fzoo_K; fk++) {
+                    uint64_t mezo_seed_k = mezo_seed + (uint64_t)fk * 999983ULL;
 
-            for (int L = 0; L < NLAYERS; L++) {
-                // RMSNorm pre-attention
-                rmsnorm(xnorm_buf, x_cur, lw[L].rms_att, DIM, SEQ);
-
-                if (cpu_only) {
-                    // CPU matmuls (use effective weights: base or merged)
-                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                                Q_DIM, SEQ, DIM, 1.0f, lw[L].Wq, DIM, xnorm_buf, SEQ, 0.0f, Q, SEQ);
-                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                                KV_DIM, SEQ, DIM, 1.0f, lw[L].Wk, DIM, xnorm_buf, SEQ, 0.0f, K, SEQ);
-                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                                KV_DIM, SEQ, DIM, 1.0f, lw[L].Wv, DIM, xnorm_buf, SEQ, 0.0f, V, SEQ);
-                    if (lora_split) {
-                        // Add LoRA corrections: Q += Bq @ (Aq @ xnorm), etc.
-                        LoRALayer *ll = &lora_layers[L];
-                        lora_addmm(Q, ll->Aq, ll->Bq, xnorm_buf, lora_tmp, Q_DIM, ll->rank, DIM);
-                        lora_addmm(K, ll->Ak, ll->Bk, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM);
-                        lora_addmm(V, ll->Av, ll->Bv, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM);
+                    // Perturb +epsilon with direction k
+                    t0 = mach_absolute_time();
+                    if (use_lora) {
+                        perturb_lora_weights(lora_layers, lw, rms_final, NLAYERS, mezo_seed_k, +epsilon);
+                        if (!lora_split) lora_merge_all(lw, lora_layers, NLAYERS);
+                    } else {
+                        perturb_all_weights(lw, embed, rms_final, mezo_seed_k, +epsilon);
                     }
-                } else {
-                    // ANE matmuls (base weights baked in IOSurfaces)
-                    io_write_dyn_acts(pls[L].wqFwd_in, xnorm_buf, DIM, SEQ, WQ_FWD_SP);
-                    ane_eval_req(dk.wqFwd, plr[L].wqFwd);
-                    io_read_dyn(dk.wqFwd->ioOut, Q, Q_DIM, SEQ);
+                    if (!lora_split) { free(cembed); cembed = vocab_compact_embed(embed, &vm, DIM); }
+                    t_perturb += tb_ms(mach_absolute_time() - t0);
 
-                    io_write_dyn_acts(pls[L].wkFwd_in, xnorm_buf, DIM, SEQ, WKV_FWD_SP);
-                    ane_eval_req(dk.wkvFwd, plr[L].wkFwd);
-                    io_read_dyn(dk.wkvFwd->ioOut, K, KV_DIM, SEQ);
-
-                    io_write_dyn_acts(pls[L].wvFwd_in, xnorm_buf, DIM, SEQ, WKV_FWD_SP);
-                    ane_eval_req(dk.wkvFwd, plr[L].wvFwd);
-                    io_read_dyn(dk.wkvFwd->ioOut, V, KV_DIM, SEQ);
-
-                    if (lora_split) {
-                        // Add LoRA corrections on CPU after ANE base matmul
-                        LoRALayer *ll = &lora_layers[L];
-                        lora_addmm(Q, ll->Aq, ll->Bq, xnorm_buf, lora_tmp, Q_DIM, ll->rank, DIM);
-                        lora_addmm(K, ll->Ak, ll->Bk, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM);
-                        lora_addmm(V, ll->Av, ll->Bv, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM);
+                    if (!cpu_only && !lora_split) {
+                        t0 = mach_absolute_time();
+                        if (use_lora && !lora_ffn) { RETRANSPOSE_ATTN_ONLY(); }
+                        else if (use_lora && lora_ffn) { RETRANSPOSE_AND_STAGE(); }
+                        else { RETRANSPOSE_AND_STAGE(); }
+                        t_transpose += tb_ms(mach_absolute_time() - t0);
                     }
+
+                    // Forward pass -> loss_k
+                    t0 = mach_absolute_time();
+                    DO_FORWARD_PASS(input_tokens, ctargets, fzoo_losses[fk + 1]);
+                    t_fwd += tb_ms(mach_absolute_time() - t0);
+
+                    // Restore: perturb -epsilon with same seed
+                    t0 = mach_absolute_time();
+                    if (use_lora) {
+                        perturb_lora_weights(lora_layers, lw, rms_final, NLAYERS, mezo_seed_k, -epsilon);
+                        if (!lora_split) lora_merge_all(lw, lora_layers, NLAYERS);
+                    } else {
+                        perturb_all_weights(lw, embed, rms_final, mezo_seed_k, -epsilon);
+                    }
+                    if (!lora_split) { free(cembed); cembed = vocab_compact_embed(embed, &vm, DIM); }
+                    t_perturb += tb_ms(mach_absolute_time() - t0);
                 }
 
-                // RoPE + GQA tile + SDPA (always CPU fp32)
-                rope_forward_inplace(Q, SEQ, Q_DIM, HD);
-                rope_forward_inplace(K, SEQ, KV_DIM, HD);
-                gqa_tile_kv(k_tiled, K, SEQ);
-                gqa_tile_kv(v_tiled, V, SEQ);
-                cpu_sdpa_forward(Q, k_tiled, v_tiled, attn_out, HEADS, HD, SEQ);
-
-                // Wo projection
-                if (cpu_only) {
-                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                                DIM, SEQ, Q_DIM, 1.0f, lw[L].Wo, Q_DIM, attn_out, SEQ, 0.0f, o_out, SEQ);
-                    if (lora_split) {
-                        LoRALayer *ll = &lora_layers[L];
-                        lora_addmm(o_out, ll->Ao, ll->Bo, attn_out, lora_tmp, DIM, ll->rank, Q_DIM);
-                    }
-                } else {
-                    write_wo_fwd_acts(pls[L].woFwd_in, attn_out);
-                    ane_eval_req(dk.woFwd, plr[L].woFwd);
-                    io_read_dyn(dk.woFwd->ioOut, o_out, DIM, SEQ);
-                    if (lora_split) {
-                        LoRALayer *ll = &lora_layers[L];
-                        lora_addmm(o_out, ll->Ao, ll->Bo, attn_out, lora_tmp, DIM, ll->rank, Q_DIM);
-                    }
+                // Step 3: Compute sigma = std(loss_0, loss_1, ..., loss_K) for adaptive step size
+                float fzoo_mean = 0;
+                for (int fk = 0; fk <= fzoo_K; fk++) fzoo_mean += fzoo_losses[fk];
+                fzoo_mean /= (float)(fzoo_K + 1);
+                float fzoo_var = 0;
+                for (int fk = 0; fk <= fzoo_K; fk++) {
+                    float d = fzoo_losses[fk] - fzoo_mean;
+                    fzoo_var += d * d;
                 }
+                float fzoo_sigma = sqrtf(fzoo_var / (float)(fzoo_K + 1));
 
-                // Residual 1: x = x + res_alpha * o_out (DeepNet scaled residual)
-                vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ * DIM));
-
-                // RMSNorm pre-FFN
-                rmsnorm(xnorm_buf, x_cur, lw[L].rms_ffn, DIM, SEQ);
-
-                // FFN: h1 = xnorm @ W1, h3 = xnorm @ W3, silu_out = SiLU(h1) * h3, ffn_out = silu_out @ W2
-                if (cpu_only) {
-                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                                HIDDEN, SEQ, DIM, 1.0f, lw[L].W1, DIM, xnorm_buf, SEQ, 0.0f, h1, SEQ);
-                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                                HIDDEN, SEQ, DIM, 1.0f, lw[L].W3, DIM, xnorm_buf, SEQ, 0.0f, h3, SEQ);
-                    if (lora_split && lora_ffn) {
-                        LoRALayer *ll = &lora_layers[L];
-                        lora_addmm(h1, ll->A1, ll->B1, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM);
-                        lora_addmm(h3, ll->A3, ll->B3, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM);
-                    }
-                } else {
-                    io_write_dyn_acts(pls[L].w1Fwd_in, xnorm_buf, DIM, SEQ, W13_FWD_SP);
-                    ane_eval_req(dk.w13Fwd, plr[L].w1Fwd);
-                    io_read_dyn(dk.w13Fwd->ioOut, h1, HIDDEN, SEQ);
-
-                    io_write_dyn_acts(pls[L].w3Fwd_in, xnorm_buf, DIM, SEQ, W13_FWD_SP);
-                    ane_eval_req(dk.w13Fwd, plr[L].w3Fwd);
-                    io_read_dyn(dk.w13Fwd->ioOut, h3, HIDDEN, SEQ);
-
-                    if (lora_split && lora_ffn) {
-                        LoRALayer *ll = &lora_layers[L];
-                        lora_addmm(h1, ll->A1, ll->B1, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM);
-                        lora_addmm(h3, ll->A3, ll->B3, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM);
-                    }
-                }
-
-                // SiLU(h1) * h3
-                for (int i = 0; i < HIDDEN * SEQ; i++) {
-                    float s = h1[i] / (1.0f + expf(-h1[i]));  // SiLU
-                    silu_out[i] = s * h3[i];
-                }
-
-                // W2 projection
-                if (cpu_only) {
-                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                                DIM, SEQ, HIDDEN, 1.0f, lw[L].W2, HIDDEN, silu_out, SEQ, 0.0f, o_out, SEQ);
-                    if (lora_split && lora_ffn) {
-                        LoRALayer *ll = &lora_layers[L];
-                        lora_addmm(o_out, ll->A2, ll->B2, silu_out, lora_tmp, DIM, ll->rank, HIDDEN);
-                    }
-                } else {
-                    io_write_dyn_acts(pls[L].w2Fwd_in, silu_out, HIDDEN, SEQ, W2_FWD_SP);
-                    ane_eval_req(dk.w2Fwd, plr[L].w2Fwd);
-                    io_read_dyn(dk.w2Fwd->ioOut, o_out, DIM, SEQ);
-                    if (lora_split && lora_ffn) {
-                        LoRALayer *ll = &lora_layers[L];
-                        lora_addmm(o_out, ll->A2, ll->B2, silu_out, lora_tmp, DIM, ll->rank, HIDDEN);
-                    }
-                }
-
-                // Residual 2: x = x + res_alpha * ffn_out (DeepNet scaled residual)
-                vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ * DIM));
-            }
-
-            // Final RMSNorm + classifier
-            rmsnorm(xnorm_buf, x_cur, rms_final, DIM, SEQ);
-            // logits[SEQ,CV] = x_final^T[SEQ,DIM] @ cembed^T[DIM,CV]  (row-major for cross_entropy_loss)
-            cblas_sgemm(CblasRowMajor, CblasTrans, CblasTrans,
-                        SEQ, CV, DIM, 1.0f, xnorm_buf, SEQ, cembed, DIM, 0.0f, logits, CV);
-            float loss_plus = cross_entropy_loss(dlogits, logits, ctargets, CV, SEQ);
-            t_fwd += tb_ms(mach_absolute_time() - t0);
-
-            // ===== 3. Perturb -2*epsilon (to theta - epsilon*z) =====
-            t0 = mach_absolute_time();
-            if (use_lora) {
-                perturb_lora_weights(lora_layers, lw, rms_final, NLAYERS, mezo_seed, -2.0f * epsilon);
-                if (!lora_split) lora_merge_all(lw, lora_layers, NLAYERS);
-            } else {
-                perturb_all_weights(lw, embed, rms_final, mezo_seed, -2.0f * epsilon);
-            }
-            if (!lora_split) { free(cembed); cembed = vocab_compact_embed(embed, &vm, DIM); }
-            t_perturb += tb_ms(mach_absolute_time() - t0);
-
-            if (!cpu_only && !lora_split) {
+                // Step 4: Accumulate K gradient updates
+                float loss_avg = 0;
+                float proj_grad_sum = 0;
                 t0 = mach_absolute_time();
-                if (use_lora && !lora_ffn) { RETRANSPOSE_ATTN_ONLY(); }
-                else if (use_lora && lora_ffn) { RETRANSPOSE_AND_STAGE(); }
-                else { RETRANSPOSE_AND_STAGE(); }
-                t_transpose += tb_ms(mach_absolute_time() - t0);
-            }
+                for (int fk = 0; fk < fzoo_K; fk++) {
+                    uint64_t mezo_seed_k = mezo_seed + (uint64_t)fk * 999983ULL;
+                    float grad_k = (fzoo_losses[fk + 1] - fzoo_losses[0]) / epsilon;
+                    proj_grad_sum += grad_k;
+                    loss_avg += fzoo_losses[fk + 1];
 
-            // ===== 4. Forward pass -> loss_minus =====
-            t0 = mach_absolute_time();
-            embed_lookup(x_cur, embed, input_tokens, DIM, SEQ, VOCAB);
-
-            for (int L = 0; L < NLAYERS; L++) {
-                rmsnorm(xnorm_buf, x_cur, lw[L].rms_att, DIM, SEQ);
-
-                if (cpu_only) {
-                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                                Q_DIM, SEQ, DIM, 1.0f, lw[L].Wq, DIM, xnorm_buf, SEQ, 0.0f, Q, SEQ);
-                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                                KV_DIM, SEQ, DIM, 1.0f, lw[L].Wk, DIM, xnorm_buf, SEQ, 0.0f, K, SEQ);
-                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                                KV_DIM, SEQ, DIM, 1.0f, lw[L].Wv, DIM, xnorm_buf, SEQ, 0.0f, V, SEQ);
-                    if (lora_split) {
-                        LoRALayer *ll = &lora_layers[L];
-                        lora_addmm(Q, ll->Aq, ll->Bq, xnorm_buf, lora_tmp, Q_DIM, ll->rank, DIM);
-                        lora_addmm(K, ll->Ak, ll->Bk, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM);
-                        lora_addmm(V, ll->Av, ll->Bv, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM);
-                    }
-                } else {
-                    io_write_dyn_acts(pls[L].wqFwd_in, xnorm_buf, DIM, SEQ, WQ_FWD_SP);
-                    ane_eval_req(dk.wqFwd, plr[L].wqFwd);
-                    io_read_dyn(dk.wqFwd->ioOut, Q, Q_DIM, SEQ);
-
-                    io_write_dyn_acts(pls[L].wkFwd_in, xnorm_buf, DIM, SEQ, WKV_FWD_SP);
-                    ane_eval_req(dk.wkvFwd, plr[L].wkFwd);
-                    io_read_dyn(dk.wkvFwd->ioOut, K, KV_DIM, SEQ);
-
-                    io_write_dyn_acts(pls[L].wvFwd_in, xnorm_buf, DIM, SEQ, WKV_FWD_SP);
-                    ane_eval_req(dk.wkvFwd, plr[L].wvFwd);
-                    io_read_dyn(dk.wkvFwd->ioOut, V, KV_DIM, SEQ);
-
-                    if (lora_split) {
-                        LoRALayer *ll = &lora_layers[L];
-                        lora_addmm(Q, ll->Aq, ll->Bq, xnorm_buf, lora_tmp, Q_DIM, ll->rank, DIM);
-                        lora_addmm(K, ll->Ak, ll->Bk, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM);
-                        lora_addmm(V, ll->Av, ll->Bv, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM);
+                    float update_scale_k = -lr * grad_k / (float)fzoo_K;
+                    if (use_lora) {
+                        perturb_lora_weights(lora_layers, lw, rms_final, NLAYERS, mezo_seed_k, update_scale_k);
+                    } else {
+                        perturb_all_weights(lw, embed, rms_final, mezo_seed_k, update_scale_k);
                     }
                 }
+                if (!lora_split) {
+                    if (use_lora) lora_merge_all(lw, lora_layers, NLAYERS);
+                }
+                t_perturb += tb_ms(mach_absolute_time() - t0);
+                loss_avg /= (float)fzoo_K;
+                proj_grad = proj_grad_sum / (float)fzoo_K;
 
-                rope_forward_inplace(Q, SEQ, Q_DIM, HD);
-                rope_forward_inplace(K, SEQ, KV_DIM, HD);
-                gqa_tile_kv(k_tiled, K, SEQ);
-                gqa_tile_kv(v_tiled, V, SEQ);
-                cpu_sdpa_forward(Q, k_tiled, v_tiled, attn_out, HEADS, HD, SEQ);
+                // Re-build compact embedding after weight update
+                if (!lora_split) { free(cembed); cembed = vocab_compact_embed(embed, &vm, DIM); }
 
-                if (cpu_only) {
-                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                                DIM, SEQ, Q_DIM, 1.0f, lw[L].Wo, Q_DIM, attn_out, SEQ, 0.0f, o_out, SEQ);
-                    if (lora_split) {
-                        LoRALayer *ll = &lora_layers[L];
-                        lora_addmm(o_out, ll->Ao, ll->Bo, attn_out, lora_tmp, DIM, ll->rank, Q_DIM);
-                    }
-                } else {
-                    write_wo_fwd_acts(pls[L].woFwd_in, attn_out);
-                    ane_eval_req(dk.woFwd, plr[L].woFwd);
-                    io_read_dyn(dk.woFwd->ioOut, o_out, DIM, SEQ);
-                    if (lora_split) {
-                        LoRALayer *ll = &lora_layers[L];
-                        lora_addmm(o_out, ll->Ao, ll->Bo, attn_out, lora_tmp, DIM, ll->rank, Q_DIM);
-                    }
+                // Defer re-transpose for validation
+                if (!cpu_only && !conv_hybrid && val_every > 0 && (step + 1) % val_every == 0 && val_tokens > SEQ + 1) {
+                    t0 = mach_absolute_time();
+                    if (use_lora && !lora_ffn) { RETRANSPOSE_ATTN_ONLY(); }
+                    else if (use_lora && lora_ffn) { RETRANSPOSE_AND_STAGE(); }
+                    else { RETRANSPOSE_AND_STAGE(); }
+                    t_transpose += tb_ms(mach_absolute_time() - t0);
                 }
 
-                vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ * DIM));
+                // Set loss_plus/loss_minus for compatibility with reporting
+                loss_plus = fzoo_losses[0];
+                loss_minus = loss_avg;  // use loss_avg for the "minus" slot
 
-                rmsnorm(xnorm_buf, x_cur, lw[L].rms_ffn, DIM, SEQ);
+                // LR schedule (cosine decay, no warmup)
+                float min_lr = base_lr * 0.1f;
+                float decay = (float)(step - start_step) / (float)(total_steps - start_step);
+                lr = min_lr + 0.5f * (1.0f + cosf(M_PI * decay)) * (base_lr - min_lr);
 
-                if (cpu_only) {
-                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                                HIDDEN, SEQ, DIM, 1.0f, lw[L].W1, DIM, xnorm_buf, SEQ, 0.0f, h1, SEQ);
-                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                                HIDDEN, SEQ, DIM, 1.0f, lw[L].W3, DIM, xnorm_buf, SEQ, 0.0f, h3, SEQ);
-                    if (lora_split && lora_ffn) {
-                        LoRALayer *ll = &lora_layers[L];
-                        lora_addmm(h1, ll->A1, ll->B1, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM);
-                        lora_addmm(h3, ll->A3, ll->B3, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM);
-                    }
-                } else {
-                    io_write_dyn_acts(pls[L].w1Fwd_in, xnorm_buf, DIM, SEQ, W13_FWD_SP);
-                    ane_eval_req(dk.w13Fwd, plr[L].w1Fwd);
-                    io_read_dyn(dk.w13Fwd->ioOut, h1, HIDDEN, SEQ);
+                double step_ms = tb_ms(mach_absolute_time() - t_step);
+                total_train_ms += step_ms;
+                total_steps_done++;
+                last_loss_plus = loss_plus;
+                last_loss_minus = loss_minus;
 
-                    io_write_dyn_acts(pls[L].w3Fwd_in, xnorm_buf, DIM, SEQ, W13_FWD_SP);
-                    ane_eval_req(dk.w13Fwd, plr[L].w3Fwd);
-                    io_read_dyn(dk.w13Fwd->ioOut, h3, HIDDEN, SEQ);
-
-                    if (lora_split && lora_ffn) {
-                        LoRALayer *ll = &lora_layers[L];
-                        lora_addmm(h1, ll->A1, ll->B1, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM);
-                        lora_addmm(h3, ll->A3, ll->B3, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM);
-                    }
+                // Log FZOO
+                if (step % 100 == 0 || step == start_step) {
+                    printf("step %d  fzoo_K=%d  loss_0=%.4f  loss_avg=%.4f  sigma=%.4f  "
+                           "proj_grad=%.6f  lr=%.2e  step_ms=%.0f\n",
+                           step, fzoo_K, fzoo_losses[0], loss_avg, fzoo_sigma,
+                           proj_grad, lr, step_ms);
                 }
 
-                for (int i = 0; i < HIDDEN * SEQ; i++) {
-                    float s = h1[i] / (1.0f + expf(-h1[i]));
-                    silu_out[i] = s * h3[i];
-                }
-
-                if (cpu_only) {
-                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                                DIM, SEQ, HIDDEN, 1.0f, lw[L].W2, HIDDEN, silu_out, SEQ, 0.0f, o_out, SEQ);
-                    if (lora_split && lora_ffn) {
-                        LoRALayer *ll = &lora_layers[L];
-                        lora_addmm(o_out, ll->A2, ll->B2, silu_out, lora_tmp, DIM, ll->rank, HIDDEN);
-                    }
-                } else {
-                    io_write_dyn_acts(pls[L].w2Fwd_in, silu_out, HIDDEN, SEQ, W2_FWD_SP);
-                    ane_eval_req(dk.w2Fwd, plr[L].w2Fwd);
-                    io_read_dyn(dk.w2Fwd->ioOut, o_out, DIM, SEQ);
-                    if (lora_split && lora_ffn) {
-                        LoRALayer *ll = &lora_layers[L];
-                        lora_addmm(o_out, ll->A2, ll->B2, silu_out, lora_tmp, DIM, ll->rank, HIDDEN);
-                    }
-                }
-
-                vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ * DIM));
-            }
-
-            rmsnorm(xnorm_buf, x_cur, rms_final, DIM, SEQ);
-            cblas_sgemm(CblasRowMajor, CblasTrans, CblasTrans,
-                        SEQ, CV, DIM, 1.0f, xnorm_buf, SEQ, cembed, DIM, 0.0f, logits, CV);
-            float loss_minus = cross_entropy_loss(dlogits, logits, ctargets, CV, SEQ);
-            t_fwd += tb_ms(mach_absolute_time() - t0);
-
-            // ===== 5. Restore to original theta =====
-            t0 = mach_absolute_time();
-            if (use_lora) {
-                perturb_lora_weights(lora_layers, lw, rms_final, NLAYERS, mezo_seed, +epsilon);
             } else {
-                perturb_all_weights(lw, embed, rms_final, mezo_seed, +epsilon);
-            }
-            t_perturb += tb_ms(mach_absolute_time() - t0);
+                // ===== Standard MeZO: Central-difference gradient estimation =====
 
-            // ===== 6. Gradient estimate + update =====
-            float proj_grad = (loss_plus - loss_minus) / (2.0f * epsilon);
-            float update_scale = -lr * proj_grad;
-
-            t0 = mach_absolute_time();
-            if (use_lora) {
-                perturb_lora_weights(lora_layers, lw, rms_final, NLAYERS, mezo_seed, update_scale);
-                if (!lora_split) lora_merge_all(lw, lora_layers, NLAYERS);
-            } else {
-                perturb_all_weights(lw, embed, rms_final, mezo_seed, update_scale);
-            }
-            t_perturb += tb_ms(mach_absolute_time() - t0);
-
-            // Re-build compact embedding after weight update
-            if (!lora_split) { free(cembed); cembed = vocab_compact_embed(embed, &vm, DIM); }
-
-            // 7. Defer re-transpose: next step's +eps perturbation will restage anyway.
-            //    Only restage here if validation is about to run (needs updated weights).
-            if (!cpu_only && val_every > 0 && (step + 1) % val_every == 0 && val_tokens > SEQ + 1) {
+                // 1. Perturb +epsilon
                 t0 = mach_absolute_time();
-                if (use_lora && !lora_ffn) { RETRANSPOSE_ATTN_ONLY(); }
-                else if (use_lora && lora_ffn) { RETRANSPOSE_AND_STAGE(); }
-                else { RETRANSPOSE_AND_STAGE(); }
-                t_transpose += tb_ms(mach_absolute_time() - t0);
-            }
+                if (use_lora) {
+                    perturb_lora_weights(lora_layers, lw, rms_final, NLAYERS, mezo_seed, +epsilon);
+                    if (!lora_split) lora_merge_all(lw, lora_layers, NLAYERS);
+                } else {
+                    perturb_all_weights(lw, embed, rms_final, mezo_seed, +epsilon);
+                }
+                if (!lora_split) { free(cembed); cembed = vocab_compact_embed(embed, &vm, DIM); }
+                t_perturb += tb_ms(mach_absolute_time() - t0);
 
-            // 8. LR schedule (cosine decay, no warmup)
-            float min_lr = base_lr * 0.1f;
-            float decay = (float)(step - start_step) / (float)(total_steps - start_step);
-            lr = min_lr + 0.5f * (1.0f + cosf(M_PI * decay)) * (base_lr - min_lr);
+                if (!cpu_only && !lora_split) {
+                    t0 = mach_absolute_time();
+                    if (use_lora && !lora_ffn) { RETRANSPOSE_ATTN_ONLY(); }
+                    else if (use_lora && lora_ffn) { RETRANSPOSE_AND_STAGE(); }
+                    else { RETRANSPOSE_AND_STAGE(); }
+                    t_transpose += tb_ms(mach_absolute_time() - t0);
+                }
 
-            double step_ms = tb_ms(mach_absolute_time() - t_step);
-            total_train_ms += step_ms;
-            total_steps_done++;
-            last_loss_plus = loss_plus;
-            last_loss_minus = loss_minus;
+                // 2. Forward pass -> loss_plus
+                t0 = mach_absolute_time();
+                DO_FORWARD_PASS(input_tokens, ctargets, loss_plus);
+                t_fwd += tb_ms(mach_absolute_time() - t0);
 
-            // 9. Log
-            if (step % 100 == 0 || step == start_step) {
-                printf("step %d  loss_plus=%.4f  loss_minus=%.4f  proj_grad=%.6f  lr=%.2e  "
-                       "step_ms=%.0f (fwd=%.0f perturb=%.0f transpose=%.0f)\n",
-                       step, loss_plus, loss_minus, proj_grad, lr,
-                       step_ms, t_fwd, t_perturb, t_transpose);
+                // 3. Perturb -2*epsilon (to theta - epsilon*z)
+                t0 = mach_absolute_time();
+                if (use_lora) {
+                    perturb_lora_weights(lora_layers, lw, rms_final, NLAYERS, mezo_seed, -2.0f * epsilon);
+                    if (!lora_split) lora_merge_all(lw, lora_layers, NLAYERS);
+                } else {
+                    perturb_all_weights(lw, embed, rms_final, mezo_seed, -2.0f * epsilon);
+                }
+                if (!lora_split) { free(cembed); cembed = vocab_compact_embed(embed, &vm, DIM); }
+                t_perturb += tb_ms(mach_absolute_time() - t0);
+
+                if (!cpu_only && !lora_split) {
+                    t0 = mach_absolute_time();
+                    if (use_lora && !lora_ffn) { RETRANSPOSE_ATTN_ONLY(); }
+                    else if (use_lora && lora_ffn) { RETRANSPOSE_AND_STAGE(); }
+                    else { RETRANSPOSE_AND_STAGE(); }
+                    t_transpose += tb_ms(mach_absolute_time() - t0);
+                }
+
+                // 4. Forward pass -> loss_minus
+                t0 = mach_absolute_time();
+                DO_FORWARD_PASS(input_tokens, ctargets, loss_minus);
+                t_fwd += tb_ms(mach_absolute_time() - t0);
+
+                // 5. Restore to original theta
+                t0 = mach_absolute_time();
+                if (use_lora) {
+                    perturb_lora_weights(lora_layers, lw, rms_final, NLAYERS, mezo_seed, +epsilon);
+                } else {
+                    perturb_all_weights(lw, embed, rms_final, mezo_seed, +epsilon);
+                }
+                t_perturb += tb_ms(mach_absolute_time() - t0);
+
+                // 6. Gradient estimate + update
+                proj_grad = (loss_plus - loss_minus) / (2.0f * epsilon);
+                float update_scale = -lr * proj_grad;
+
+                t0 = mach_absolute_time();
+                if (use_lora) {
+                    perturb_lora_weights(lora_layers, lw, rms_final, NLAYERS, mezo_seed, update_scale);
+                    if (!lora_split) lora_merge_all(lw, lora_layers, NLAYERS);
+                } else {
+                    perturb_all_weights(lw, embed, rms_final, mezo_seed, update_scale);
+                }
+                t_perturb += tb_ms(mach_absolute_time() - t0);
+
+                // Re-build compact embedding after weight update
+                if (!lora_split) { free(cembed); cembed = vocab_compact_embed(embed, &vm, DIM); }
+
+                // 7. Defer re-transpose: next step's +eps perturbation will restage anyway.
+                //    Only restage here if validation is about to run (needs updated weights).
+                //    Conv-hybrid: no restaging needed (conv weights baked, Wk/Wv frozen + staged once)
+                if (!cpu_only && !conv_hybrid && val_every > 0 && (step + 1) % val_every == 0 && val_tokens > SEQ + 1) {
+                    t0 = mach_absolute_time();
+                    if (use_lora && !lora_ffn) { RETRANSPOSE_ATTN_ONLY(); }
+                    else if (use_lora && lora_ffn) { RETRANSPOSE_AND_STAGE(); }
+                    else { RETRANSPOSE_AND_STAGE(); }
+                    t_transpose += tb_ms(mach_absolute_time() - t0);
+                }
+
+                // 8. LR schedule (cosine decay, no warmup)
+                float min_lr = base_lr * 0.1f;
+                float decay = (float)(step - start_step) / (float)(total_steps - start_step);
+                lr = min_lr + 0.5f * (1.0f + cosf(M_PI * decay)) * (base_lr - min_lr);
+
+                double step_ms = tb_ms(mach_absolute_time() - t_step);
+                total_train_ms += step_ms;
+                total_steps_done++;
+                last_loss_plus = loss_plus;
+                last_loss_minus = loss_minus;
+
+                // 9. Log
+                if (step % 100 == 0 || step == start_step) {
+                    printf("step %d  loss_plus=%.4f  loss_minus=%.4f  proj_grad=%.6f  lr=%.2e  "
+                           "step_ms=%.0f (fwd=%.0f perturb=%.0f transpose=%.0f)\n",
+                           step, loss_plus, loss_minus, proj_grad, lr,
+                           step_ms, t_fwd, t_perturb, t_transpose);
+                }
             }
 
             // 10. Validation
@@ -1036,90 +1162,9 @@ int main(int argc, char *argv[]) {
                     uint16_t vctargets[SEQ];
                     for (int t = 0; t < SEQ; t++) vctargets[t] = (uint16_t)vm.full_to_compact[vtarget_raw[t]];
 
-                    embed_lookup(x_cur, embed, vinput, DIM, SEQ, VOCAB);
-                    for (int L = 0; L < NLAYERS; L++) {
-                        rmsnorm(xnorm_buf, x_cur, lw[L].rms_att, DIM, SEQ);
-                        if (cpu_only) {
-                            cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans, Q_DIM,SEQ,DIM, 1.0f, lw[L].Wq,DIM, xnorm_buf,SEQ, 0.0f, Q,SEQ);
-                            cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans, KV_DIM,SEQ,DIM, 1.0f, lw[L].Wk,DIM, xnorm_buf,SEQ, 0.0f, K,SEQ);
-                            cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans, KV_DIM,SEQ,DIM, 1.0f, lw[L].Wv,DIM, xnorm_buf,SEQ, 0.0f, V,SEQ);
-                        } else {
-                            io_write_dyn_acts(pls[L].wqFwd_in, xnorm_buf, DIM, SEQ, WQ_FWD_SP);
-                            ane_eval_req(dk.wqFwd, plr[L].wqFwd);
-                            io_read_dyn(dk.wqFwd->ioOut, Q, Q_DIM, SEQ);
-                            io_write_dyn_acts(pls[L].wkFwd_in, xnorm_buf, DIM, SEQ, WKV_FWD_SP);
-                            ane_eval_req(dk.wkvFwd, plr[L].wkFwd);
-                            io_read_dyn(dk.wkvFwd->ioOut, K, KV_DIM, SEQ);
-                            io_write_dyn_acts(pls[L].wvFwd_in, xnorm_buf, DIM, SEQ, WKV_FWD_SP);
-                            ane_eval_req(dk.wkvFwd, plr[L].wvFwd);
-                            io_read_dyn(dk.wkvFwd->ioOut, V, KV_DIM, SEQ);
-                        }
-                        if (lora_split) {
-                            LoRALayer *ll = &lora_layers[L];
-                            lora_addmm(Q, ll->Aq, ll->Bq, xnorm_buf, lora_tmp, Q_DIM, ll->rank, DIM);
-                            lora_addmm(K, ll->Ak, ll->Bk, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM);
-                            lora_addmm(V, ll->Av, ll->Bv, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM);
-                        }
-                        rope_forward_inplace(Q, SEQ, Q_DIM, HD);
-                        rope_forward_inplace(K, SEQ, KV_DIM, HD);
-                        gqa_tile_kv(k_tiled, K, SEQ);
-                        gqa_tile_kv(v_tiled, V, SEQ);
-                        cpu_sdpa_forward(Q, k_tiled, v_tiled, attn_out, HEADS, HD, SEQ);
-                        if (cpu_only) {
-                            cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans, DIM,SEQ,Q_DIM, 1.0f, lw[L].Wo,Q_DIM, attn_out,SEQ, 0.0f, o_out,SEQ);
-                        } else {
-                            write_wo_fwd_acts(pls[L].woFwd_in, attn_out);
-                            ane_eval_req(dk.woFwd, plr[L].woFwd);
-                            io_read_dyn(dk.woFwd->ioOut, o_out, DIM, SEQ);
-                        }
-                        if (lora_split) {
-                            LoRALayer *ll = &lora_layers[L];
-                            lora_addmm(o_out, ll->Ao, ll->Bo, attn_out, lora_tmp, DIM, ll->rank, Q_DIM);
-                        }
-                        vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ*DIM));
-                        rmsnorm(xnorm_buf, x_cur, lw[L].rms_ffn, DIM, SEQ);
-                        if (cpu_only) {
-                            cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans, HIDDEN,SEQ,DIM, 1.0f, lw[L].W1,DIM, xnorm_buf,SEQ, 0.0f, h1,SEQ);
-                            cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans, HIDDEN,SEQ,DIM, 1.0f, lw[L].W3,DIM, xnorm_buf,SEQ, 0.0f, h3,SEQ);
-                            if (lora_split && lora_ffn) {
-                                LoRALayer *ll = &lora_layers[L];
-                                lora_addmm(h1, ll->A1, ll->B1, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM);
-                                lora_addmm(h3, ll->A3, ll->B3, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM);
-                            }
-                        } else {
-                            io_write_dyn_acts(pls[L].w1Fwd_in, xnorm_buf, DIM, SEQ, W13_FWD_SP);
-                            ane_eval_req(dk.w13Fwd, plr[L].w1Fwd);
-                            io_read_dyn(dk.w13Fwd->ioOut, h1, HIDDEN, SEQ);
-                            io_write_dyn_acts(pls[L].w3Fwd_in, xnorm_buf, DIM, SEQ, W13_FWD_SP);
-                            ane_eval_req(dk.w13Fwd, plr[L].w3Fwd);
-                            io_read_dyn(dk.w13Fwd->ioOut, h3, HIDDEN, SEQ);
-                            if (lora_split && lora_ffn) {
-                                LoRALayer *ll = &lora_layers[L];
-                                lora_addmm(h1, ll->A1, ll->B1, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM);
-                                lora_addmm(h3, ll->A3, ll->B3, xnorm_buf, lora_tmp, HIDDEN, ll->rank, DIM);
-                            }
-                        }
-                        for (int i = 0; i < HIDDEN*SEQ; i++) { float s = h1[i]/(1.0f+expf(-h1[i])); silu_out[i] = s*h3[i]; }
-                        if (cpu_only) {
-                            cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans, DIM,SEQ,HIDDEN, 1.0f, lw[L].W2,HIDDEN, silu_out,SEQ, 0.0f, o_out,SEQ);
-                            if (lora_split && lora_ffn) {
-                                LoRALayer *ll = &lora_layers[L];
-                                lora_addmm(o_out, ll->A2, ll->B2, silu_out, lora_tmp, DIM, ll->rank, HIDDEN);
-                            }
-                        } else {
-                            io_write_dyn_acts(pls[L].w2Fwd_in, silu_out, HIDDEN, SEQ, W2_FWD_SP);
-                            ane_eval_req(dk.w2Fwd, plr[L].w2Fwd);
-                            io_read_dyn(dk.w2Fwd->ioOut, o_out, DIM, SEQ);
-                            if (lora_split && lora_ffn) {
-                                LoRALayer *ll = &lora_layers[L];
-                                lora_addmm(o_out, ll->A2, ll->B2, silu_out, lora_tmp, DIM, ll->rank, HIDDEN);
-                            }
-                        }
-                        vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ*DIM));
-                    }
-                    rmsnorm(xnorm_buf, x_cur, rms_final, DIM, SEQ);
-                    cblas_sgemm(CblasRowMajor,CblasTrans,CblasTrans, SEQ,CV,DIM, 1.0f, xnorm_buf,SEQ, cembed,DIM, 0.0f, logits,CV);
-                    val_loss_sum += cross_entropy_loss(dlogits, logits, vctargets, CV, SEQ);
+                    float vb_loss;
+                    DO_FORWARD_PASS(vinput, vctargets, vb_loss);
+                    val_loss_sum += vb_loss;
                 }
                 float val_loss = val_loss_sum / val_batches;
                 printf("  [val_loss=%.4f at step %d]\n", val_loss, step + 1);
@@ -1149,11 +1194,13 @@ int main(int argc, char *argv[]) {
         printf("total_seconds:    %.1f\n", wall / 1000.0);
         printf("num_steps:        %d\n", total_steps_done);
         printf("num_params_M:     %.1f\n", ((double)NLAYERS * LAYER_PARAMS + DIM + (double)VOCAB * DIM) / 1e6);
-        printf("mode:             mezo-%s%s\n", cpu_only ? "cpu" : "ane",
+        printf("mode:             mezo-%s%s%s\n", cpu_only ? "cpu" : "ane",
+               conv_hybrid ? "-conv-hybrid" : "",
                lora_split ? "-lora-split" : (use_lora ? "-lora" : ""));
         printf("epsilon:          %g\n", epsilon);
         printf("lr:               %g\n", lr);
         if (use_lora) printf("lora_rank:        %d\n", lora_rank);
+        if (fzoo_K > 0) printf("fzoo_K:           %d\n", fzoo_K);
 
         // Cleanup
         if (lora_tmp) free(lora_tmp);
@@ -1172,7 +1219,14 @@ int main(int argc, char *argv[]) {
         free(k_tiled); free(v_tiled); free(logits); free(dlogits);
         munmap(token_data, data_len); close(data_fd);
 
-        if (!cpu_only) {
+        if (!cpu_only && conv_hybrid) {
+            free_per_layer(pls, plr);
+            free_kern(dk.wkvFwd);
+            for (int L = 0; L < NLAYERS; L++) {
+                free_kern(dk.wqConv[L]); free_kern(dk.woConv[L]);
+                free_kern(dk.w1Conv[L]); free_kern(dk.w2Conv[L]); free_kern(dk.w3Conv[L]);
+            }
+        } else if (!cpu_only) {
             free_per_layer(pls, plr);
             free_kern(dk.wqFwd); free_kern(dk.wkvFwd); free_kern(dk.w13Fwd);
             free_kern(dk.w2Fwd); free_kern(dk.woFwd);
