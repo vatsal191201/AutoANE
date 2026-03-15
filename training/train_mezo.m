@@ -27,6 +27,11 @@ typedef struct {
     Kern *w1Conv[NLAYERS];   // DIM → HIDDEN conv1x1 (per layer, baked W1^T)
     Kern *w2Conv[NLAYERS];   // HIDDEN → DIM conv1x1 (per layer, baked W2^T)
     Kern *w3Conv[NLAYERS];   // DIM → HIDDEN conv1x1 (per layer, baked W3^T)
+    // Conv1x1 FUSED kernels (--conv-fused mode)
+    // QKV fused: 3 conv1x1 ops in one kernel (Wq+Wk+Wv baked, shared input)
+    Kern *qkvConv[NLAYERS];  // DIM → Q_DIM+2*KV_DIM fused conv1x1 (per layer)
+    // FFN fused: conv(W1)+conv(W3)+SiLU+conv(W2)+residual in one kernel
+    Kern *ffnConv[NLAYERS];  // DIM×2SEQ → DIM×SEQ fused conv1x1 (per layer)
     // Backward kernels (unused in MeZO but kept for struct compatibility)
     Kern *ffnBwdW2t;
     Kern *ffnBwdW13t;
@@ -305,6 +310,7 @@ int main(int argc, char *argv[]) {
         double time_budget_sec = 0;
         bool from_scratch = false, cpu_only = false, ane_matmul_only = false;
         bool conv_hybrid = false; // conv1x1 for Wq,Wo,W1,W2,W3; matmul for Wk,Wv
+        bool conv_fused = false;  // fused QKV + fused FFN conv1x1 kernels (Phase 2)
         bool lr_from_cli = false;
         bool use_lora = false;
         bool lora_split = false;  // adapter-as-input: no merge, no restage
@@ -333,17 +339,29 @@ int main(int argc, char *argv[]) {
             else if (strcmp(argv[i], "--lora-rank") == 0 && i+1 < argc) lora_rank = atoi(argv[++i]);
             else if (strcmp(argv[i], "--lora-ffn") == 0) { lora_ffn = true; if (!use_lora) { use_lora = true; lora_split = true; } }
             else if (strcmp(argv[i], "--conv-hybrid") == 0) conv_hybrid = true;
+            else if (strcmp(argv[i], "--conv-fused") == 0) conv_fused = true;
             else if (strcmp(argv[i], "--fzoo") == 0 && i+1 < argc) { fzoo_K = atoi(argv[++i]); }
         }
 
         if (fzoo_K < 0) { fprintf(stderr, "ERROR: --fzoo K must be >= 1\n"); return 1; }
         if (fzoo_K > 0 && fzoo_K < 1) { fprintf(stderr, "ERROR: --fzoo K must be >= 1\n"); return 1; }
 
-        // --conv-hybrid requires --lora-split (base weights frozen, baked at compile time)
+        // --conv-hybrid and --conv-fused require --lora-split (base weights frozen, baked at compile time)
         if (conv_hybrid && !lora_split) {
             fprintf(stderr, "ERROR: --conv-hybrid requires --lora-split (base weights must be frozen)\n");
             return 1;
         }
+        if (conv_fused && !lora_split) {
+            fprintf(stderr, "ERROR: --conv-fused requires --lora-split (base weights must be frozen)\n");
+            return 1;
+        }
+        // --conv-fused FFN kernel bakes W1/W2/W3 — incompatible with LoRA on FFN
+        if (conv_fused && lora_ffn) {
+            fprintf(stderr, "ERROR: --conv-fused is incompatible with --lora-ffn (FFN weights are baked)\n");
+            return 1;
+        }
+        // --conv-fused implies conv-hybrid (superset)
+        if (conv_fused) conv_hybrid = true;
 
         if (conv_hybrid) { ane_matmul_only = true; cpu_only = false; }  // conv-hybrid implies ANE mode
         if (!cpu_only && !ane_matmul_only) cpu_only = true;  // Default to CPU-only
@@ -361,7 +379,7 @@ int main(int argc, char *argv[]) {
                DIM, Q_DIM, KV_DIM, HD, HIDDEN, SEQ, VOCAB);
         double total_p = (double)NLAYERS * LAYER_PARAMS + DIM + (double)VOCAB * DIM;
         printf("Params: %.1fM | Mode: %s\n", total_p / 1e6,
-               cpu_only ? "CPU-only" : (conv_hybrid ? "ANE-conv-hybrid" : "ANE-matmul-only"));
+               cpu_only ? "CPU-only" : (conv_fused ? "ANE-conv-fused" : (conv_hybrid ? "ANE-conv-hybrid" : "ANE-matmul-only")));
         if (use_lora) printf("MeZO+LoRA: lr=%g epsilon=%g seed=%ld val_every=%d rank=%d\n", lr, epsilon, init_seed, val_every, lora_rank);
         else printf("MeZO: lr=%g epsilon=%g seed=%ld val_every=%d\n", lr, epsilon, init_seed, val_every);
         if (fzoo_K > 0) printf("FZOO: K=%d directions (%d forward passes/step, adaptive step size)\n", fzoo_K, fzoo_K + 1);
@@ -531,7 +549,43 @@ int main(int argc, char *argv[]) {
         float *Wqt_buf[NLAYERS], *Wkt_buf[NLAYERS], *Wvt_buf[NLAYERS], *Wot_buf[NLAYERS];
         float *W1t_buf[NLAYERS], *W2t_buf[NLAYERS], *W3t_buf[NLAYERS];
 
-        if (!cpu_only && conv_hybrid) {
+        if (!cpu_only && conv_fused) {
+            // Conv-fused mode: QKV fused (3 convs → 1 kernel) + Wo conv + FFN fused (3 convs+SiLU+residual → 1 kernel)
+            // 3 kernels/layer instead of 7, 96 total round-trips instead of 224
+            printf("\nCompiling ANE conv-fused kernels...\n");
+            uint64_t t_compile = mach_absolute_time();
+
+            // Generate MIL templates (same MIL per shape, different baked weights per layer)
+            NSString *mil_qkv = gen_qkv_fused_conv1x1_mil(DIM, Q_DIM, KV_DIM, SEQ);
+            NSString *mil_wo_conv = gen_conv1x1_mil(Q_DIM, DIM, SEQ);
+            NSString *mil_ffn = gen_ffn_fused_conv1x1_mil(DIM, HIDDEN, SEQ);
+
+            for (int L = 0; L < NLAYERS; L++) {
+                printf("  Layer %d: compiling 3 fused kernels (QKV + Wo + FFN)...\n", L);
+
+                // QKV fused: Wq+Wk+Wv baked, input xnorm, output concat(Q,K,V)
+                dk.qkvConv[L] = compile_qkv_fused_conv1x1_kern(mil_qkv,
+                    lw[L].Wq, lw[L].Wk, lw[L].Wv, DIM, Q_DIM, KV_DIM, SEQ);
+                if (!dk.qkvConv[L]) { fprintf(stderr, "qkvConv[%d] compile failed\n", L); return 1; }
+
+                // Wo conv (unchanged from conv-hybrid): Q_DIM → DIM
+                dk.woConv[L] = compile_conv1x1_kern(mil_wo_conv, lw[L].Wo, Q_DIM, DIM, SEQ);
+                if (!dk.woConv[L]) { fprintf(stderr, "woConv[%d] compile failed\n", L); return 1; }
+
+                // FFN fused: W1+W3+SiLU+W2+residual, input concat(xnorm,x_cur), output x_next
+                dk.ffnConv[L] = compile_ffn_fused_conv1x1_kern(mil_ffn,
+                    lw[L].W1, lw[L].W3, lw[L].W2, DIM, HIDDEN, SEQ);
+                if (!dk.ffnConv[L]) { fprintf(stderr, "ffnConv[%d] compile failed\n", L); return 1; }
+
+                // No matmul buffers needed — all projections use conv
+                Wqt_buf[L] = NULL; Wkt_buf[L] = NULL; Wvt_buf[L] = NULL; Wot_buf[L] = NULL;
+                W1t_buf[L] = NULL; W2t_buf[L] = NULL; W3t_buf[L] = NULL;
+            }
+
+            printf("Compiled %d kernels in %.0fms\n", g_compile_count,
+                   tb_ms(mach_absolute_time() - t_compile));
+
+        } else if (!cpu_only && conv_hybrid) {
             // Conv-hybrid mode: conv1x1 for Wq,Wo,W1,W2,W3 (baked weights, activation-only I/O)
             //                   matmul for Wk,Wv (960→320 is 2.8x slower with conv)
             printf("\nCompiling ANE conv-hybrid kernels...\n");
@@ -551,32 +605,19 @@ int main(int argc, char *argv[]) {
             NSString *mil_w3_conv = gen_conv1x1_mil(DIM, HIDDEN, SEQ);
 
             for (int L = 0; L < NLAYERS; L++) {
-                // Conv kernels: bake original base weights at compile time
-                // Weight layout for conv: W[OC, IC] → conv weight [OC, IC, 1, 1]
-                // Conv does y = W @ x, same as CPU sgemm: Wq[Q_DIM,DIM] @ xnorm[DIM,SEQ]
                 printf("  Layer %d: compiling 5 conv + matmul surfaces...\n", L);
 
-                // Wq conv: DIM → Q_DIM, weight = Wq[Q_DIM, DIM]
                 dk.wqConv[L] = compile_conv1x1_kern(mil_wq_conv, lw[L].Wq, DIM, Q_DIM, SEQ);
                 if (!dk.wqConv[L]) { fprintf(stderr, "wqConv[%d] compile failed\n", L); return 1; }
-
-                // Wo conv: Q_DIM → DIM, weight = Wo[DIM, Q_DIM]
                 dk.woConv[L] = compile_conv1x1_kern(mil_wo_conv, lw[L].Wo, Q_DIM, DIM, SEQ);
                 if (!dk.woConv[L]) { fprintf(stderr, "woConv[%d] compile failed\n", L); return 1; }
-
-                // W1 conv: DIM → HIDDEN, weight = W1[HIDDEN, DIM]
                 dk.w1Conv[L] = compile_conv1x1_kern(mil_w1_conv, lw[L].W1, DIM, HIDDEN, SEQ);
                 if (!dk.w1Conv[L]) { fprintf(stderr, "w1Conv[%d] compile failed\n", L); return 1; }
-
-                // W2 conv: HIDDEN → DIM, weight = W2[DIM, HIDDEN]
                 dk.w2Conv[L] = compile_conv1x1_kern(mil_w2_conv, lw[L].W2, HIDDEN, DIM, SEQ);
                 if (!dk.w2Conv[L]) { fprintf(stderr, "w2Conv[%d] compile failed\n", L); return 1; }
-
-                // W3 conv: DIM → HIDDEN, weight = W3[HIDDEN, DIM]
                 dk.w3Conv[L] = compile_conv1x1_kern(mil_w3_conv, lw[L].W3, DIM, HIDDEN, SEQ);
                 if (!dk.w3Conv[L]) { fprintf(stderr, "w3Conv[%d] compile failed\n", L); return 1; }
 
-                // Matmul surfaces for Wk/Wv only
                 Wkt_buf[L] = (float*)safe_malloc(WK_SZ * 4);
                 Wvt_buf[L] = (float*)safe_malloc(WV_SZ * 4);
                 Wqt_buf[L] = NULL; Wot_buf[L] = NULL;
@@ -709,9 +750,11 @@ int main(int argc, char *argv[]) {
         } while(0)
 
         // Initial transpose + staging
-        if (!cpu_only && conv_hybrid) {
+        if (!cpu_only && conv_fused) {
+            // Conv-fused: all weights baked at compile time — no staging needed
+            printf("Initial weight staging complete (conv-fused: all weights baked)\n");
+        } else if (!cpu_only && conv_hybrid) {
             // Conv-hybrid: only stage Wk/Wv matmul weights (frozen, one-time)
-            // Conv kernels (Wq,Wo,W1,W2,W3) have weights baked at compile time
             for (int L = 0; L < NLAYERS; L++) {
                 transpose_weight(Wkt_buf[L], lw[L].Wk, KV_DIM, DIM);
                 transpose_weight(Wvt_buf[L], lw[L].Wv, KV_DIM, DIM);
@@ -755,6 +798,22 @@ int main(int argc, char *argv[]) {
                         lora_addmm(K, ll->Ak, ll->Bk, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM); \
                         lora_addmm(V, ll->Av, ll->Bv, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM); \
                     } \
+                } else if (conv_fused) { \
+                    /* QKV fused: single kernel, 1 eval instead of 3 */ \
+                    io_write_conv_acts(dk.qkvConv[L]->ioIn, xnorm_buf, DIM, SEQ); \
+                    ane_eval(dk.qkvConv[L]); \
+                    /* Read concat(Q[Q_DIM], K[KV_DIM], V[KV_DIM]) and split */ \
+                    { IOSurfaceLock(dk.qkvConv[L]->ioOut, kIOSurfaceLockReadOnly, NULL); \
+                      _Float16 *qkv_buf = (_Float16*)IOSurfaceGetBaseAddress(dk.qkvConv[L]->ioOut); \
+                      int qkv_ch = Q_DIM + 2*KV_DIM; \
+                      cvt_f16_f32(Q, qkv_buf, Q_DIM * SEQ); \
+                      cvt_f16_f32(K, qkv_buf + Q_DIM * SEQ, KV_DIM * SEQ); \
+                      cvt_f16_f32(V, qkv_buf + (Q_DIM + KV_DIM) * SEQ, KV_DIM * SEQ); \
+                      IOSurfaceUnlock(dk.qkvConv[L]->ioOut, kIOSurfaceLockReadOnly, NULL); } \
+                    { LoRALayer *ll = &lora_layers[L]; \
+                    lora_addmm(Q, ll->Aq, ll->Bq, xnorm_buf, lora_tmp, Q_DIM, ll->rank, DIM); \
+                    lora_addmm(K, ll->Ak, ll->Bk, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM); \
+                    lora_addmm(V, ll->Av, ll->Bv, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM); } \
                 } else if (conv_hybrid) { \
                     io_write_conv_acts(dk.wqConv[L]->ioIn, xnorm_buf, DIM, SEQ); \
                     ane_eval(dk.wqConv[L]); \
@@ -815,6 +874,14 @@ int main(int argc, char *argv[]) {
                 } \
                 vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ * DIM)); \
                 rmsnorm(xnorm_buf, x_cur, lw[L].rms_ffn, DIM, SEQ); \
+                if (conv_fused) { \
+                    /* FFN fused: single kernel does W1+W3+SiLU+W2+residual */ \
+                    /* Input: concat(xnorm, x_cur) [1, DIM, 1, 2*SEQ] */ \
+                    /* Output: x_next [1, DIM, 1, SEQ] — written directly to x_cur */ \
+                    io_write_ffn_fused_conv_input(dk.ffnConv[L]->ioIn, xnorm_buf, x_cur, DIM, SEQ); \
+                    ane_eval(dk.ffnConv[L]); \
+                    io_read_dyn(dk.ffnConv[L]->ioOut, x_cur, DIM, SEQ); \
+                } else { \
                 if (cpu_only) { \
                     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, \
                                 HIDDEN, SEQ, DIM, 1.0f, lw[L].W1, DIM, xnorm_buf, SEQ, 0.0f, h1, SEQ); \
@@ -879,6 +946,7 @@ int main(int argc, char *argv[]) {
                     } \
                 } \
                 vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ * DIM)); \
+                } /* end !conv_fused FFN */ \
             } \
             rmsnorm(xnorm_buf, x_cur, rms_final, DIM, SEQ); \
             cblas_sgemm(CblasRowMajor, CblasTrans, CblasTrans, \
@@ -1219,7 +1287,11 @@ int main(int argc, char *argv[]) {
         free(k_tiled); free(v_tiled); free(logits); free(dlogits);
         munmap(token_data, data_len); close(data_fd);
 
-        if (!cpu_only && conv_hybrid) {
+        if (!cpu_only && conv_fused) {
+            for (int L = 0; L < NLAYERS; L++) {
+                free_kern(dk.qkvConv[L]); free_kern(dk.woConv[L]); free_kern(dk.ffnConv[L]);
+            }
+        } else if (!cpu_only && conv_hybrid) {
             free_per_layer(pls, plr);
             free_kern(dk.wkvFwd);
             for (int L = 0; L < NLAYERS; L++) {

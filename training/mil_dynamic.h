@@ -36,6 +36,99 @@ static NSString *gen_conv1x1_mil(int ic, int oc, int seq) {
     return m;
 }
 
+// QKV fused conv1x1: 3 conv ops sharing one input, outputs concatenated
+// Input:  [1, DIM, 1, SEQ] (xnorm activation only)
+// Weight: 3 BLOBFILE constants — wq.bin [Q_DIM,DIM,1,1], wk.bin [KV_DIM,DIM,1,1], wv.bin [KV_DIM,DIM,1,1]
+// Output: [1, Q_DIM + 2*KV_DIM, 1, SEQ] = concat(Q, K, V)
+static NSString *gen_qkv_fused_conv1x1_mil(int dim, int q_dim, int kv_dim, int seq) {
+    int out_ch = q_dim + 2 * kv_dim;
+    NSMutableString *m = [NSMutableString string];
+    [m appendString:MIL_HDR];
+    [m appendFormat:@"    func main<ios18>(tensor<fp16, [1, %d, 1, %d]> x) {\n", dim, seq];
+
+    // Shared conv params
+    [m appendString:@"        tensor<int32, [2]> st = const()[name=string(\"st\"), val=tensor<int32, [2]>([1, 1])];\n"];
+    [m appendString:@"        tensor<int32, [4]> pd = const()[name=string(\"pd\"), val=tensor<int32, [4]>([0, 0, 0, 0])];\n"];
+    [m appendString:@"        tensor<int32, [2]> dl = const()[name=string(\"dl\"), val=tensor<int32, [2]>([1, 1])];\n"];
+    [m appendString:@"        int32 gr = const()[name=string(\"gr\"), val=int32(1)];\n"];
+    [m appendString:@"        string pt = const()[name=string(\"pt\"), val=string(\"valid\")];\n"];
+
+    // Wq baked const [Q_DIM, DIM, 1, 1]
+    [m appendFormat:@"        tensor<fp16, [%d, %d, 1, 1]> Wq = const()[name=string(\"Wq\"), val=tensor<fp16, [%d, %d, 1, 1]>(BLOBFILE(path=string(\"@model_path/weights/wq.bin\"), offset=uint64(64)))];\n", q_dim, dim, q_dim, dim];
+    // Wk baked const [KV_DIM, DIM, 1, 1]
+    [m appendFormat:@"        tensor<fp16, [%d, %d, 1, 1]> Wk = const()[name=string(\"Wk\"), val=tensor<fp16, [%d, %d, 1, 1]>(BLOBFILE(path=string(\"@model_path/weights/wk.bin\"), offset=uint64(64)))];\n", kv_dim, dim, kv_dim, dim];
+    // Wv baked const [KV_DIM, DIM, 1, 1]
+    [m appendFormat:@"        tensor<fp16, [%d, %d, 1, 1]> Wv = const()[name=string(\"Wv\"), val=tensor<fp16, [%d, %d, 1, 1]>(BLOBFILE(path=string(\"@model_path/weights/wv.bin\"), offset=uint64(64)))];\n", kv_dim, dim, kv_dim, dim];
+
+    // 3 conv1x1 ops sharing the same input
+    [m appendFormat:@"        tensor<fp16, [1, %d, 1, %d]> Q = conv(dilations=dl, groups=gr, pad=pd, pad_type=pt, strides=st, weight=Wq, x=x)[name=string(\"Q\")];\n", q_dim, seq];
+    [m appendFormat:@"        tensor<fp16, [1, %d, 1, %d]> K = conv(dilations=dl, groups=gr, pad=pd, pad_type=pt, strides=st, weight=Wk, x=x)[name=string(\"K\")];\n", kv_dim, seq];
+    [m appendFormat:@"        tensor<fp16, [1, %d, 1, %d]> V = conv(dilations=dl, groups=gr, pad=pd, pad_type=pt, strides=st, weight=Wv, x=x)[name=string(\"V\")];\n", kv_dim, seq];
+
+    // Concat Q, K, V along channel dim
+    [m appendString:@"        int32 cax = const()[name=string(\"cax\"), val=int32(1)];\n"];
+    [m appendString:@"        bool cid = const()[name=string(\"cid\"), val=bool(false)];\n"];
+    [m appendFormat:@"        tensor<fp16, [1, %d, 1, %d]> out = concat(axis=cax, interleave=cid, values=(Q, K, V))[name=string(\"out\")];\n", out_ch, seq];
+
+    [m appendString:@"    } -> (out);\n}\n"];
+    return m;
+}
+
+// FFN fused conv1x1: conv(W1) + conv(W3) + SiLU + conv(W2) + residual
+// All weights baked as BLOBFILE constants. Only valid when lora_ffn=false.
+// Input:  [1, DIM, 1, 2*SEQ] = concat(xnorm[DIM,SEQ], x_cur[DIM,SEQ])
+// Weight: 3 BLOBFILE constants — w1.bin [HIDDEN,DIM,1,1], w3.bin [HIDDEN,DIM,1,1], w2.bin [DIM,HIDDEN,1,1]
+// Output: [1, DIM, 1, SEQ] = x_next (x_cur + W2(SiLU(W1(xnorm)) * W3(xnorm)))
+static NSString *gen_ffn_fused_conv1x1_mil(int dim, int hidden, int seq) {
+    NSMutableString *m = [NSMutableString string];
+    [m appendString:MIL_HDR];
+    [m appendFormat:@"    func main<ios18>(tensor<fp16, [1, %d, 1, %d]> x) {\n", dim, 2*seq];
+
+    // Slice xnorm [1, DIM, 1, SEQ] from offset 0
+    [m appendString:@"        tensor<int32, [4]> b_xn = const()[name=string(\"b_xn\"), val=tensor<int32, [4]>([0,0,0,0])];\n"];
+    [m appendFormat:@"        tensor<int32, [4]> s_ds = const()[name=string(\"s_ds\"), val=tensor<int32, [4]>([1,%d,1,%d])];\n", dim, seq];
+    [m appendFormat:@"        tensor<fp16, [1,%d,1,%d]> xnorm = slice_by_size(x=x, begin=b_xn, size=s_ds)[name=string(\"xnorm\")];\n", dim, seq];
+
+    // Slice x_cur [1, DIM, 1, SEQ] from offset SEQ
+    [m appendFormat:@"        tensor<int32, [4]> b_xc = const()[name=string(\"b_xc\"), val=tensor<int32, [4]>([0,0,0,%d])];\n", seq];
+    [m appendFormat:@"        tensor<fp16, [1,%d,1,%d]> x_cur = slice_by_size(x=x, begin=b_xc, size=s_ds)[name=string(\"x_cur\")];\n", dim, seq];
+
+    // Shared conv params
+    [m appendString:@"        tensor<int32, [2]> st = const()[name=string(\"st\"), val=tensor<int32, [2]>([1, 1])];\n"];
+    [m appendString:@"        tensor<int32, [4]> pd = const()[name=string(\"pd\"), val=tensor<int32, [4]>([0, 0, 0, 0])];\n"];
+    [m appendString:@"        tensor<int32, [2]> dl = const()[name=string(\"dl\"), val=tensor<int32, [2]>([1, 1])];\n"];
+    [m appendString:@"        int32 gr = const()[name=string(\"gr\"), val=int32(1)];\n"];
+    [m appendString:@"        string pt = const()[name=string(\"pt\"), val=string(\"valid\")];\n"];
+
+    // W1 baked const [HIDDEN, DIM, 1, 1]
+    [m appendFormat:@"        tensor<fp16, [%d, %d, 1, 1]> W1 = const()[name=string(\"W1\"), val=tensor<fp16, [%d, %d, 1, 1]>(BLOBFILE(path=string(\"@model_path/weights/w1.bin\"), offset=uint64(64)))];\n", hidden, dim, hidden, dim];
+    // W3 baked const [HIDDEN, DIM, 1, 1]
+    [m appendFormat:@"        tensor<fp16, [%d, %d, 1, 1]> W3 = const()[name=string(\"W3\"), val=tensor<fp16, [%d, %d, 1, 1]>(BLOBFILE(path=string(\"@model_path/weights/w3.bin\"), offset=uint64(64)))];\n", hidden, dim, hidden, dim];
+    // W2 baked const [DIM, HIDDEN, 1, 1]
+    [m appendFormat:@"        tensor<fp16, [%d, %d, 1, 1]> W2 = const()[name=string(\"W2\"), val=tensor<fp16, [%d, %d, 1, 1]>(BLOBFILE(path=string(\"@model_path/weights/w2.bin\"), offset=uint64(64)))];\n", dim, hidden, dim, hidden];
+
+    // h1 = conv(xnorm, W1): DIM → HIDDEN
+    [m appendFormat:@"        tensor<fp16, [1, %d, 1, %d]> h1 = conv(dilations=dl, groups=gr, pad=pd, pad_type=pt, strides=st, weight=W1, x=xnorm)[name=string(\"h1\")];\n", hidden, seq];
+    // h3 = conv(xnorm, W3): DIM → HIDDEN
+    [m appendFormat:@"        tensor<fp16, [1, %d, 1, %d]> h3 = conv(dilations=dl, groups=gr, pad=pd, pad_type=pt, strides=st, weight=W3, x=xnorm)[name=string(\"h3\")];\n", hidden, seq];
+
+    // SiLU(h1) = h1 * sigmoid(h1)
+    [m appendFormat:@"        tensor<fp16, [1, %d, 1, %d]> sig = sigmoid(x=h1)[name=string(\"sig\")];\n", hidden, seq];
+    [m appendFormat:@"        tensor<fp16, [1, %d, 1, %d]> silu = mul(x=h1, y=sig)[name=string(\"silu\")];\n", hidden, seq];
+
+    // gate = SiLU(h1) * h3
+    [m appendFormat:@"        tensor<fp16, [1, %d, 1, %d]> gate = mul(x=silu, y=h3)[name=string(\"gate\")];\n", hidden, seq];
+
+    // ffn_out = conv(gate, W2): HIDDEN → DIM
+    [m appendFormat:@"        tensor<fp16, [1, %d, 1, %d]> ffn_out = conv(dilations=dl, groups=gr, pad=pd, pad_type=pt, strides=st, weight=W2, x=gate)[name=string(\"ffn_out\")];\n", dim, seq];
+
+    // Residual: x_next = x_cur + ffn_out
+    [m appendFormat:@"        tensor<fp16, [1, %d, 1, %d]> x_next = add(x=x_cur, y=ffn_out)[name=string(\"x_next\")];\n", dim, seq];
+
+    [m appendString:@"    } -> (x_next);\n}\n"];
+    return m;
+}
+
 // Helper: generate a dynamic matmul within a MIL function
 static void gen_dyn_matmul(NSMutableString *m, const char *prefix,
                            int ic, int oc, int seq,

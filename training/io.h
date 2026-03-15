@@ -175,6 +175,70 @@ static Kern *compile_conv1x1_kern(NSString *mil, const float *W, int ic, int oc,
     // Output: [1, OC, 1, SEQ] fp16 = OC*SEQ*2 bytes
     return compile_kern_mil_w(mil, weights, ic * seq * 2, oc * seq * 2);
 }
+// Compile QKV fused conv1x1 kernel with 3 weight BLOBFILEs (wq, wk, wv).
+// Wq: [Q_DIM, DIM], Wk: [KV_DIM, DIM], Wv: [KV_DIM, DIM] — all fp32 row-major.
+// Input: [1, DIM, 1, SEQ] fp16 (activation only).
+// Output: [1, Q_DIM + 2*KV_DIM, 1, SEQ] fp16.
+static Kern *compile_qkv_fused_conv1x1_kern(NSString *mil,
+    const float *Wq, const float *Wk, const float *Wv,
+    int dim, int q_dim, int kv_dim, int seq) {
+    int wq_cnt = q_dim * dim, wk_cnt = kv_dim * dim, wv_cnt = kv_dim * dim;
+    _Float16 *wq_fp16 = (_Float16*)safe_malloc(wq_cnt * 2);
+    _Float16 *wk_fp16 = (_Float16*)safe_malloc(wk_cnt * 2);
+    _Float16 *wv_fp16 = (_Float16*)safe_malloc(wv_cnt * 2);
+    cvt_f32_f16(wq_fp16, Wq, wq_cnt);
+    cvt_f32_f16(wk_fp16, Wk, wk_cnt);
+    cvt_f32_f16(wv_fp16, Wv, wv_cnt);
+    NSData *bq = build_blob_fp16(wq_fp16, wq_cnt);
+    NSData *bk = build_blob_fp16(wk_fp16, wk_cnt);
+    NSData *bv = build_blob_fp16(wv_fp16, wv_cnt);
+    free(wq_fp16); free(wk_fp16); free(wv_fp16);
+    NSDictionary *weights = @{
+        @"@model_path/weights/wq.bin": @{@"data": bq},
+        @"@model_path/weights/wk.bin": @{@"data": bk},
+        @"@model_path/weights/wv.bin": @{@"data": bv}
+    };
+    int out_ch = q_dim + 2 * kv_dim;
+    return compile_kern_mil_w(mil, weights, dim * seq * 2, out_ch * seq * 2);
+}
+
+// Compile FFN fused conv1x1 kernel with 3 weight BLOBFILEs (w1, w3, w2).
+// W1: [HIDDEN, DIM], W3: [HIDDEN, DIM], W2: [DIM, HIDDEN] — all fp32 row-major.
+// Input: [1, DIM, 1, 2*SEQ] fp16 = concat(xnorm, x_cur).
+// Output: [1, DIM, 1, SEQ] fp16 = x_next.
+static Kern *compile_ffn_fused_conv1x1_kern(NSString *mil,
+    const float *W1, const float *W3, const float *W2,
+    int dim, int hidden, int seq) {
+    int w1_cnt = hidden * dim, w2_cnt = dim * hidden;
+    _Float16 *w1_fp16 = (_Float16*)safe_malloc(w1_cnt * 2);
+    _Float16 *w3_fp16 = (_Float16*)safe_malloc(w1_cnt * 2);
+    _Float16 *w2_fp16 = (_Float16*)safe_malloc(w2_cnt * 2);
+    cvt_f32_f16(w1_fp16, W1, w1_cnt);
+    cvt_f32_f16(w3_fp16, W3, w1_cnt);
+    cvt_f32_f16(w2_fp16, W2, w2_cnt);
+    NSData *b1 = build_blob_fp16(w1_fp16, w1_cnt);
+    NSData *b3 = build_blob_fp16(w3_fp16, w1_cnt);
+    NSData *b2 = build_blob_fp16(w2_fp16, w2_cnt);
+    free(w1_fp16); free(w3_fp16); free(w2_fp16);
+    NSDictionary *weights = @{
+        @"@model_path/weights/w1.bin": @{@"data": b1},
+        @"@model_path/weights/w3.bin": @{@"data": b3},
+        @"@model_path/weights/w2.bin": @{@"data": b2}
+    };
+    return compile_kern_mil_w(mil, weights, dim * 2 * seq * 2, dim * seq * 2);
+}
+
+// Write FFN fused input: concat(xnorm[DIM,SEQ], x_cur[DIM,SEQ]) into [1,DIM,1,2*SEQ]
+static void io_write_ffn_fused_conv_input(IOSurfaceRef s, const float *xnorm, const float *x_cur, int dim, int seq) {
+    IOSurfaceLock(s, 0, NULL);
+    _Float16 *buf = (_Float16*)IOSurfaceGetBaseAddress(s);
+    for (int d = 0; d < dim; d++) {
+        cvt_f32_f16(buf + d * 2 * seq,       xnorm + d * seq, seq);
+        cvt_f32_f16(buf + d * 2 * seq + seq, x_cur + d * seq, seq);
+    }
+    IOSurfaceUnlock(s, 0, NULL);
+}
+
 static void ane_eval(Kern *k) {
     id mdl = (__bridge id)k->model; id req = (__bridge id)k->request; NSError *e = nil;
     ((BOOL(*)(id,SEL,unsigned int,id,id,NSError**))objc_msgSend)(mdl, @selector(evaluateWithQoS:options:request:error:), 21, @{}, req, &e);
