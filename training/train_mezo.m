@@ -6,6 +6,7 @@
 // Usage: ./train_mezo --scratch --data data.bin --cpu-only --steps 1000
 #include "mil_dynamic.h"
 #include "cpu_ops.h"
+#include "backprop_lora.h"
 #include <math.h>
 
 // Dynamic kernel set per layer (forward-only subset for MeZO)
