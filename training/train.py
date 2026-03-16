@@ -28,13 +28,15 @@ WEIGHT_DECAY = 0.076104  # AdamW weight decay (autosearch: 0.1→0.076)
 ADAM_B1 = 0.9       # Adam beta1
 ADAM_B2 = 0.958587  # Adam beta2 (autosearch: 0.95→0.959)
 
-# Training mode (E38: CPU-only is correct default for all model sizes)
-CPU_ONLY = True       # Pure CPU fp32 training (no ANE, no IOSurface overhead)
+# Training mode
+# Options: "backprop" (standard), "backprop-lora" (P16 hybrid), "mezo" (zeroth-order)
+MODE = "backprop-lora"  # P16 hybrid: backprop gradients with LoRA (best quality+speed)
+CPU_ONLY = True       # Pure CPU fp32 (no ANE). Set False + MODE="backprop-lora" for ANE hybrid.
 ANE_MATMUL_ONLY = False  # ANE for linear projections only (viable up to DIM=1536)
 LOSS_SCALE = 256.0    # gradient scaling (only relevant for ANE modes)
 
 # LoRA fine-tuning
-LORA_ENABLED = False  # enable LoRA (freeze base weights, train adapters only)
+LORA_ENABLED = True   # enable LoRA (freeze base weights, train adapters only)
 LORA_RANK = 8         # LoRA rank (4-16 typical)
 
 # Budget
@@ -107,11 +109,16 @@ def main(seed=None):
     generate_model_header(header_path)
 
     # Compile
-    print(f"\nCompiling...")
+    print(f"\nCompiling (MODE={MODE})...")
     t0 = time.time()
     subprocess.run(["make", "clean"], cwd=train_dir, capture_output=True)
+    # Choose make target based on mode
+    if MODE == "backprop-lora" or MODE == "mezo":
+        make_target = "mezo"  # train_mezo binary handles both MeZO and backprop-lora
+    else:
+        make_target = "MODEL=autoresearch"  # standard train binary
     result = subprocess.run(
-        ["make", "MODEL=autoresearch"],
+        ["make", make_target, "MODEL=autoresearch"],
         cwd=train_dir, capture_output=True, text=True
     )
     compile_time = time.time() - t0
@@ -123,24 +130,60 @@ def main(seed=None):
     print(f"Compiled in {compile_time:.1f}s")
 
     # Run training
-    cmd = [
-        "./train",
-        "--scratch",
-        "--data", DATA_PATH,
-        "--lr", str(LR),
-        "--warmup", str(WARMUP_STEPS),
-        "--accum", str(ACCUM_STEPS),
-        "--clip", str(GRAD_CLIP),
-        "--steps", "100000",  # large number; --time will stop it
-        "--time", str(TIME_BUDGET),
-        "--scale", str(LOSS_SCALE),
-    ]
-    if CPU_ONLY:
-        cmd.append("--cpu-only")
-    elif ANE_MATMUL_ONLY:
-        cmd.append("--ane-matmul-only")
-    if LORA_ENABLED:
-        cmd.extend(["--lora", "--lora-rank", str(LORA_RANK)])
+    if MODE == "backprop-lora":
+        # P16 hybrid: train_mezo with --backprop-lora
+        cmd = [
+            "./train_mezo",
+            "--backprop-lora",
+            "--scratch",
+            "--data", DATA_PATH,
+            "--lr", str(LR),
+            "--lora-rank", str(LORA_RANK),
+            "--steps", "100000",
+            "--time", str(TIME_BUDGET),
+            "--val-every", "50",
+        ]
+        if CPU_ONLY:
+            cmd.append("--cpu-only")
+        elif not CPU_ONLY:
+            cmd.append("--conv-fused")  # ANE conv-fused forward
+    elif MODE == "mezo":
+        # MeZO zeroth-order training
+        cmd = [
+            "./train_mezo",
+            "--lora-split",
+            "--scratch",
+            "--data", DATA_PATH,
+            "--lr", str(LR),
+            "--lora-rank", str(LORA_RANK),
+            "--steps", "100000",
+            "--time", str(TIME_BUDGET),
+            "--val-every", "100",
+        ]
+        if CPU_ONLY:
+            cmd.append("--cpu-only")
+        elif not CPU_ONLY:
+            cmd.append("--conv-fused")
+    else:
+        # Standard backprop training
+        cmd = [
+            "./train",
+            "--scratch",
+            "--data", DATA_PATH,
+            "--lr", str(LR),
+            "--warmup", str(WARMUP_STEPS),
+            "--accum", str(ACCUM_STEPS),
+            "--clip", str(GRAD_CLIP),
+            "--steps", "100000",
+            "--time", str(TIME_BUDGET),
+            "--scale", str(LOSS_SCALE),
+        ]
+        if CPU_ONLY:
+            cmd.append("--cpu-only")
+        elif ANE_MATMUL_ONLY:
+            cmd.append("--ane-matmul-only")
+        if LORA_ENABLED:
+            cmd.extend(["--lora", "--lora-rank", str(LORA_RANK)])
     cmd.extend(["--seed", str(seed)])
     print(f"\nTraining for {TIME_BUDGET}s...")
     print(f"Command: {' '.join(cmd)}\n")
