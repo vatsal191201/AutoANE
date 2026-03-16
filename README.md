@@ -4,17 +4,19 @@
 
 AutoANE is an open-source system for training Llama-family transformers on Apple Silicon, building on [maderix/ANE](https://github.com/maderix/ANE)'s pioneering reverse engineering of the Neural Engine's private APIs. It adds systematic ANE vs CPU benchmarking, power measurement, and an autonomous hyperparameter search loop adapted from [karpathy/autoresearch](https://github.com/karpathy/autoresearch). The training loop is a compiled Objective-C binary (~1580 lines).
 
-44 controlled experiments (backprop), 37 MeZO conditions, a 100-experiment autonomous search, and first-principles verification produced four central findings:
+44 controlled experiments (backprop), 37 MeZO conditions, a 4-phase ANE optimization pipeline, a 100-experiment autonomous search, and first-principles verification produced five central findings:
 
-1. **ANE has a genuine 2.5x matmul speedup over CPU** (Apple AMX/Accelerate), but IOSurface weight-staging overhead negates this advantage end-to-end. CPU-only training wins at every tested model size (36M-281M params).
+1. **For backprop training, CPU beats ANE at every tested size** (36M-281M params) due to IOSurface weight-staging overhead and irreducible fp16 precision loss.
 
-2. **ANE does not save power.** Direct measurement via `powermetrics` shows package power of 13.3W (CPU-only), 12.6W (ANE matmul), and 12.7W (ANE full). This is the first published power measurement of ANE training workloads.
+2. **MeZO+LoRA-split with conv-fused kernels achieves 1.71x faster than CPU** (262ms/step vs 447ms) — the first ANE-faster-than-CPU training result on Apple Silicon. The key: LoRA-split freezes base weights as BLOBFILE constants (no per-step staging), conv1x1 fused kernels reduce IO round-trips from 224 to 96, with zero convergence impact.
 
-3. **In a fixed time window, more optimizer steps beats more parameters.** 512d/4L (36M params, ~4300 steps at 120s) achieves val_loss ~3.5 while 1024d/4L (95M params, ~1050 steps) achieves ~4.3. This confirms Kaplan et al.'s observation that the data scaling exponent (0.095) exceeds the parameter exponent (0.076) in the severely data-constrained regime.
+3. **ANE does not save power.** Direct measurement via `powermetrics` shows package power of 13.3W (CPU-only), 12.6W (ANE matmul), and 12.7W (ANE full). First published power measurement of ANE training workloads.
 
-4. **MeZO (zeroth-order) training works on ANE but is structurally slower than CPU.** First ZO training on any NPU. Full-parameter MeZO-ANE is 32-47% slower than MeZO-CPU due to IOSurface restaging. MeZO+LoRA-split eliminates the transpose bottleneck (478ms → 0ms) but MeZO's convergence is ~100x slower per step than backprop. MeZO's sole advantage is 2.0-2.4x lower memory, which only matters at ~1B+ params.
+4. **In a fixed time window, more optimizer steps beats more parameters.** 512d/4L (36M params, ~4300 steps at 120s) achieves val_loss ~3.5 while 1024d/4L (95M params, ~1050 steps) achieves ~4.3.
 
-**[Complete Findings & Methodology](docs/FINDINGS.md)** | **[MeZO Audit Report](docs/MEZO_AUDIT_REPORT.md)** | [Experiment Log (E1-E44)](docs/EXPERIMENTS.md) | [Verification Report](docs/VERIFICATION.md) | [Assumptions Registry (71 tracked)](docs/ASSUMPTIONS.md) | [Technical Report](docs/TECHNICAL_REPORT.md) | [Research Roadmap](docs/NEXT_STEPS.md)
+5. **Advanced ZO gradient estimators don't help for LoRA ZO.** FZOO multi-perturbation (K=4): zero wall-time benefit. P-GAP gradient-aligned perturbations: diverges with paper hyperparams, neutral with standard hyperparams. Root cause: LoRA rank-8 matrices are too small for per-matrix SVD.
+
+**[Complete Findings & Methodology](docs/FINDINGS.md)** | **[ANE Pipeline Optimization Spec](docs/specs/2026-03-15-ane-training-pipeline-optimization.md)** | **[P-GAP Research Log](docs/specs/2026-03-16-phase4-pgap-research-log.md)** | [MeZO Audit Report](docs/MEZO_AUDIT_REPORT.md) | [Technical Report](docs/TECHNICAL_REPORT.md) | [Experiment Log (E1-E44)](docs/EXPERIMENTS.md) | [Assumptions Registry](docs/ASSUMPTIONS.md) | [Research Roadmap](docs/NEXT_STEPS.md)
 
 ---
 
@@ -81,15 +83,16 @@ python3 tools/hf_to_ane.py HuggingFaceTB/SmolLM2-360M ane_smollm2_360m_ckpt.bin
 make MODEL=smollm2_360m
 ./train_mezo --resume ane_smollm2_360m_ckpt.bin \
     --data ../tinystories_smollm2_data00.bin \
-    --lr 1e-5 --eps 1e-3 --time 120 --cpu-only
-
-# MeZO+LoRA-split (recommended — fastest MeZO variant)
-./train_mezo --resume ane_smollm2_360m_ckpt.bin \
-    --data ../tinystories_smollm2_data00.bin \
     --lr 1e-4 --eps 1e-3 --time 120 --cpu-only \
     --lora --lora-rank 8 --lora-split
 
-# MeZO on ANE
+# MeZO+LoRA-split on ANE with conv-fused kernels (FASTEST — 1.71x CPU)
+./train_mezo --resume ane_smollm2_360m_ckpt.bin \
+    --data ../tinystories_smollm2_data00.bin \
+    --lr 1e-4 --eps 1e-3 --time 120 \
+    --lora --lora-rank 8 --lora-split --conv-fused
+
+# MeZO on ANE (full-parameter, slower — for comparison only)
 ./train_mezo --resume ane_smollm2_360m_ckpt.bin \
     --data ../tinystories_smollm2_data00.bin \
     --lr 1e-5 --eps 1e-3 --time 120
@@ -190,10 +193,12 @@ AutoANE/
 │   │                            #   Forward pass, backward pass, Adam optimizer,
 │   │                            #   checkpoint save/load, CLI argument parsing,
 │   │                            #   ANE kernel compilation, gradient accumulation
-│   ├── train_mezo.m             # MeZO training loop (Obj-C, ~1200 lines)
+│   ├── train_mezo.m             # MeZO training loop (Obj-C, ~2100 lines)
 │   │                            #   Zeroth-order optimization (forward-only),
-│   │                            #   MeZO+LoRA, MeZO+LoRA-split, xoshiro256+ RNG,
-│   │                            #   Rademacher perturbation, SPSA gradient estimate
+│   │                            #   MeZO+LoRA, MeZO+LoRA-split, conv1x1 hybrid,
+│   │                            #   conv-fused kernels (QKV+FFN), xoshiro256+ RNG,
+│   │                            #   Rademacher/Gaussian perturbation, SPSA,
+│   │                            #   FZOO multi-perturbation, P-GAP per-matrix SVD
 │   ├── cpu_ops.h                # CPU-side ops: RMSNorm fwd/bwd, cross-entropy
 │   │                            #   (log-sum-exp), AdamW, embedding fwd/bwd, SDPA,
 │   │                            #   vocab compaction (49152 → 16893 active tokens)
@@ -250,14 +255,20 @@ AutoANE/
 │   └── verify_blas_channel_first.py # BLAS channel-first layout numerical test
 │
 ├── docs/                        # ── Documentation ──
-│   ├── FINDINGS.md              # Complete findings, methodology, audit trail (E1-E44)
+│   ├── FINDINGS.md              # Complete findings, methodology, audit trail (8 findings)
 │   ├── MEZO_AUDIT_REPORT.md     # MeZO-on-ANE comprehensive audit (37 conditions, v12)
-│   ├── TECHNICAL_REPORT.md      # Full technical report (13 sections)
+│   ├── TECHNICAL_REPORT.md      # Full technical report (14 sections)
 │   ├── EXPERIMENTS.md           # Experiment log (E1-E44)
 │   ├── VERIFICATION.md          # First-principles verification (22 sections)
-│   ├── ASSUMPTIONS.md           # 71 tracked assumptions (27 verified, 8 disproved, ...)
-│   ├── NEXT_STEPS.md            # Research roadmap + session work logs
+│   ├── ASSUMPTIONS.md           # 71+ tracked assumptions (27 verified, 8 disproved, ...)
+│   ├── NEXT_STEPS.md            # Research roadmap + session work logs (5 sessions)
 │   ├── RESEARCH_PLAN.md         # Original research plan (all tasks completed)
+│   ├── ANE_STRENGTHS_PLAN.md    # Conv1x1 + MeZO optimization plan (with actual results)
+│   ├── specs/                   # Design specs and research logs
+│   │   ├── 2026-03-15-ane-training-pipeline-optimization.md  # 4-phase pipeline spec
+│   │   ├── 2026-03-16-phase4-pgap-research-log.md           # P-GAP negative result log
+│   │   ├── 2026-03-12-mezo-ane-training-design.md            # MeZO design spec
+│   │   └── 2026-03-12-mezo-ane-training-plan.md              # MeZO implementation plan
 │   ├── P1_DESIGN.md             # Design doc: runtime weight injection
 │   ├── E37_PROTOCOL.md          # Experiment 37 protocol (sustained throughput)
 │   └── E38_PROTOCOL.md          # Experiment 38 protocol (dimension scaling)
@@ -330,12 +341,15 @@ train.py (Python)
 We distinguish what is novel from what is adapted from prior work.
 
 **Novel (no prior published equivalent):**
-- First zeroth-order (MeZO) training on any NPU hardware, with 37 controlled conditions across 3 model sizes
-- MeZO+LoRA-split architecture: base weights baked in IOSurfaces, LoRA correction on CPU — eliminates transpose bottleneck entirely (478ms → 0ms)
+- **First ANE training faster than CPU** — MeZO+LoRA-split with conv-fused kernels: 262ms/step = 1.71x faster than CPU (447ms), zero convergence impact
+- First zeroth-order (MeZO) training on any NPU hardware, with 37 controlled conditions across 3 model sizes + 4-phase ANE optimization pipeline
+- MeZO+LoRA-split architecture: base weights as BLOBFILE constants, LoRA correction on CPU — eliminates IOSurface weight staging entirely
+- Conv1x1 hybrid + fused kernels: selective conv1x1 for 5/7 projections (2x speedup), QKV combined + FFN mega-kernel fusion reduces IO round-trips from 224 to 96
+- Negative result for P-GAP on LoRA ZO: faithful per-matrix SVD implementation matching arXiv:2510.18228 — diverges with paper hyperparams, neutral with standard hyperparams. Root cause: LoRA rank-8 matrices too small for SVD
+- Negative result for FZOO multi-perturbation: better gradient quality offset by 2.5x computational overhead
 - First quantitative ANE vs CPU training comparison at matched configurations (throughput, loss quality, power)
 - First ANE training power measurement (macOS `powermetrics`, 60s per mode, idle-subtracted)
-- First IOSurface scaling study across model dimensions (DIM 1024/1536/2048) — demonstrates hard memory pressure ceiling at ~220MB total IOSurface allocation
-- First demonstration that selective ANE offloading (matmul-only) matches CPU training quality
+- First IOSurface scaling study across model dimensions (DIM 1024/1536/2048) — demonstrates hard memory pressure ceiling at ~220MB
 - Autonomous hyperparameter search on Apple Silicon with compiled C binary and git keep/revert protocol
 - Lossless weight conversion pipeline: HuggingFace <-> ANE checkpoint <-> GGUF (verified bit-perfect on 272-tensor round-trip)
 
@@ -424,7 +438,7 @@ Full findings with methodology: **[docs/FINDINGS.md](docs/FINDINGS.md)**
 
 ### MeZO (Zeroth-Order) Training Findings
 
-37 experimental conditions across from-scratch (36.4M), SmolLM2-135M, and SmolLM2-360M. Full audit: **[docs/MEZO_AUDIT_REPORT.md](docs/MEZO_AUDIT_REPORT.md)**.
+37 experimental conditions + 4-phase ANE optimization pipeline. Full audit: **[docs/MEZO_AUDIT_REPORT.md](docs/MEZO_AUDIT_REPORT.md)**. Optimization pipeline: **[docs/specs/2026-03-15-ane-training-pipeline-optimization.md](docs/specs/2026-03-15-ane-training-pipeline-optimization.md)**. P-GAP research log: **[docs/specs/2026-03-16-phase4-pgap-research-log.md](docs/specs/2026-03-16-phase4-pgap-research-log.md)**.
 
 | # | Finding | Key Evidence |
 |---|---------|-------------|
@@ -435,6 +449,9 @@ Full findings with methodology: **[docs/FINDINGS.md](docs/FINDINGS.md)**
 | 18 | MeZO's sole advantage is 2.0-2.4x lower memory | Only critical at ~1B+ params on 8GB devices |
 | 19 | Optimal MeZO LR is ~30x smaller than backprop LR | lr=1e-5 (full), lr=1e-4 (LoRA-split) |
 | 20 | Lower LoRA rank = lower ZO variance = better signal | Rank 8 ≥ rank 32 in convergence quality |
+| **21** | **Conv-fused MeZO+LoRA-split: 1.71x faster than CPU** | **262ms/step vs 447ms, val_loss within 0.03%** |
+| 22 | FZOO K=4 provides zero wall-time convergence benefit | 2.5x more forward passes offsets better gradient quality |
+| 23 | P-GAP does not transfer to LoRA ZO training | Paper params diverge; standard params neutral; LoRA rank-8 too small for SVD |
 
 ---
 
@@ -473,12 +490,13 @@ MLX is better for: raw GPU throughput on large models, broader ecosystem, rapid 
 ## Open Questions
 
 1. Does the step-count advantage hold with larger datasets? Chinchilla predicts a crossover where larger models become optimal — but at what data scale?
-2. ~~Can zeroth-order training (MeZO) leverage ANE's fast forward passes?~~ **Answered: No with matmul kernels.** But conv1x1 is 3x faster on ANE ([Orion](https://arxiv.org/abs/2603.06728)), and MP-LoRA halves forward passes ([MobiZO](https://aclanthology.org/2025.emnlp-main.1022/)). See [ANE Strengths Plan](docs/ANE_STRENGTHS_PLAN.md).
-3. **Conv1x1 + FZOO/AGZO + MP-LoRA on ANE**: Estimated ~11x speedup over current best (593ms → ~50ms/step). FZOO's batched one-sided Rademacher trick (18x fewer forward passes) is a drop-in since we already use Rademacher. AGZO is validated on NPU hardware (Ascend 910B2). Concrete plan in [docs/ANE_STRENGTHS_PLAN.md](docs/ANE_STRENGTHS_PLAN.md).
-4. Mega-kernel fusion (N transformer layers in one MIL program) achieves 3-4x forward speedup ([maderix/ANE PR #24](https://github.com/maderix/ANE/issues/24)). Can this be combined with runtime weight injection?
-5. Function parameter IOSurfaces are 30% faster than our spatial packing ([maderix/ANE PR #22](https://github.com/maderix/ANE/pull/22)). Worth implementing?
-6. INT8 quantization halves IOSurface size — does this move the memory pressure ceiling from DIM=1536 to DIM=2048+?
-7. Does MeZO's memory advantage enable training at 1B+ params where backprop doesn't fit in 8GB?
+2. ~~Can zeroth-order training (MeZO) leverage ANE's fast forward passes?~~ **Answered: YES — 1.71x faster than CPU** with LoRA-split + conv-fused kernels (262ms/step vs 447ms). See [design spec](docs/specs/2026-03-15-ane-training-pipeline-optimization.md).
+3. ~~Can FZOO/P-GAP improve MeZO convergence?~~ **Answered: NO for LoRA ZO.** FZOO K=4: zero wall-time benefit (2.5x cost offsets quality). P-GAP: diverges with paper params, neutral with standard params. See [P-GAP research log](docs/specs/2026-03-16-phase4-pgap-research-log.md).
+4. **Cross-layer fusion**: Current fusion is intra-layer (QKV combined, FFN mega-kernel). Can multiple transformer layers be fused into fewer ANE dispatches? Challenge: LoRA corrections between layers prevent full fusion.
+5. **Larger model scaling**: Does the 1.71x speedup increase at >360M params? Conv1x1 advantages should grow with wider dimensions. IOSurface pressure may be lower in LoRA-split mode (activation-only surfaces).
+6. **INT8 LoRA corrections**: Can LoRA A/B matrices be quantized to INT8 for ANE compute? Leverages 1.88x INT8 throughput. Risk: rank-8 matrices may lose precision.
+7. **Mobile MeZO deployment**: ANE may be the only thermally viable compute for sustained on-device training on iPhone/iPad. MeZO+LoRA-split is the obvious path.
+8. Does MeZO's memory advantage enable training at 1B+ params where backprop doesn't fit in 8GB?
 
 ---
 
@@ -501,8 +519,9 @@ MLX is better for: raw GPU throughput on large models, broader ecosystem, rapid 
 | Paper | Key Finding | Relevance |
 |-------|------------|-----------|
 | [AGZO](https://arxiv.org/abs/2601.17261) (arXiv 2026) | Activation-guided subspace ZO; first ZO benchmarked on NPU (Ascend 910B2, avg 0.709 on Pangu-1B). | Validates ZO+NPU; activation-guided perturbation is complementary to conv1x1. |
-| [FZOO](https://arxiv.org/abs/2506.09034) (arXiv 2025) | Rademacher + batched one-sided estimates; 18x fewer forward passes than MeZO on RoBERTa-large. | **Drop-in improvement**: we already use Rademacher perturbations. |
-| [P-GAP](https://arxiv.org/abs/2510.18228) (arXiv 2025) | Gradient-aligned perturbation, 5.2x faster convergence. | Reduces step count; stacks with conv1x1 speedup. |
+| [FZOO](https://arxiv.org/abs/2506.09034) (arXiv 2025) | Rademacher + batched one-sided estimates; 18x fewer forward passes than MeZO on RoBERTa-large. | **Tested: zero wall-time benefit** for LoRA ZO — K=4 gives better gradient quality but 2.5x compute overhead offsets it. |
+| [P-GAP](https://arxiv.org/abs/2510.18228) (arXiv 2025) | Gradient-aligned perturbation, 5.2x faster convergence. | **Tested: negative result** for LoRA ZO — paper params diverge, standard params neutral. LoRA rank-8 matrices too small for per-matrix SVD. |
+| [ZOSA](https://arxiv.org/abs/2511.09156) (arXiv 2025) | O(ε²) bias proof for one-sided Rademacher perturbations. | Confirmed: one-sided has same asymptotic bias as central-difference. Used in our FZOO implementation. |
 | [NoProp](https://arxiv.org/abs/2503.24322) (arXiv 2025) | No full forward/backward pass; diffusion-inspired block-local learning. | Alternative: per-block ANE fine-tuning without full graph compilation. |
 
 ### On-Device / Mobile Training (2024-2026)
