@@ -285,12 +285,17 @@ static void compute_sparse_mask(LoRALayer *ll, LayerWeights *lw, float *rms_fina
 }
 
 // ===== HiZOO: Diagonal Hessian preconditioning =====
-static void update_hessian(float *H, size_t n, float loss_plus, float loss_minus, float loss_0,
+// z_vals: raw Gaussian z values from the perturbation step. z[i]² varies per
+// element, enabling per-parameter Hessian differentiation. This is why HiZOO
+// requires Gaussian (not Rademacher) perturbations.
+static void update_hessian(float *H, const float *z_vals, size_t n,
+                           float loss_plus, float loss_minus, float loss_0,
                            float epsilon, float alpha) {
     float delta_L = loss_plus + loss_minus - 2.0f * loss_0;
     float curvature = fabsf(delta_L) / (epsilon * epsilon);
     for (size_t i = 0; i < n; i++) {
-        H[i] = (1.0f - alpha) * H[i] + alpha * curvature;
+        float h_est = curvature * z_vals[i] * z_vals[i];  // z[i]² varies per element
+        H[i] = (1.0f - alpha) * H[i] + alpha * h_est;
         if (H[i] < 1e-8f) H[i] = 1e-8f;
         if (H[i] > 1e6f) H[i] = 1e6f;
     }
@@ -576,25 +581,48 @@ static void perturb_lora_weights(LoRALayer *ll, LayerWeights *lw,
     perturb_buffer(rms_final, DIM, scale);
 }
 
-// ===== HiZOO perturbation: 1-bit-per-xo_next, with sparse mask + Hessian scaling =====
-// CRITICAL: uses 1-bit per xo_next() call — NOT compatible with perturb_buffer (4-bit).
-// Must not mix with perturb_lora_weights in the same step.
+// ===== HiZOO perturbation: Gaussian z with sparse mask + Hessian scaling =====
+// When H != NULL (HiZOO mode): uses GAUSSIAN z (Box-Muller) so z[i]² varies
+// per element, enabling per-parameter Hessian differentiation.
+// When H == NULL (sparse-only): uses Rademacher z (faster, sufficient).
+// z_out: if non-NULL, stores the raw z values for Hessian update.
+// CRITICAL: PRNG sequence differs from perturb_lora_weights — do not mix.
 static void perturb_lora_hizoo(LoRALayer *ll, LayerWeights *lw,
                                 float *rms_final, int nlayers, uint64_t seed,
-                                float scale, const uint8_t *mask, const float *H) {
+                                float scale, const uint8_t *mask, const float *H,
+                                float *z_out) {
     xo_seed(seed);
     size_t idx = 0;
+    bool use_gaussian = (H != NULL);  // Gaussian needed for Hessian differentiation
+
     for (int L = 0; L < nlayers; L++) {
         int r = ll[L].rank;
         #define PERTURB_HIZOO(buf, count) do { \
             size_t _n = (count); \
-            for (size_t _i = 0; _i < _n; _i++) { \
-                uint64_t _r = xo_next(); \
-                float z_i = (_r & 1) ? 1.0f : -1.0f; \
-                float s = scale; \
-                if (mask && !mask[idx + _i]) s = 0.0f; \
-                if (H) s /= sqrtf(H[idx + _i]); \
-                (buf)[_i] += s * z_i; \
+            if (use_gaussian) { \
+                /* Generate Gaussian z via Box-Muller, then apply mask+Hessian */ \
+                for (size_t _i = 0; _i < _n; _i += 2) { \
+                    float g1, g2; \
+                    gaussian_pair(&g1, &g2); \
+                    for (int _k = 0; _k < 2 && (_i + _k) < _n; _k++) { \
+                        float z_i = (_k == 0) ? g1 : g2; \
+                        if (z_out) z_out[idx + _i + _k] = z_i; \
+                        float s = scale; \
+                        if (mask && !mask[idx + _i + _k]) s = 0.0f; \
+                        if (H) s /= sqrtf(H[idx + _i + _k]); \
+                        (buf)[_i + _k] += s * z_i; \
+                    } \
+                } \
+            } else { \
+                /* Rademacher z (faster, for sparse-only mode) */ \
+                for (size_t _i = 0; _i < _n; _i++) { \
+                    uint64_t _r = xo_next(); \
+                    float z_i = (_r & 1) ? 1.0f : -1.0f; \
+                    if (z_out) z_out[idx + _i] = z_i; \
+                    float s = scale; \
+                    if (mask && !mask[idx + _i]) s = 0.0f; \
+                    (buf)[_i] += s * z_i; \
+                } \
             } \
             idx += _n; \
         } while(0)
@@ -612,13 +640,28 @@ static void perturb_lora_hizoo(LoRALayer *ll, LayerWeights *lw,
     }
     {
         size_t _n = DIM;
-        for (size_t _i = 0; _i < _n; _i++) {
-            uint64_t _r = xo_next();
-            float z_i = (_r & 1) ? 1.0f : -1.0f;
-            float s = scale;
-            if (mask && !mask[idx + _i]) s = 0.0f;
-            if (H) s /= sqrtf(H[idx + _i]);
-            rms_final[_i] += s * z_i;
+        if (use_gaussian) {
+            for (size_t _i = 0; _i < _n; _i += 2) {
+                float g1, g2;
+                gaussian_pair(&g1, &g2);
+                for (int _k = 0; _k < 2 && (_i + _k) < _n; _k++) {
+                    float z_i = (_k == 0) ? g1 : g2;
+                    if (z_out) z_out[idx + _i + _k] = z_i;
+                    float s = scale;
+                    if (mask && !mask[idx + _i + _k]) s = 0.0f;
+                    if (H) s /= sqrtf(H[idx + _i + _k]);
+                    rms_final[_i + _k] += s * z_i;
+                }
+            }
+        } else {
+            for (size_t _i = 0; _i < _n; _i++) {
+                uint64_t _r = xo_next();
+                float z_i = (_r & 1) ? 1.0f : -1.0f;
+                if (z_out) z_out[idx + _i] = z_i;
+                float s = scale;
+                if (mask && !mask[idx + _i]) s = 0.0f;
+                rms_final[_i] += s * z_i;
+            }
         }
         idx += _n;
     }
@@ -975,12 +1018,18 @@ int main(int argc, char *argv[]) {
                 printf("  [Sparse-HiZOO] total_params=%zu  LoRA_mean_mag=%.6f  RMS_mean_mag=%.6f\n",
                        hizoo_n_params, lora_sum / fmax(1, lora_cnt), rms_sum / fmax(1, rms_cnt));
             }
-            // Allocate diagonal Hessian (init to 1.0)
-            diag_hessian = (float *)safe_malloc(hizoo_n_params * sizeof(float));
-            for (size_t i = 0; i < hizoo_n_params; i++) diag_hessian[i] = 1.0f;
+            // Allocate diagonal Hessian (init to 1.0) + z_vals buffer for Gaussian z
+            if (hessian_alpha > 0.0f) {
+                diag_hessian = (float *)safe_malloc(hizoo_n_params * sizeof(float));
+                for (size_t i = 0; i < hizoo_n_params; i++) diag_hessian[i] = 1.0f;
+                printf("  Hessian buffer: %.1f MB (uses Gaussian z for per-element differentiation)\n",
+                       hizoo_n_params * 4.0f / (1024*1024));
+            }
             // Allocate and compute sparse mask
-            sparse_mask = (uint8_t *)safe_malloc(hizoo_n_params * sizeof(uint8_t));
-            compute_sparse_mask(lora_layers, lw, rms_final, NLAYERS, sparse_mask, sparse_ratio, hizoo_n_params);
+            if (sparse_ratio > 0.0f) {
+                sparse_mask = (uint8_t *)safe_malloc(hizoo_n_params * sizeof(uint8_t));
+                compute_sparse_mask(lora_layers, lw, rms_final, NLAYERS, sparse_mask, sparse_ratio, hizoo_n_params);
+            }
         }
 
         // === mmap token data ===
@@ -1952,10 +2001,17 @@ int main(int argc, char *argv[]) {
                     t_fwd += tb_ms(mach_absolute_time() - t0);
                 }
 
-                // 1. Perturb +epsilon
+                // Allocate z_vals on stack for Hessian update (Gaussian z[i]² varies per element)
+                // Only needed when hessian_alpha > 0 (HiZOO mode uses Gaussian z)
+                float *z_vals = NULL;
+                if (hessian_alpha > 0.0f) {
+                    z_vals = (float *)safe_malloc(hizoo_n_params * sizeof(float));
+                }
+
+                // 1. Perturb +epsilon (store z values for Hessian update)
                 t0 = mach_absolute_time();
                 if (use_hizoo) {
-                    perturb_lora_hizoo(lora_layers, lw, rms_final, NLAYERS, mezo_seed, +epsilon, sparse_mask, diag_hessian);
+                    perturb_lora_hizoo(lora_layers, lw, rms_final, NLAYERS, mezo_seed, +epsilon, sparse_mask, diag_hessian, z_vals);
                 } else if (use_lora) {
                     perturb_lora_weights(lora_layers, lw, rms_final, NLAYERS, mezo_seed, +epsilon);
                     if (!lora_split) lora_merge_all(lw, lora_layers, NLAYERS);
@@ -1981,7 +2037,7 @@ int main(int argc, char *argv[]) {
                 // 3. Perturb -2*epsilon (to theta - epsilon*z)
                 t0 = mach_absolute_time();
                 if (use_hizoo) {
-                    perturb_lora_hizoo(lora_layers, lw, rms_final, NLAYERS, mezo_seed, -2.0f * epsilon, sparse_mask, diag_hessian);
+                    perturb_lora_hizoo(lora_layers, lw, rms_final, NLAYERS, mezo_seed, -2.0f * epsilon, sparse_mask, diag_hessian, NULL);
                 } else if (use_lora) {
                     perturb_lora_weights(lora_layers, lw, rms_final, NLAYERS, mezo_seed, -2.0f * epsilon);
                     if (!lora_split) lora_merge_all(lw, lora_layers, NLAYERS);
@@ -2007,7 +2063,7 @@ int main(int argc, char *argv[]) {
                 // 5. Restore to original theta
                 t0 = mach_absolute_time();
                 if (use_hizoo) {
-                    perturb_lora_hizoo(lora_layers, lw, rms_final, NLAYERS, mezo_seed, +epsilon, sparse_mask, diag_hessian);
+                    perturb_lora_hizoo(lora_layers, lw, rms_final, NLAYERS, mezo_seed, +epsilon, sparse_mask, diag_hessian, NULL);
                 } else if (use_lora) {
                     perturb_lora_weights(lora_layers, lw, rms_final, NLAYERS, mezo_seed, +epsilon);
                 } else {
@@ -2018,9 +2074,9 @@ int main(int argc, char *argv[]) {
                 // 6. Gradient estimate + Hessian update + update step
                 proj_grad = (loss_plus - loss_minus) / (2.0f * epsilon);
 
-                // Hessian EMA update (before weight update)
-                if (hessian_alpha > 0.0f && diag_hessian) {
-                    update_hessian(diag_hessian, hizoo_n_params, loss_plus, loss_minus, loss_0, epsilon, hessian_alpha);
+                // Hessian EMA update (before weight update) — uses z_vals with Gaussian z[i]²
+                if (hessian_alpha > 0.0f && diag_hessian && z_vals) {
+                    update_hessian(diag_hessian, z_vals, hizoo_n_params, loss_plus, loss_minus, loss_0, epsilon, hessian_alpha);
                     if (step % 100 == 0 || step <= start_step + 10)
                         print_hessian_stats(diag_hessian, hizoo_n_params, step);
                 }
@@ -2029,7 +2085,7 @@ int main(int argc, char *argv[]) {
 
                 t0 = mach_absolute_time();
                 if (use_hizoo) {
-                    perturb_lora_hizoo(lora_layers, lw, rms_final, NLAYERS, mezo_seed, update_scale, sparse_mask, diag_hessian);
+                    perturb_lora_hizoo(lora_layers, lw, rms_final, NLAYERS, mezo_seed, update_scale, sparse_mask, diag_hessian, NULL);
                 } else if (use_lora) {
                     perturb_lora_weights(lora_layers, lw, rms_final, NLAYERS, mezo_seed, update_scale);
                     if (!lora_split) lora_merge_all(lw, lora_layers, NLAYERS);
@@ -2040,6 +2096,9 @@ int main(int argc, char *argv[]) {
 
                 // Re-build compact embedding after weight update
                 if (!lora_split) { free(cembed); cembed = vocab_compact_embed(embed, &vm, DIM); }
+
+                // Free z_vals buffer (allocated per step for Hessian update)
+                if (z_vals) { free(z_vals); z_vals = NULL; }
 
                 // Sparse mask refresh
                 if (sparse_ratio > 0.0f && sparse_mask && step > start_step && (step % mask_refresh) == 0)
