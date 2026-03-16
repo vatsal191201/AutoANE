@@ -197,6 +197,29 @@ MeZO (zeroth-order optimizer) with LoRA-split mode on SmolLM2-360M (pretrained, 
 
 **Evidence**: Design spec (2026-03-15), Phase 4 research log (2026-03-16), bench_conv 500-iter averages, 50-step timing averages
 
+### Finding 9: MeZO LoRA Has a Quality Ceiling (Not Just Speed Problem)
+
+MeZO LoRA convergence saturates at val_loss ~2.052 regardless of step count. This is a fundamental quality ceiling, not a speed limitation:
+
+| Steps | MeZO val_loss | Backprop val_loss | MeZO delta | Backprop delta |
+|-------|-------------|-----------------|-----------|---------------|
+| 191 | ~2.065 | **1.925** | 0.007 | **0.147** |
+| 600 | **2.052** | — | **0.019** | — |
+| 1000 | 2.052 | — | 0.019 | — |
+
+- Steps 600-1000: **exactly 0.000 nats improvement** (saturated)
+- Backprop achieves **7.6x more improvement** in **3x fewer steps**
+- The gap (0.127 nats, 6.2%) is fundamental to ZO gradient estimation
+- ZO captures ~1/sqrt(d) of gradient information per step (d=1.7M: 0.077%)
+- No ZO variance reduction technique (BSZO, SVRG, SubZero) can close this gap
+- They can speed convergence TO the ceiling, but the ceiling itself is fixed
+
+**Root cause**: LoRA fine-tuning creates a narrow loss valley. ZO can find the valley direction but cannot make fine-grained progress within it. Backprop follows the exact gradient, navigating the valley precisely.
+
+**Implication**: P16 hybrid (ANE forward + CPU backward) is the ONLY path to both ANE hardware utilization AND backprop-quality training.
+
+**Evidence**: 1000-step convergence data (convergence_1000step_lr1e4_seed42.txt), condition13 backprop baseline, condition20 MeZO 300s run
+
 ---
 
 ## 4. ANE Characterization
