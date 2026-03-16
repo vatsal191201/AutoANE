@@ -242,6 +242,73 @@ static size_t count_lora_params(LoRALayer *ll, int nlayers) {
     return total;
 }
 
+// ===== Sparse MeZO: exclude large-magnitude params from perturbation =====
+static int cmp_float_abs(const void *a, const void *b) {
+    float fa = fabsf(*(const float *)a), fb = fabsf(*(const float *)b);
+    return (fa > fb) - (fa < fb);
+}
+
+static void compute_sparse_mask(LoRALayer *ll, LayerWeights *lw, float *rms_final,
+                                int nlayers, uint8_t *mask, float sparse_ratio,
+                                size_t total_params) {
+    if (sparse_ratio <= 0.0f) { memset(mask, 1, total_params); return; }
+    float *mags = (float *)safe_malloc(total_params * sizeof(float));
+    size_t idx = 0;
+    for (int L = 0; L < nlayers; L++) {
+        int r = ll[L].rank;
+        for (size_t j = 0; j < (size_t)r * DIM; j++) mags[idx++] = fabsf(ll[L].Aq[j]);
+        for (size_t j = 0; j < (size_t)Q_DIM * r; j++) mags[idx++] = fabsf(ll[L].Bq[j]);
+        for (size_t j = 0; j < (size_t)r * DIM; j++) mags[idx++] = fabsf(ll[L].Ak[j]);
+        for (size_t j = 0; j < (size_t)KV_DIM * r; j++) mags[idx++] = fabsf(ll[L].Bk[j]);
+        for (size_t j = 0; j < (size_t)r * DIM; j++) mags[idx++] = fabsf(ll[L].Av[j]);
+        for (size_t j = 0; j < (size_t)KV_DIM * r; j++) mags[idx++] = fabsf(ll[L].Bv[j]);
+        for (size_t j = 0; j < (size_t)r * Q_DIM; j++) mags[idx++] = fabsf(ll[L].Ao[j]);
+        for (size_t j = 0; j < (size_t)DIM * r; j++) mags[idx++] = fabsf(ll[L].Bo[j]);
+        for (size_t j = 0; j < DIM; j++) mags[idx++] = fabsf(lw[L].rms_att[j]);
+        for (size_t j = 0; j < DIM; j++) mags[idx++] = fabsf(lw[L].rms_ffn[j]);
+    }
+    for (size_t j = 0; j < DIM; j++) mags[idx++] = fabsf(rms_final[j]);
+    assert(idx == total_params);
+    float *sorted = (float *)safe_malloc(total_params * sizeof(float));
+    memcpy(sorted, mags, total_params * sizeof(float));
+    qsort(sorted, total_params, sizeof(float), cmp_float_abs);
+    size_t keep_count = (size_t)((1.0f - sparse_ratio) * total_params);
+    if (keep_count == 0) keep_count = 1;
+    if (keep_count > total_params) keep_count = total_params;
+    float threshold = sorted[keep_count - 1];
+    for (size_t i = 0; i < total_params; i++) mask[i] = (mags[i] <= threshold) ? 1 : 0;
+    size_t n_active = 0;
+    for (size_t i = 0; i < total_params; i++) n_active += mask[i];
+    printf("  [Sparse mask] ratio=%.3f  threshold=%.6f  active=%zu/%zu (%.1f%%)\n",
+           sparse_ratio, threshold, n_active, total_params, 100.0f * n_active / total_params);
+    free(mags); free(sorted);
+}
+
+// ===== HiZOO: Diagonal Hessian preconditioning =====
+static void update_hessian(float *H, size_t n, float loss_plus, float loss_minus, float loss_0,
+                           float epsilon, float alpha) {
+    float delta_L = loss_plus + loss_minus - 2.0f * loss_0;
+    float curvature = fabsf(delta_L) / (epsilon * epsilon);
+    for (size_t i = 0; i < n; i++) {
+        H[i] = (1.0f - alpha) * H[i] + alpha * curvature;
+        if (H[i] < 1e-8f) H[i] = 1e-8f;
+        if (H[i] > 1e6f) H[i] = 1e6f;
+    }
+}
+
+static void print_hessian_stats(const float *H, size_t n, int step) {
+    float h_min = H[0], h_max = H[0];
+    double h_sum = 0, h_sum2 = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (H[i] < h_min) h_min = H[i];
+        if (H[i] > h_max) h_max = H[i];
+        h_sum += H[i]; h_sum2 += (double)H[i] * H[i];
+    }
+    double h_mean = h_sum / n, h_var = h_sum2 / n - h_mean * h_mean;
+    printf("  [Hessian@%d] min=%.4e max=%.4e mean=%.4e std=%.4e ratio=%.1f\n",
+           step, h_min, h_max, (float)h_mean, (float)sqrt(fmax(h_var,0)), h_max/(h_min+1e-30f));
+}
+
 // ===== Gaussian RNG: Box-Muller from xoshiro256+ =====
 // Returns two N(0,1) samples per call. Uses global xo_s[] state.
 static inline void gaussian_pair(float *out1, float *out2) {
@@ -509,6 +576,54 @@ static void perturb_lora_weights(LoRALayer *ll, LayerWeights *lw,
     perturb_buffer(rms_final, DIM, scale);
 }
 
+// ===== HiZOO perturbation: 1-bit-per-xo_next, with sparse mask + Hessian scaling =====
+// CRITICAL: uses 1-bit per xo_next() call — NOT compatible with perturb_buffer (4-bit).
+// Must not mix with perturb_lora_weights in the same step.
+static void perturb_lora_hizoo(LoRALayer *ll, LayerWeights *lw,
+                                float *rms_final, int nlayers, uint64_t seed,
+                                float scale, const uint8_t *mask, const float *H) {
+    xo_seed(seed);
+    size_t idx = 0;
+    for (int L = 0; L < nlayers; L++) {
+        int r = ll[L].rank;
+        #define PERTURB_HIZOO(buf, count) do { \
+            size_t _n = (count); \
+            for (size_t _i = 0; _i < _n; _i++) { \
+                uint64_t _r = xo_next(); \
+                float z_i = (_r & 1) ? 1.0f : -1.0f; \
+                float s = scale; \
+                if (mask && !mask[idx + _i]) s = 0.0f; \
+                if (H) s /= sqrtf(H[idx + _i]); \
+                (buf)[_i] += s * z_i; \
+            } \
+            idx += _n; \
+        } while(0)
+        PERTURB_HIZOO(ll[L].Aq, (size_t)r * DIM);
+        PERTURB_HIZOO(ll[L].Bq, (size_t)Q_DIM * r);
+        PERTURB_HIZOO(ll[L].Ak, (size_t)r * DIM);
+        PERTURB_HIZOO(ll[L].Bk, (size_t)KV_DIM * r);
+        PERTURB_HIZOO(ll[L].Av, (size_t)r * DIM);
+        PERTURB_HIZOO(ll[L].Bv, (size_t)KV_DIM * r);
+        PERTURB_HIZOO(ll[L].Ao, (size_t)r * Q_DIM);
+        PERTURB_HIZOO(ll[L].Bo, (size_t)DIM * r);
+        PERTURB_HIZOO(lw[L].rms_att, DIM);
+        PERTURB_HIZOO(lw[L].rms_ffn, DIM);
+        #undef PERTURB_HIZOO
+    }
+    {
+        size_t _n = DIM;
+        for (size_t _i = 0; _i < _n; _i++) {
+            uint64_t _r = xo_next();
+            float z_i = (_r & 1) ? 1.0f : -1.0f;
+            float s = scale;
+            if (mask && !mask[idx + _i]) s = 0.0f;
+            if (H) s /= sqrtf(H[idx + _i]);
+            rms_final[_i] += s * z_i;
+        }
+        idx += _n;
+    }
+}
+
 // Merge LoRA adapters into effective weights: W_eff = W_base + B @ A
 static void lora_merge_all(LayerWeights *lw, LoRALayer *ll, int nlayers) {
     for (int L = 0; L < nlayers; L++) {
@@ -648,6 +763,9 @@ int main(int argc, char *argv[]) {
         float pgap_xi = 1.0f;    // P-GAP: alignment strength parameter
         float pgap_delta0 = 2.0f; // P-GAP: initial delta (decays linearly to 0)
         int probe_gradient = 0; // Diagnostic: probe gradient subspace and report SVD spectrum
+        float sparse_ratio = 0.0f;
+        float hessian_alpha = 0.0f;
+        int mask_refresh = 100;
         long init_seed = 42;
         int val_every = 500;
         const char *data_path = DEFAULT_DATA_PATH;
@@ -678,10 +796,19 @@ int main(int argc, char *argv[]) {
             else if (strcmp(argv[i], "--pgap-xi") == 0 && i+1 < argc) { pgap_xi = atof(argv[++i]); }
             else if (strcmp(argv[i], "--pgap-delta0") == 0 && i+1 < argc) { pgap_delta0 = atof(argv[++i]); }
             else if (strcmp(argv[i], "--probe-gradient") == 0 && i+1 < argc) { probe_gradient = atoi(argv[++i]); }
+            else if (strcmp(argv[i], "--sparse-ratio") == 0 && i+1 < argc) { sparse_ratio = atof(argv[++i]); }
+            else if (strcmp(argv[i], "--hessian-alpha") == 0 && i+1 < argc) { hessian_alpha = atof(argv[++i]); }
+            else if (strcmp(argv[i], "--mask-refresh") == 0 && i+1 < argc) { mask_refresh = atoi(argv[++i]); }
         }
 
         if (fzoo_K < 0) { fprintf(stderr, "ERROR: --fzoo K must be >= 1\n"); return 1; }
         if (fzoo_K > 0 && fzoo_K < 1) { fprintf(stderr, "ERROR: --fzoo K must be >= 1\n"); return 1; }
+        if (sparse_ratio < 0.0f || sparse_ratio >= 1.0f) {
+            fprintf(stderr, "ERROR: --sparse-ratio must be in [0, 1)\n"); return 1;
+        }
+        if (hessian_alpha < 0.0f) {
+            fprintf(stderr, "ERROR: --hessian-alpha must be >= 0\n"); return 1;
+        }
 
         // --conv-hybrid and --conv-fused require --lora-split (base weights frozen, baked at compile time)
         if (conv_hybrid && !lora_split) {
@@ -719,6 +846,8 @@ int main(int argc, char *argv[]) {
                cpu_only ? "CPU-only" : (conv_fused ? "ANE-conv-fused" : (conv_hybrid ? "ANE-conv-hybrid" : "ANE-matmul-only")));
         if (use_lora) printf("MeZO+LoRA: lr=%g epsilon=%g seed=%ld val_every=%d rank=%d\n", lr, epsilon, init_seed, val_every, lora_rank);
         else printf("MeZO: lr=%g epsilon=%g seed=%ld val_every=%d\n", lr, epsilon, init_seed, val_every);
+        if (sparse_ratio > 0) printf("  sparse_ratio=%.3f  mask_refresh=%d\n", sparse_ratio, mask_refresh);
+        if (hessian_alpha > 0) printf("  hessian_alpha=%.2e\n", hessian_alpha);
         if (fzoo_K > 0) printf("FZOO: K=%d directions (%d forward passes/step, adaptive step size)\n", fzoo_K, fzoo_K + 1);
         printf("Memory: ~%.0fMB (inference only, no gradients/optimizer)\n",
                (total_p * 4 + SEQ * DIM * 4 * 10) / 1e6);
@@ -816,6 +945,42 @@ int main(int argc, char *argv[]) {
                    (float)(lora_params + rms_params) / 1e3, total_p / 1e6);
             if (lora_split) printf("  Mode: adapter-as-input (zero restaging, CPU-side LoRA correction)\n");
             // FFN LoRA split uses same lora_tmp buffer (allocated later)
+        }
+
+        // === Sparse-HiZOO buffer allocation ===
+        bool use_hizoo = (sparse_ratio > 0.0f || hessian_alpha > 0.0f) && lora_split;
+        float *diag_hessian = NULL;
+        uint8_t *sparse_mask = NULL;
+        size_t hizoo_n_params = 0;
+        if (use_hizoo) {
+            hizoo_n_params = count_lora_params(lora_layers, NLAYERS);
+            // Print parameter magnitude stats before masking
+            {
+                double lora_sum = 0; size_t lora_cnt = 0;
+                double rms_sum = 0; size_t rms_cnt = 0;
+                for (int L = 0; L < NLAYERS; L++) {
+                    int r = lora_layers[L].rank;
+                    size_t la_params = (size_t)r * DIM * 3 + (size_t)Q_DIM * r
+                                     + (size_t)KV_DIM * r * 2 + (size_t)r * Q_DIM + (size_t)DIM * r;
+                    // Sum LoRA magnitudes (rough sample: just Aq)
+                    for (size_t j = 0; j < (size_t)r * DIM; j++) lora_sum += fabsf(lora_layers[L].Aq[j]);
+                    lora_cnt += (size_t)r * DIM;
+                    for (size_t j = 0; j < DIM; j++) rms_sum += fabsf(lw[L].rms_att[j]);
+                    for (size_t j = 0; j < DIM; j++) rms_sum += fabsf(lw[L].rms_ffn[j]);
+                    rms_cnt += DIM * 2;
+                    (void)la_params;
+                }
+                for (size_t j = 0; j < DIM; j++) rms_sum += fabsf(rms_final[j]);
+                rms_cnt += DIM;
+                printf("  [Sparse-HiZOO] total_params=%zu  LoRA_mean_mag=%.6f  RMS_mean_mag=%.6f\n",
+                       hizoo_n_params, lora_sum / fmax(1, lora_cnt), rms_sum / fmax(1, rms_cnt));
+            }
+            // Allocate diagonal Hessian (init to 1.0)
+            diag_hessian = (float *)safe_malloc(hizoo_n_params * sizeof(float));
+            for (size_t i = 0; i < hizoo_n_params; i++) diag_hessian[i] = 1.0f;
+            // Allocate and compute sparse mask
+            sparse_mask = (uint8_t *)safe_malloc(hizoo_n_params * sizeof(uint8_t));
+            compute_sparse_mask(lora_layers, lw, rms_final, NLAYERS, sparse_mask, sparse_ratio, hizoo_n_params);
         }
 
         // === mmap token data ===
@@ -1777,10 +1942,21 @@ int main(int argc, char *argv[]) {
             } else {
                 // ===== Standard MeZO: Central-difference gradient estimation =====
                 // Also handles P-GAP collection steps (unprojected, stores gradient for basis)
+                // When use_hizoo is true, uses perturb_lora_hizoo (1-bit PRNG + sparse mask + Hessian)
+
+                // 0. L0 forward pass (HiZOO only: needed for curvature estimate)
+                float loss_0 = 0.0f;
+                if (hessian_alpha > 0.0f) {
+                    t0 = mach_absolute_time();
+                    DO_FORWARD_PASS(input_tokens, ctargets, loss_0);
+                    t_fwd += tb_ms(mach_absolute_time() - t0);
+                }
 
                 // 1. Perturb +epsilon
                 t0 = mach_absolute_time();
-                if (use_lora) {
+                if (use_hizoo) {
+                    perturb_lora_hizoo(lora_layers, lw, rms_final, NLAYERS, mezo_seed, +epsilon, sparse_mask, diag_hessian);
+                } else if (use_lora) {
                     perturb_lora_weights(lora_layers, lw, rms_final, NLAYERS, mezo_seed, +epsilon);
                     if (!lora_split) lora_merge_all(lw, lora_layers, NLAYERS);
                 } else {
@@ -1804,7 +1980,9 @@ int main(int argc, char *argv[]) {
 
                 // 3. Perturb -2*epsilon (to theta - epsilon*z)
                 t0 = mach_absolute_time();
-                if (use_lora) {
+                if (use_hizoo) {
+                    perturb_lora_hizoo(lora_layers, lw, rms_final, NLAYERS, mezo_seed, -2.0f * epsilon, sparse_mask, diag_hessian);
+                } else if (use_lora) {
                     perturb_lora_weights(lora_layers, lw, rms_final, NLAYERS, mezo_seed, -2.0f * epsilon);
                     if (!lora_split) lora_merge_all(lw, lora_layers, NLAYERS);
                 } else {
@@ -1828,19 +2006,31 @@ int main(int argc, char *argv[]) {
 
                 // 5. Restore to original theta
                 t0 = mach_absolute_time();
-                if (use_lora) {
+                if (use_hizoo) {
+                    perturb_lora_hizoo(lora_layers, lw, rms_final, NLAYERS, mezo_seed, +epsilon, sparse_mask, diag_hessian);
+                } else if (use_lora) {
                     perturb_lora_weights(lora_layers, lw, rms_final, NLAYERS, mezo_seed, +epsilon);
                 } else {
                     perturb_all_weights(lw, embed, rms_final, mezo_seed, +epsilon);
                 }
                 t_perturb += tb_ms(mach_absolute_time() - t0);
 
-                // 6. Gradient estimate + update
+                // 6. Gradient estimate + Hessian update + update step
                 proj_grad = (loss_plus - loss_minus) / (2.0f * epsilon);
+
+                // Hessian EMA update (before weight update)
+                if (hessian_alpha > 0.0f && diag_hessian) {
+                    update_hessian(diag_hessian, hizoo_n_params, loss_plus, loss_minus, loss_0, epsilon, hessian_alpha);
+                    if (step % 100 == 0 || step <= start_step + 10)
+                        print_hessian_stats(diag_hessian, hizoo_n_params, step);
+                }
+
                 float update_scale = -lr * proj_grad;
 
                 t0 = mach_absolute_time();
-                if (use_lora) {
+                if (use_hizoo) {
+                    perturb_lora_hizoo(lora_layers, lw, rms_final, NLAYERS, mezo_seed, update_scale, sparse_mask, diag_hessian);
+                } else if (use_lora) {
                     perturb_lora_weights(lora_layers, lw, rms_final, NLAYERS, mezo_seed, update_scale);
                     if (!lora_split) lora_merge_all(lw, lora_layers, NLAYERS);
                 } else {
@@ -1850,6 +2040,10 @@ int main(int argc, char *argv[]) {
 
                 // Re-build compact embedding after weight update
                 if (!lora_split) { free(cembed); cembed = vocab_compact_embed(embed, &vm, DIM); }
+
+                // Sparse mask refresh
+                if (sparse_ratio > 0.0f && sparse_mask && step > start_step && (step % mask_refresh) == 0)
+                    compute_sparse_mask(lora_layers, lw, rms_final, NLAYERS, sparse_mask, sparse_ratio, hizoo_n_params);
 
                 // Faithful P-GAP probe phase: every pgap_k steps, run h probes
                 // to estimate gradient and build per-matrix SVD bases.
@@ -1969,10 +2163,13 @@ int main(int argc, char *argv[]) {
                 if (step % 100 == 0 || step == start_step) {
                     bool is_pgap_collect = (pgap_r > 0 && (step % pgap_k) < pgap_r);
                     printf("step %d  %sloss_plus=%.4f  loss_minus=%.4f  proj_grad=%.6f  lr=%.2e  "
-                           "step_ms=%.0f (fwd=%.0f perturb=%.0f transpose=%.0f)\n",
+                           "step_ms=%.0f (fwd=%.0f perturb=%.0f transpose=%.0f)",
                            step, is_pgap_collect ? "[P-GAP collect] " : "",
                            loss_plus, loss_minus, proj_grad, lr,
                            step_ms, t_fwd, t_perturb, t_transpose);
+                    if (hessian_alpha > 0.0f)
+                        printf("  L0=%.4f dL=%.4e", loss_0, loss_plus + loss_minus - 2.0f * loss_0);
+                    printf("\n");
                 }
             }
 
@@ -2028,6 +2225,8 @@ int main(int argc, char *argv[]) {
         if (use_lora) printf("lora_rank:        %d\n", lora_rank);
         if (fzoo_K > 0) printf("fzoo_K:           %d\n", fzoo_K);
         if (pgap_r > 0) printf("pgap_r:           %d\npgap_k:           %d\npgap_h:           %d\npgap_xi:          %g\npgap_delta0:      %g\n", pgap_r, pgap_k, pgap_h, pgap_xi, pgap_delta0);
+        if (sparse_ratio > 0) printf("sparse_ratio:     %g\nmask_refresh:     %d\n", sparse_ratio, mask_refresh);
+        if (hessian_alpha > 0) printf("hessian_alpha:    %g\n", hessian_alpha);
 
         // Cleanup
         if (pgap_bases) {
@@ -2036,6 +2235,8 @@ int main(int argc, char *argv[]) {
         }
         if (pgap_z_rms) free(pgap_z_rms);
         if (pgap_z_flat) free(pgap_z_flat);
+        if (diag_hessian) free(diag_hessian);
+        if (sparse_mask) free(sparse_mask);
         if (lora_tmp) free(lora_tmp);
         if (use_lora) {
             for (int L = 0; L < NLAYERS; L++) lora_layer_free(&lora_layers[L]);
