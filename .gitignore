@@ -7,6 +7,8 @@ training/bench_cpu_matmul
 training/test_aneclient
 training/train_mezo
 training/benchmark_transpose
+training/test_conv_num
+training/bench_conv_vs_matmul
 bridge/libane_bridge.dylib
 results/validate_cancel
 results/validate_grad
