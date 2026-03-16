@@ -2,7 +2,7 @@
 
 **Purpose**: Every assumption in this project must be explicitly stated, tracked, and verified. No implicit assumptions allowed. See [TECHNICAL_REPORT.md](TECHNICAL_REPORT.md) Section 12 for summary.
 
-**Last updated**: 2026-03-12 | **Totals**: 26 verified, 1 qualified, 8 disproved, 13 unverified/resolved, 23 new from upstream
+**Last updated**: 2026-03-16 | **Totals**: 28 verified, 1 qualified, 8 disproved, 13 unverified/resolved, 31 from upstream (UP24-UP31 added)
 
 ---
 
@@ -96,6 +96,14 @@
 | UP21 | MobiEdit: Quantized forward-only gradient estimation for NPUs | ICLR 2026. 7.1x memory, 3.4x latency, 15.8x energy reduction vs standard fine-tuning. W8A16 with 80% edit success. | Complementary to UP14 (MeZO). More practical for NPU hardware like ANE. | HIGH (research) |
 | UP22 | Mega-kernel layer fusion gives 3-4x forward speedup | maderix/ANE Issue #24. Fusing 6 transformer layers into single ANE eval: 4.17x forward speedup at stories15M. | Aligns with P2 priority. Requires const() weights. Trade-off: recompilation per weight update. | HIGH |
 | UP23 | karpathy/llm.c PR #840: Apple Accelerate BLAS = 2.6x CPU e2e speedup | Replaces hand-rolled matmul with `cblas_sgemm`. Links Apple Accelerate framework. Karpathy Discussion #253 greenlit BLAS/SIMD. | We already use cblas_sgemm extensively. Validates our vectorization approach. | CONFIRMED |
+| UP24 | Apple MeBP: memory-efficient backprop converges 10-100x faster than MeZO | arXiv:2510.03425 (Apple, Oct 2025). Gradient checkpointing + lazy weight decompression. Qwen2.5/Gemma3 0.5B-4B on iPhone 15 Pro Max in <1GB. | **See docs/2026-03-16-mebp-cross-reference.md**: 10-100x claim likely for full-param ZO, not LoRA ZO. MeBP per-step is 1.5-2x slower. MeBP runs on CPU/GPU only (not ANE). Our ANE MeZO may still be faster in total wall-clock. | HIGH (needs direct test) |
+| UP25 | MeBP cannot leverage ANE for backward passes | ANE has no gradient primitive. All backprop must run on CPU/GPU. Confirmed by Orion, maderix, our E36. | **VERIFIED**: This is a structural hardware limitation. Makes MeZO the only ZO-class method that benefits from ANE. | VERIFIED |
+| UP26 | MeBP+ANE forward hybrid could combine convergence + speed | Theoretical: ANE forward (262ms/32L) + CPU backward (checkpointed). Would need gradient checkpointing with ANE forward recomputation. | UNVERIFIED. Key question: does CPU backward bottleneck negate ANE forward advantage? Need experiment (P16). | HIGH (research) |
+| UP27 | MeBP uses LoRA rank-16 (vs our rank-8) | Paper Table 1: "LoRA rank 16" explicitly. Higher rank = more trainable params = better convergence but more compute. | Our rank-8 has 1.7M params; rank-16 would have ~3.4M. Need to test if rank-16 improves our MeZO convergence enough to close the gap. | MEDIUM |
+| UP28 | MeBP lazy weight decompression adds 32-42% forward overhead | Paper Table 2. Compressed weights (4-bit) must be decompressed to fp16 before compute. | This overhead would NOT apply on ANE — weights are already fp16 BLOBFILE constants. ANE MeBP hybrid would avoid this cost entirely. | VERIFIED |
+| UP29 | Core AI framework replacing CoreML (WWDC 2026, June) | 9to5Mac, AppleInsider (March 2026). Modernized ML framework for iOS 27. | If Core AI exposes official ANE training APIs, fundamentally changes landscape. If inference-only, AutoANE remains only training path. Monitor closely. | HIGH (strategic) |
+| UP30 | MobileFineTuner: C++ on-device fine-tuning framework | arXiv:2512.08211 (Dec 2025). Full fine-tuning + LoRA on GPT-2, Gemma3, Qwen2.5. ~16GB/1B params FP16. Parameter sharding + energy-aware scheduling. | Runs on CPU. Does not use NPU. Complementary: could provide CPU backward pass implementation for hybrid approach. | INFORMATIONAL |
+| UP31 | Huawei Ascend is only vendor with official NPU training support | CANN framework + PyTorch/MindSpore. torchtune integration (2025). Ascend 910B+ supports distributed training. | Validates that NPU training is fundamentally possible. Our private-API approach is analogous but on different hardware. | INFORMATIONAL |
 
 ## Category: DISPROVED (tested and found wrong)
 

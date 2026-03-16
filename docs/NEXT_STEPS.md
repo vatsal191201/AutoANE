@@ -298,3 +298,89 @@ This was previously identified as "likely highest ROI" but is now confirmed impo
 | 2026-03-12 | 66.7MB dead allocations removed | `acembed` AdamState (66MB) and `gate_buf` (720KB) allocated but never used. |
 | 2026-03-12 | UP19 experimentally confirmed at lower magnitude | ACCUM_STEPS throughput: CPU 3.0x at accum=50, ANE 2.2x at accum=100. Upstream claims 4.74x — likely model-size/architecture dependent. |
 | 2026-03-12 | Verification agents require cross-checking | 3 false positives caught from 6 parallel agents: missed RMSNorm bug, false memory leak claim, wrong integer overflow analysis. Agent outputs must be manually verified. |
+| 2026-03-16 | Sparse MeZO and HiZOO both negative for LoRA ZO (Phase 5) | Per-parameter scaling, magnitude-based masking, amplitude-reducing methods all counterproductive for LoRA ZO's 1.7M-param low-rank subspace. |
+| 2026-03-16 | Apple MeBP paper does NOT invalidate our MeZO approach | MeBP runs CPU/GPU only (no ANE). "10-100x convergence" claim is for full-param ZO, not LoRA ZO. See docs/2026-03-16-mebp-cross-reference.md. |
+| 2026-03-16 | MeBP+ANE hybrid is the most promising unexplored direction (P16) | ANE forward (fast) + CPU backward (checkpointed) combines convergence quality + hardware speed. |
+| 2026-03-16 | CoreML stateful models hang at dim>=384 during ct.convert() | Tested in AutoANE/tests/. StateTensorSpec + matmul works at dim<=256 but serialization hangs for larger dims. Not viable for production-scale models via CoreML. |
+| 2026-03-16 | NPU training landscape: only Apple ANE and Huawei Ascend have training | All other NPUs (Qualcomm Hexagon, Google Edge TPU, Samsung Exynos, MediaTek APU) are inference-only. Huawei Ascend is the only official vendor-supported NPU training. |
+
+---
+
+## New Research Priorities (2026-03-16)
+
+### P11: Cross-Layer Fusion [HIGH IMPACT]
+
+**What**: Fuse across multiple transformer layers into fewer ANE dispatches. Currently at 96 IO round-trips (3 kernels/layer x 32 layers). Target: 12-16 dispatches (8-layer chunks).
+
+**Why**: Each ANE dispatch has ~160us XPC overhead. 96 dispatches = 15ms overhead. Fusing to 12 dispatches saves ~13ms/step (5% of 262ms).
+
+**Constraint**: LoRA corrections between layers prevent full fusion. Must apply LoRA A/B corrections between fused chunks.
+
+**Estimated effort**: 3-5 days.
+
+### P12: Larger Model Scaling [HIGH IMPACT]
+
+**What**: Test MeZO+LoRA-split+conv-fused on models larger than SmolLM2-360M (e.g., 1B, 3B).
+
+**Why**: Conv1x1 advantage increases with wider dimensions (conv is 2x+ faster than matmul at DIM>=960). Larger models should see even greater ANE speedup.
+
+**Risk**: Memory. 360M requires ~1.5GB. 1B would need ~4GB. 3B would need ~12GB (exceeds M2 Pro 16GB).
+
+**Estimated effort**: 2-3 days.
+
+### P13: INT8 Quantized LoRA [MEDIUM IMPACT]
+
+**What**: Quantize LoRA A/B matrices to INT8 for ANE compute, leveraging ANE's 1.88x INT8 throughput (35 TOPS vs 18.6 TFLOPS FP16).
+
+**Why**: MeZO perturbation noise dominates LoRA precision. INT8 may be sufficient for the perturbation direction.
+
+**Risk**: Rank-8 matrices are very small (8 columns). Quantization may lose critical information.
+
+**Estimated effort**: 2-3 days.
+
+### P14: Mobile Deployment (iOS/iPad) [MEDIUM IMPACT]
+
+**What**: Port MeZO+LoRA-split to iOS for on-device training on iPhone/iPad.
+
+**Why**: ANE may be the only thermally viable compute unit for sustained mobile training. CPU throttles faster.
+
+**Estimated effort**: 1 week (Swift port + iOS app scaffold).
+
+### P15: Variance Reduction ZO [RESEARCH]
+
+**What**: Control variates, antithetic sampling, or other variance reduction techniques that don't reduce perturbation amplitude.
+
+**Why**: Phase 5 ruled out amplitude-reducing methods (Sparse, HiZOO). Variance reduction is the only remaining direction for improving ZO gradient quality.
+
+**Estimated effort**: Research-stage, 1-2 weeks.
+
+### P16: MeBP+ANE Forward Hybrid [HIGH IMPACT — NEW]
+
+**What**: Implement gradient-checkpointed backprop where forward passes (including checkpoint recomputation) run on ANE, and backward matmuls run on CPU via Accelerate BLAS.
+
+**Why**: Combines MeBP's convergence advantage (first-order gradients, 10x fewer steps) with ANE's forward speed (262ms for 32-layer forward). MeBP's lazy weight decompression overhead (32-42%) doesn't apply on ANE (weights already fp16).
+
+**Algorithm**:
+1. Forward pass on ANE (conv-fused kernels, 262ms)
+2. For each layer backward (on CPU):
+   a. Recompute forward activations via ANE (per-layer, ~8ms)
+   b. Compute dx, dW via CPU Accelerate BLAS
+3. LoRA weight update via Adam on CPU
+
+**Estimated wall-clock**: ~262ms forward + 32 * (8ms ANE recompute + 10ms CPU backward) = ~838ms/step. If MeBP needs 60 steps (10x fewer than MeZO's 600), total = 50s vs 157s for MeZO.
+
+**Risk**: Checkpoint recomputation on ANE requires per-layer model compilation (one-time cost). CPU backward may bottleneck if Accelerate BLAS is slower than expected for backward matmuls.
+
+**Estimated effort**: 3-5 days engineering.
+
+### Updated Priority Ranking (2026-03-16)
+
+| Rank | ID | Direction | Expected Impact | Status |
+|------|-----|-----------|----------------|--------|
+| 1 | **P16** | **MeBP+ANE hybrid** | **Convergence + speed** | NEW |
+| 2 | P11 | Cross-layer fusion | Further reduce IO overhead | Open |
+| 3 | P12 | Larger model scaling | Test speedup scaling | Open |
+| 4 | P13 | INT8 quantized LoRA | Leverage ANE INT8 | Open |
+| 5 | P15 | Variance reduction ZO | Better ZO gradients | Research |
+| 6 | P5 | Larger dataset | Generalization test | Open |
+| 7 | P14 | Mobile deployment | iOS/iPad training | Open |
