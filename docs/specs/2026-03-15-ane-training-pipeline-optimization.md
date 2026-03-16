@@ -127,29 +127,32 @@ For each step:
 
 **Go/no-go gate**: Must show measurable convergence improvement at 500 steps.
 
-## Combined Projection
+## Measured Results
 
-| Phase | Speed Factor | Convergence Factor | Evidence |
-|-------|-------------|-------------------|----------|
-| 1: Conv1x1 | ~1.0-1.2x | 1.0x | bench_conv measured |
-| 2: Fusion | ~1.2-1.4x cumulative | 1.0x | IO analysis derived |
-| 3: FZOO K=4 | ~0.4x (2.5x more passes) | ~3x fewer steps | FZOO paper |
-| 4: P-GAP | 1.0x | ~3-5x fewer steps | P-GAP paper |
-| **Combined** | ~0.5-0.6x speed per step | ~9-15x convergence | **~5-8x effective** |
+| Phase | Speed (ms/step) | vs CPU | Convergence | Status |
+|-------|----------------|--------|-------------|--------|
+| Baseline (CPU) | 452.5 | 1.00x | reference | - |
+| 1: Conv1x1 hybrid | 403-429 | 1.05-1.12x | 1.0x | ✅ Done |
+| 2: Fused conv kernels | 254 | 1.78x | 1.0x | ✅ Done |
+| 3: FZOO K=4 | 2.5x slower/step | no wall-time benefit | ✅ Done |
+| 4: P-GAP r=4 | same speed | 0.35x (degrades) | ❌ Negative |
+| 4: P-GAP r=8 | same speed | 0.67x (degrades) | ❌ Negative |
 
-Note: Phase 3 trades speed-per-step for convergence. Combined with Phase 1+2 speed improvements, net throughput improves.
+**Best configuration: Phase 2 (conv-fused) at 254ms/step = 1.78x faster than CPU.**
 
-## Assumptions
+Phase 3 (FZOO) provides better gradient quality but costs 2.5x more forward passes, netting zero wall-time convergence improvement. Phase 4 (P-GAP) actively degrades convergence because projected perturbation captures ~r/d of gradient energy (see docs/specs/2026-03-16-phase4-pgap-research-log.md).
 
-| # | Assumption | Basis | Risk |
-|---|-----------|-------|------|
-| A1 | Conv BLOBFILE reduces IO overhead via smaller surfaces | Smaller surfaces = less write time | Medium |
-| A2 | FFN fusion kernel compiles within ANE limits | Existing gen_ffn_fused works | Low |
-| A3 | QKV combined conv kernel compiles | 3 conv ops + concat | Medium |
-| A4 | One-sided Rademacher has O(ε²) bias | ZOSA paper, verified | Low |
-| A5 | FZOO's sigma-normalized update helps convergence | FZOO paper, normalized-SGD theory | Low |
-| A6 | P-GAP transfers to LoRA fine-tuning | Tested on full-param; LoRA subspace may differ | High |
-| A7 | Conv1x1 requires LoRA-split (frozen base) | BLOBFILE constants can't change | None (hard constraint) |
+## Assumptions — Final Status
+
+| # | Assumption | Risk | Outcome |
+|---|-----------|------|---------|
+| A1 | Conv BLOBFILE reduces IO overhead | Medium | ✅ Confirmed (4.8x surface reduction) |
+| A2 | FFN fusion kernel compiles | Low | ✅ Confirmed |
+| A3 | QKV combined conv kernel compiles | Medium | ✅ Confirmed |
+| A4 | One-sided Rademacher has O(ε²) bias | Low | ✅ Confirmed (literature) |
+| A5 | FZOO sigma-normalized update helps | Low | ⚠️ Helps gradient quality, not wall-time |
+| A6 | P-GAP transfers to LoRA fine-tuning | High | ❌ Disproven (SNR << 1, random basis) |
+| A7 | Conv1x1 requires LoRA-split | None | ✅ Hard constraint, satisfied |
 
 ## Literature References
 
