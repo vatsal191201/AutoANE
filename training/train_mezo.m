@@ -7,6 +7,7 @@
 #include "mil_dynamic.h"
 #include "cpu_ops.h"
 #include "backprop_lora.h"
+#include "ff_lora.h"
 #include <math.h>
 
 // Dynamic kernel set per layer (forward-only subset for MeZO)
@@ -796,6 +797,8 @@ int main(int argc, char *argv[]) {
         bool conv_hybrid = false; // conv1x1 for Wq,Wo,W1,W2,W3; matmul for Wk,Wv
         bool conv_fused = false;  // fused QKV + fused FFN conv1x1 kernels (Phase 2)
         bool backprop_lora = false;  // P16: ANE conv-fused forward + CPU backward + LoRA gradients
+        bool ff_lora = false;       // FF-LoRA: Forward-Forward + LoRA (no backward pass)
+        float ff_corrupt = 0.3f;    // FF-LoRA: token corruption rate for negative data
         bool lr_from_cli = false;
         bool use_lora = false;
         bool lora_split = false;  // adapter-as-input: no merge, no restage
@@ -835,6 +838,8 @@ int main(int argc, char *argv[]) {
             else if (strcmp(argv[i], "--conv-hybrid") == 0) conv_hybrid = true;
             else if (strcmp(argv[i], "--conv-fused") == 0) conv_fused = true;
             else if (strcmp(argv[i], "--backprop-lora") == 0) backprop_lora = true;
+            else if (strcmp(argv[i], "--ff-lora") == 0) ff_lora = true;
+            else if (strcmp(argv[i], "--ff-corrupt") == 0 && i+1 < argc) ff_corrupt = atof(argv[++i]);
             else if (strcmp(argv[i], "--fzoo") == 0 && i+1 < argc) { fzoo_K = atoi(argv[++i]); }
             else if (strcmp(argv[i], "--pgap") == 0 && i+1 < argc) { pgap_r = atoi(argv[++i]); }
             else if (strcmp(argv[i], "--pgap-k") == 0 && i+1 < argc) { pgap_k = atoi(argv[++i]); }
@@ -879,6 +884,20 @@ int main(int argc, char *argv[]) {
             if (!conv_fused && !cpu_only) { conv_fused = true; conv_hybrid = true; }
         }
 
+        // --ff-lora requires --lora-split (implies it); validates corruption rate
+        if (ff_lora) {
+            if (!lora_split) { use_lora = true; lora_split = true; }
+            if (!conv_fused && !cpu_only) { conv_fused = true; conv_hybrid = true; }
+            if (ff_corrupt < 0.01f || ff_corrupt > 0.95f) {
+                fprintf(stderr, "ERROR: --ff-corrupt must be in [0.01, 0.95] (got %g)\n", ff_corrupt);
+                return 1;
+            }
+            if (backprop_lora) {
+                fprintf(stderr, "ERROR: --ff-lora and --backprop-lora are mutually exclusive\n");
+                return 1;
+            }
+        }
+
         if (conv_hybrid) { ane_matmul_only = true; cpu_only = false; }  // conv-hybrid implies ANE mode
         if (!cpu_only && !ane_matmul_only) cpu_only = true;  // Default to CPU-only
         if (!cpu_only) {
@@ -895,9 +914,14 @@ int main(int argc, char *argv[]) {
                DIM, Q_DIM, KV_DIM, HD, HIDDEN, SEQ, VOCAB);
         double total_p = (double)NLAYERS * LAYER_PARAMS + DIM + (double)VOCAB * DIM;
         const char *mode_str = cpu_only ? "CPU-only" : (conv_fused ? "ANE-conv-fused" : (conv_hybrid ? "ANE-conv-hybrid" : "ANE-matmul-only"));
-        printf("Params: %.1fM | Mode: %s%s\n", total_p / 1e6, mode_str,
-               backprop_lora ? " + BACKPROP-LORA (P16 hybrid)" : "");
-        if (backprop_lora) {
+        printf("Params: %.1fM | Mode: %s%s%s\n", total_p / 1e6, mode_str,
+               backprop_lora ? " + BACKPROP-LORA (P16 hybrid)" : "",
+               ff_lora ? " + FF-LORA (Forward-Forward)" : "");
+        if (ff_lora) {
+            printf("FF-LoRA: Forward-Forward + LoRA (no backward pass)\n");
+            printf("  lr=%g corrupt_rate=%g seed=%ld val_every=%d rank=%d\n",
+                   lr, ff_corrupt, init_seed, val_every, lora_rank);
+        } else if (backprop_lora) {
             printf("P16 Hybrid: ANE conv-fused forward + CPU fp32 backward + LoRA gradients\n");
             printf("  lr=%g seed=%ld val_every=%d rank=%d\n", lr, init_seed, val_every, lora_rank);
         } else if (use_lora) {
@@ -1026,6 +1050,32 @@ int main(int argc, char *argv[]) {
             grms_final = (float*)safe_calloc(DIM, 4);
             la_rms_final = adam_alloc(DIM);
             printf("P16: Allocated LoRA gradient + Adam state for backprop mode\n");
+        }
+
+        // === FF-LoRA: allocate per-layer FF state + LoRA grads + Adam state ===
+        FFLayerState ff_states[NLAYERS];
+        LoRAGrads ff_lora_grads[NLAYERS];
+        LoRAAdam ff_lora_adam[NLAYERS];
+        int ff_adam_t = 0;
+        bool ff_thresholds_calibrated = false;
+        if (ff_lora && use_lora) {
+            for (int L = 0; L < NLAYERS; L++) {
+                ff_states[L] = ff_layer_alloc(lora_rank);
+                ff_lora_grads[L] = lora_grads_alloc(lora_rank);
+                ff_lora_adam[L] = lora_adam_alloc(lora_rank);
+            }
+            ff_init_thresholds(ff_states, NLAYERS);
+            size_t ff_state_mem = (size_t)NLAYERS * (
+                2 * (size_t)lora_rank * SEQ * 4 * 4  // z_pos/z_neg for q,k,v,o
+                + 2 * (size_t)Q_DIM * SEQ * 4        // y_pos/y_neg for q
+                + 2 * (size_t)KV_DIM * SEQ * 4 * 2   // y_pos/y_neg for k,v
+                + 2 * (size_t)DIM * SEQ * 4           // y_pos/y_neg for o
+                + 2 * (size_t)DIM * SEQ * 4           // xnorm_pos/xnorm_neg (shared qkv)
+                + 2 * (size_t)Q_DIM * SEQ * 4         // xnorm_pos/xnorm_neg for o
+            );
+            printf("FF-LoRA: Allocated per-layer FF state (%.1f MB) + LoRA grad/Adam\n",
+                   ff_state_mem / 1e6);
+            printf("  Corruption rate: %.2f, threshold lr scale: 0.1x\n", ff_corrupt);
         }
 
         // === Sparse-HiZOO buffer allocation ===
