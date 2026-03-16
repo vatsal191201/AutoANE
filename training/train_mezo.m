@@ -794,6 +794,7 @@ int main(int argc, char *argv[]) {
         bool from_scratch = false, cpu_only = false, ane_matmul_only = false;
         bool conv_hybrid = false; // conv1x1 for Wq,Wo,W1,W2,W3; matmul for Wk,Wv
         bool conv_fused = false;  // fused QKV + fused FFN conv1x1 kernels (Phase 2)
+        bool backprop_lora = false;  // P16: ANE conv-fused forward + CPU backward + LoRA gradients
         bool lr_from_cli = false;
         bool use_lora = false;
         bool lora_split = false;  // adapter-as-input: no merge, no restage
@@ -832,6 +833,7 @@ int main(int argc, char *argv[]) {
             else if (strcmp(argv[i], "--lora-ffn") == 0) { lora_ffn = true; if (!use_lora) { use_lora = true; lora_split = true; } }
             else if (strcmp(argv[i], "--conv-hybrid") == 0) conv_hybrid = true;
             else if (strcmp(argv[i], "--conv-fused") == 0) conv_fused = true;
+            else if (strcmp(argv[i], "--backprop-lora") == 0) backprop_lora = true;
             else if (strcmp(argv[i], "--fzoo") == 0 && i+1 < argc) { fzoo_K = atoi(argv[++i]); }
             else if (strcmp(argv[i], "--pgap") == 0 && i+1 < argc) { pgap_r = atoi(argv[++i]); }
             else if (strcmp(argv[i], "--pgap-k") == 0 && i+1 < argc) { pgap_k = atoi(argv[++i]); }
@@ -870,6 +872,12 @@ int main(int argc, char *argv[]) {
         // --conv-fused implies conv-hybrid (superset)
         if (conv_fused) conv_hybrid = true;
 
+        // --backprop-lora requires --lora-split and implies --conv-fused for ANE forward
+        if (backprop_lora) {
+            if (!lora_split) { use_lora = true; lora_split = true; }
+            if (!conv_fused && !cpu_only) { conv_fused = true; conv_hybrid = true; }
+        }
+
         if (conv_hybrid) { ane_matmul_only = true; cpu_only = false; }  // conv-hybrid implies ANE mode
         if (!cpu_only && !ane_matmul_only) cpu_only = true;  // Default to CPU-only
         if (!cpu_only) {
@@ -885,10 +893,17 @@ int main(int argc, char *argv[]) {
         printf("dim=%d q_dim=%d kv_dim=%d hd=%d hidden=%d seq=%d vocab=%d\n",
                DIM, Q_DIM, KV_DIM, HD, HIDDEN, SEQ, VOCAB);
         double total_p = (double)NLAYERS * LAYER_PARAMS + DIM + (double)VOCAB * DIM;
-        printf("Params: %.1fM | Mode: %s\n", total_p / 1e6,
-               cpu_only ? "CPU-only" : (conv_fused ? "ANE-conv-fused" : (conv_hybrid ? "ANE-conv-hybrid" : "ANE-matmul-only")));
-        if (use_lora) printf("MeZO+LoRA: lr=%g epsilon=%g seed=%ld val_every=%d rank=%d\n", lr, epsilon, init_seed, val_every, lora_rank);
-        else printf("MeZO: lr=%g epsilon=%g seed=%ld val_every=%d\n", lr, epsilon, init_seed, val_every);
+        const char *mode_str = cpu_only ? "CPU-only" : (conv_fused ? "ANE-conv-fused" : (conv_hybrid ? "ANE-conv-hybrid" : "ANE-matmul-only"));
+        printf("Params: %.1fM | Mode: %s%s\n", total_p / 1e6, mode_str,
+               backprop_lora ? " + BACKPROP-LORA (P16 hybrid)" : "");
+        if (backprop_lora) {
+            printf("P16 Hybrid: ANE conv-fused forward + CPU fp32 backward + LoRA gradients\n");
+            printf("  lr=%g seed=%ld val_every=%d rank=%d\n", lr, init_seed, val_every, lora_rank);
+        } else if (use_lora) {
+            printf("MeZO+LoRA: lr=%g epsilon=%g seed=%ld val_every=%d rank=%d\n", lr, epsilon, init_seed, val_every, lora_rank);
+        } else {
+            printf("MeZO: lr=%g epsilon=%g seed=%ld val_every=%d\n", lr, epsilon, init_seed, val_every);
+        }
         if (sparse_ratio > 0) printf("  sparse_ratio=%.3f  mask_refresh=%d\n", sparse_ratio, mask_refresh);
         if (hessian_alpha > 0) printf("  hessian_alpha=%.2e\n", hessian_alpha);
         if (fzoo_K > 0) printf("FZOO: K=%d directions (%d forward passes/step, adaptive step size)\n", fzoo_K, fzoo_K + 1);
@@ -988,6 +1003,28 @@ int main(int argc, char *argv[]) {
                    (float)(lora_params + rms_params) / 1e3, total_p / 1e6);
             if (lora_split) printf("  Mode: adapter-as-input (zero restaging, CPU-side LoRA correction)\n");
             // FFN LoRA split uses same lora_tmp buffer (allocated later)
+        }
+
+        // === P16 backprop-lora: allocate LoRA gradients + Adam state ===
+        LoRAGrads lora_grads_arr[NLAYERS];
+        LoRAAdam lora_adam_arr[NLAYERS];
+        float *grms_att[NLAYERS], *grms_ffn[NLAYERS];
+        float *grms_final = NULL;
+        AdamState la_rms_att[NLAYERS], la_rms_ffn[NLAYERS];
+        AdamState la_rms_final = {0};
+        int adam_t_bp = 0;
+        if (backprop_lora && use_lora) {
+            for (int L = 0; L < NLAYERS; L++) {
+                lora_grads_arr[L] = lora_grads_alloc(lora_rank);
+                lora_adam_arr[L] = lora_adam_alloc(lora_rank);
+                grms_att[L] = (float*)safe_calloc(DIM, 4);
+                grms_ffn[L] = (float*)safe_calloc(DIM, 4);
+                la_rms_att[L] = adam_alloc(DIM);
+                la_rms_ffn[L] = adam_alloc(DIM);
+            }
+            grms_final = (float*)safe_calloc(DIM, 4);
+            la_rms_final = adam_alloc(DIM);
+            printf("P16: Allocated LoRA gradient + Adam state for backprop mode\n");
         }
 
         // === Sparse-HiZOO buffer allocation ===
@@ -1765,7 +1802,34 @@ int main(int argc, char *argv[]) {
             float loss_plus = 0, loss_minus = 0, proj_grad = 0;
             uint64_t t0;
 
-            if (fzoo_K > 0) {
+            if (backprop_lora) {
+                // ===== P16 HYBRID: ANE conv-fused forward + CPU fp32 backward =====
+                // Uses DO_FORWARD_PASS for forward, then CPU backward for gradients.
+                // Only LoRA A/B + RMS norms are updated (base weights frozen).
+                double t_bp_fwd = 0, t_bp_bwd = 0, t_bp_opt = 0;
+
+                // Forward pass (reuses existing DO_FORWARD_PASS macro)
+                t0 = mach_absolute_time();
+                DO_FORWARD_PASS(input_tokens, ctargets, loss_plus);
+                t_bp_fwd = tb_ms(mach_absolute_time() - t0);
+
+                // TODO: Full P16 backward pass implementation
+                // For now, this is a placeholder that logs timing.
+                // The full backward requires activation saves during forward,
+                // which needs modifications to DO_FORWARD_PASS.
+                // See docs/specs/2026-03-16-p16-implementation-plan.md
+
+                double step_ms = tb_ms(mach_absolute_time() - t_step);
+                if (step % 10 == 0 || step == start_step) {
+                    printf("step %d  loss=%.4f  lr=%.2e  %.1fms/step (fwd=%.0f) [P16-fwd-only]\n",
+                           step, loss_plus, lr, step_ms, t_bp_fwd);
+                }
+
+                // LR schedule: cosine decay
+                float progress = (float)(step - start_step) / (float)(total_steps - start_step);
+                lr = base_lr * 0.5f * (1.0f + cosf(3.14159f * progress));
+
+            } else if (fzoo_K > 0) {
                 // ===== FZOO: Multi-perturbation one-sided gradient estimation =====
                 // Step 1: Unperturbed forward pass -> loss_0
                 t0 = mach_absolute_time();
