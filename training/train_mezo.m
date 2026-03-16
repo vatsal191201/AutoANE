@@ -8,6 +8,7 @@
 #include "cpu_ops.h"
 #include "backprop_lora.h"
 #include "ff_lora.h"
+// dszo.h included later (after xo_seed and perturb_buffer definitions)
 #include <math.h>
 
 // Dynamic kernel set per layer (forward-only subset for MeZO)
@@ -133,6 +134,9 @@ static void perturb_buffer(float *buf, size_t n, float scale) {
         buf[i] += (r & 1) ? scale : neg_scale;
     }
 }
+
+// DSZO header (needs xo_seed and perturb_buffer defined above)
+#include "dszo.h"
 
 // ===== Extract Rademacher direction z into buffer (for P-GAP gradient estimation) =====
 // Fills z_out[n] with ±1 values using the same PRNG sequence as perturb_buffer
@@ -798,6 +802,7 @@ int main(int argc, char *argv[]) {
         bool conv_fused = false;  // fused QKV + fused FFN conv1x1 kernels (Phase 2)
         bool backprop_lora = false;  // P16: ANE conv-fused forward + CPU backward + LoRA gradients
         bool ff_lora = false;       // FF-LoRA: Forward-Forward + LoRA (no backward pass)
+        bool dszo = false;          // DSZO: Deep Supervision ZO (per-layer losses for ZO)
         float ff_corrupt = 0.3f;    // FF-LoRA: token corruption rate for negative data
         bool lr_from_cli = false;
         bool use_lora = false;
@@ -839,6 +844,7 @@ int main(int argc, char *argv[]) {
             else if (strcmp(argv[i], "--conv-fused") == 0) conv_fused = true;
             else if (strcmp(argv[i], "--backprop-lora") == 0) backprop_lora = true;
             else if (strcmp(argv[i], "--ff-lora") == 0) ff_lora = true;
+            else if (strcmp(argv[i], "--dszo") == 0) dszo = true;
             else if (strcmp(argv[i], "--ff-corrupt") == 0 && i+1 < argc) ff_corrupt = atof(argv[++i]);
             else if (strcmp(argv[i], "--fzoo") == 0 && i+1 < argc) { fzoo_K = atoi(argv[++i]); }
             else if (strcmp(argv[i], "--pgap") == 0 && i+1 < argc) { pgap_r = atoi(argv[++i]); }
@@ -898,6 +904,15 @@ int main(int argc, char *argv[]) {
             }
         }
 
+        // --dszo implies --lora-split (uses per-layer losses for ZO gradient)
+        if (dszo) {
+            if (!lora_split) { use_lora = true; lora_split = true; }
+            if (backprop_lora || ff_lora) {
+                fprintf(stderr, "ERROR: --dszo is mutually exclusive with --backprop-lora and --ff-lora\n");
+                return 1;
+            }
+        }
+
         if (conv_hybrid) { ane_matmul_only = true; cpu_only = false; }  // conv-hybrid implies ANE mode
         if (!cpu_only && !ane_matmul_only) cpu_only = true;  // Default to CPU-only
         if (!cpu_only) {
@@ -914,9 +929,10 @@ int main(int argc, char *argv[]) {
                DIM, Q_DIM, KV_DIM, HD, HIDDEN, SEQ, VOCAB);
         double total_p = (double)NLAYERS * LAYER_PARAMS + DIM + (double)VOCAB * DIM;
         const char *mode_str = cpu_only ? "CPU-only" : (conv_fused ? "ANE-conv-fused" : (conv_hybrid ? "ANE-conv-hybrid" : "ANE-matmul-only"));
-        printf("Params: %.1fM | Mode: %s%s%s\n", total_p / 1e6, mode_str,
+        printf("Params: %.1fM | Mode: %s%s%s%s\n", total_p / 1e6, mode_str,
                backprop_lora ? " + BACKPROP-LORA (P16 hybrid)" : "",
-               ff_lora ? " + FF-LORA (Forward-Forward)" : "");
+               ff_lora ? " + FF-LORA (Forward-Forward)" : "",
+               dszo ? " + DSZO (Deep Supervision ZO)" : "");
         if (ff_lora) {
             printf("FF-LoRA: Forward-Forward + LoRA (no backward pass)\n");
             printf("  lr=%g corrupt_rate=%g seed=%ld val_every=%d rank=%d\n",
@@ -2024,6 +2040,559 @@ int main(int argc, char *argv[]) {
                 float progress = (float)(step - start_step) / (float)(total_steps - start_step);
                 lr = base_lr * 0.5f * (1.0f + cosf(3.14159f * progress));
 
+            } else if (dszo) {
+                // ===== DSZO: Deep Supervision Zeroth-Order =====
+                // Standard MeZO (2 forward passes) but with PER-LAYER auxiliary losses.
+                // Each layer gets its own loss signal → 5.7x more gradient info per step.
+                double t_dszo_fwd = 0, t_dszo_update = 0;
+
+                // Allocate per-layer loss arrays and aux buffers (once)
+                static float *dszo_loss_plus = NULL, *dszo_loss_minus = NULL;
+                static float *dszo_aux_norm = NULL, *dszo_aux_logits = NULL, *dszo_aux_dlogits = NULL;
+                if (!dszo_loss_plus) {
+                    dszo_loss_plus  = (float*)safe_calloc(NLAYERS, sizeof(float));
+                    dszo_loss_minus = (float*)safe_calloc(NLAYERS, sizeof(float));
+                    dszo_aux_norm   = (float*)safe_malloc((size_t)DIM * SEQ * 4);
+                    dszo_aux_logits = (float*)safe_malloc((size_t)SEQ * CV * 4);
+                    dszo_aux_dlogits = (float*)safe_malloc((size_t)SEQ * CV * 4);
+                    printf("DSZO: Allocated per-layer loss buffers (%.1f MB)\n",
+                           ((size_t)NLAYERS*8 + (size_t)DIM*SEQ*4 + (size_t)SEQ*CV*8) / 1e6);
+                }
+
+                // 1. Perturb all layers +ε (each with own seed)
+                t0 = mach_absolute_time();
+                dszo_perturb_all_layers(lora_layers, lw, rms_final, NLAYERS, mezo_seed, +epsilon);
+                if (lora_split) {
+                    for (int L = 0; L < NLAYERS; L++)
+                        lora_merge_weight(lw[L].Wq, lora_layers[L].Wq_base, lora_layers[L].Bq, lora_layers[L].Aq, Q_DIM, lora_rank, DIM);
+                    for (int L = 0; L < NLAYERS; L++)
+                        lora_merge_weight(lw[L].Wk, lora_layers[L].Wk_base, lora_layers[L].Bk, lora_layers[L].Ak, KV_DIM, lora_rank, DIM);
+                    for (int L = 0; L < NLAYERS; L++)
+                        lora_merge_weight(lw[L].Wv, lora_layers[L].Wv_base, lora_layers[L].Bv, lora_layers[L].Av, KV_DIM, lora_rank, DIM);
+                    for (int L = 0; L < NLAYERS; L++)
+                        lora_merge_weight(lw[L].Wo, lora_layers[L].Wo_base, lora_layers[L].Bo, lora_layers[L].Ao, DIM, lora_rank, Q_DIM);
+                }
+                t_perturb += tb_ms(mach_absolute_time() - t0);
+
+                // 2. Forward pass with per-layer loss collection
+                t0 = mach_absolute_time();
+                embed_lookup(x_cur, embed, input_tokens, DIM, SEQ, VOCAB);
+                for (int L = 0; L < NLAYERS; L++) {
+                    rmsnorm(xnorm_buf, x_cur, lw[L].rms_att, DIM, SEQ);
+                    if (cpu_only) {
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    Q_DIM, SEQ, DIM, 1.0f, lw[L].Wq, DIM, xnorm_buf, SEQ, 0.0f, Q, SEQ);
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    KV_DIM, SEQ, DIM, 1.0f, lw[L].Wk, DIM, xnorm_buf, SEQ, 0.0f, K, SEQ);
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    KV_DIM, SEQ, DIM, 1.0f, lw[L].Wv, DIM, xnorm_buf, SEQ, 0.0f, V, SEQ);
+                    } else if (conv_fused) {
+                        io_write_conv_acts(dk.qkvConv[L]->ioIn, xnorm_buf, DIM, SEQ);
+                        ane_eval(dk.qkvConv[L]);
+                        { IOSurfaceLock(dk.qkvConv[L]->ioOut, kIOSurfaceLockReadOnly, NULL);
+                          _Float16 *qkv_buf = (_Float16*)IOSurfaceGetBaseAddress(dk.qkvConv[L]->ioOut);
+                          cvt_f16_f32(Q, qkv_buf, Q_DIM * SEQ);
+                          cvt_f16_f32(K, qkv_buf + Q_DIM * SEQ, KV_DIM * SEQ);
+                          cvt_f16_f32(V, qkv_buf + (Q_DIM + KV_DIM) * SEQ, KV_DIM * SEQ);
+                          IOSurfaceUnlock(dk.qkvConv[L]->ioOut, kIOSurfaceLockReadOnly, NULL); }
+                    }
+                    if (lora_split) {
+                        LoRALayer *ll = &lora_layers[L];
+                        lora_addmm(Q, ll->Aq, ll->Bq, xnorm_buf, lora_tmp, Q_DIM, ll->rank, DIM);
+                        lora_addmm(K, ll->Ak, ll->Bk, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM);
+                        lora_addmm(V, ll->Av, ll->Bv, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM);
+                    }
+                    rope_forward_inplace(Q, SEQ, Q_DIM, HD);
+                    rope_forward_inplace(K, SEQ, KV_DIM, HD);
+                    gqa_tile_kv(k_tiled, K, SEQ);
+                    gqa_tile_kv(v_tiled, V, SEQ);
+                    cpu_sdpa_forward(Q, k_tiled, v_tiled, attn_out, HEADS, HD, SEQ);
+                    if (cpu_only) {
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    DIM, SEQ, Q_DIM, 1.0f, lw[L].Wo, Q_DIM, attn_out, SEQ, 0.0f, o_out, SEQ);
+                    } else if (conv_fused) {
+                        io_write_conv_acts(dk.woConv[L]->ioIn, attn_out, Q_DIM, SEQ);
+                        ane_eval(dk.woConv[L]);
+                        io_read_dyn(dk.woConv[L]->ioOut, o_out, DIM, SEQ);
+                    }
+                    if (lora_split) {
+                        LoRALayer *ll = &lora_layers[L];
+                        lora_addmm(o_out, ll->Ao, ll->Bo, attn_out, lora_tmp, DIM, ll->rank, Q_DIM);
+                    }
+                    vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ * DIM));
+                    rmsnorm(xnorm_buf, x_cur, lw[L].rms_ffn, DIM, SEQ);
+                    if (conv_fused) {
+                        io_write_ffn_fused_conv_input(dk.ffnConv[L]->ioIn, xnorm_buf, x_cur, DIM, SEQ);
+                        ane_eval(dk.ffnConv[L]);
+                        io_read_dyn(dk.ffnConv[L]->ioOut, x_cur, DIM, SEQ);
+                    } else {
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    HIDDEN, SEQ, DIM, 1.0f, lw[L].W1, DIM, xnorm_buf, SEQ, 0.0f, h1, SEQ);
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    HIDDEN, SEQ, DIM, 1.0f, lw[L].W3, DIM, xnorm_buf, SEQ, 0.0f, h3, SEQ);
+                        for (int i = 0; i < HIDDEN * SEQ; i++) {
+                            float s = h1[i] / (1.0f + expf(-h1[i]));
+                            silu_out[i] = s * h3[i];
+                        }
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    DIM, SEQ, HIDDEN, 1.0f, lw[L].W2, HIDDEN, silu_out, SEQ, 0.0f, o_out, SEQ);
+                        vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ * DIM));
+                    }
+                    // === DSZO: compute per-layer auxiliary loss ===
+                    dszo_loss_plus[L] = dszo_compute_layer_loss(x_cur, rms_final, cembed, ctargets, CV,
+                                                                 dszo_aux_norm, dszo_aux_logits, dszo_aux_dlogits);
+                }
+                // Final loss (for logging)
+                rmsnorm(xnorm_buf, x_cur, rms_final, DIM, SEQ);
+                cblas_sgemm(CblasRowMajor, CblasTrans, CblasTrans,
+                            SEQ, CV, DIM, 1.0f, xnorm_buf, SEQ, cembed, DIM, 0.0f, logits, CV);
+                loss_plus = cross_entropy_loss(dlogits, logits, ctargets, CV, SEQ);
+                t_dszo_fwd += tb_ms(mach_absolute_time() - t0);
+
+                // 3. Restore and perturb -ε
+                t0 = mach_absolute_time();
+                dszo_perturb_all_layers(lora_layers, lw, rms_final, NLAYERS, mezo_seed, -2.0f * epsilon);
+                if (lora_split) {
+                    for (int L = 0; L < NLAYERS; L++) {
+                        lora_merge_weight(lw[L].Wq, lora_layers[L].Wq_base, lora_layers[L].Bq, lora_layers[L].Aq, Q_DIM, lora_rank, DIM);
+                        lora_merge_weight(lw[L].Wk, lora_layers[L].Wk_base, lora_layers[L].Bk, lora_layers[L].Ak, KV_DIM, lora_rank, DIM);
+                        lora_merge_weight(lw[L].Wv, lora_layers[L].Wv_base, lora_layers[L].Bv, lora_layers[L].Av, KV_DIM, lora_rank, DIM);
+                        lora_merge_weight(lw[L].Wo, lora_layers[L].Wo_base, lora_layers[L].Bo, lora_layers[L].Ao, DIM, lora_rank, Q_DIM);
+                    }
+                }
+                t_perturb += tb_ms(mach_absolute_time() - t0);
+
+                // 4. Second forward pass with per-layer loss collection
+                t0 = mach_absolute_time();
+                embed_lookup(x_cur, embed, input_tokens, DIM, SEQ, VOCAB);
+                for (int L = 0; L < NLAYERS; L++) {
+                    rmsnorm(xnorm_buf, x_cur, lw[L].rms_att, DIM, SEQ);
+                    if (cpu_only) {
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    Q_DIM, SEQ, DIM, 1.0f, lw[L].Wq, DIM, xnorm_buf, SEQ, 0.0f, Q, SEQ);
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    KV_DIM, SEQ, DIM, 1.0f, lw[L].Wk, DIM, xnorm_buf, SEQ, 0.0f, K, SEQ);
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    KV_DIM, SEQ, DIM, 1.0f, lw[L].Wv, DIM, xnorm_buf, SEQ, 0.0f, V, SEQ);
+                    } else if (conv_fused) {
+                        io_write_conv_acts(dk.qkvConv[L]->ioIn, xnorm_buf, DIM, SEQ);
+                        ane_eval(dk.qkvConv[L]);
+                        { IOSurfaceLock(dk.qkvConv[L]->ioOut, kIOSurfaceLockReadOnly, NULL);
+                          _Float16 *qkv_buf = (_Float16*)IOSurfaceGetBaseAddress(dk.qkvConv[L]->ioOut);
+                          cvt_f16_f32(Q, qkv_buf, Q_DIM * SEQ);
+                          cvt_f16_f32(K, qkv_buf + Q_DIM * SEQ, KV_DIM * SEQ);
+                          cvt_f16_f32(V, qkv_buf + (Q_DIM + KV_DIM) * SEQ, KV_DIM * SEQ);
+                          IOSurfaceUnlock(dk.qkvConv[L]->ioOut, kIOSurfaceLockReadOnly, NULL); }
+                    }
+                    if (lora_split) {
+                        LoRALayer *ll = &lora_layers[L];
+                        lora_addmm(Q, ll->Aq, ll->Bq, xnorm_buf, lora_tmp, Q_DIM, ll->rank, DIM);
+                        lora_addmm(K, ll->Ak, ll->Bk, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM);
+                        lora_addmm(V, ll->Av, ll->Bv, xnorm_buf, lora_tmp, KV_DIM, ll->rank, DIM);
+                    }
+                    rope_forward_inplace(Q, SEQ, Q_DIM, HD);
+                    rope_forward_inplace(K, SEQ, KV_DIM, HD);
+                    gqa_tile_kv(k_tiled, K, SEQ);
+                    gqa_tile_kv(v_tiled, V, SEQ);
+                    cpu_sdpa_forward(Q, k_tiled, v_tiled, attn_out, HEADS, HD, SEQ);
+                    if (cpu_only) {
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    DIM, SEQ, Q_DIM, 1.0f, lw[L].Wo, Q_DIM, attn_out, SEQ, 0.0f, o_out, SEQ);
+                    } else if (conv_fused) {
+                        io_write_conv_acts(dk.woConv[L]->ioIn, attn_out, Q_DIM, SEQ);
+                        ane_eval(dk.woConv[L]);
+                        io_read_dyn(dk.woConv[L]->ioOut, o_out, DIM, SEQ);
+                    }
+                    if (lora_split) {
+                        LoRALayer *ll = &lora_layers[L];
+                        lora_addmm(o_out, ll->Ao, ll->Bo, attn_out, lora_tmp, DIM, ll->rank, Q_DIM);
+                    }
+                    vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ * DIM));
+                    rmsnorm(xnorm_buf, x_cur, lw[L].rms_ffn, DIM, SEQ);
+                    if (conv_fused) {
+                        io_write_ffn_fused_conv_input(dk.ffnConv[L]->ioIn, xnorm_buf, x_cur, DIM, SEQ);
+                        ane_eval(dk.ffnConv[L]);
+                        io_read_dyn(dk.ffnConv[L]->ioOut, x_cur, DIM, SEQ);
+                    } else {
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    HIDDEN, SEQ, DIM, 1.0f, lw[L].W1, DIM, xnorm_buf, SEQ, 0.0f, h1, SEQ);
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    HIDDEN, SEQ, DIM, 1.0f, lw[L].W3, DIM, xnorm_buf, SEQ, 0.0f, h3, SEQ);
+                        for (int i = 0; i < HIDDEN * SEQ; i++) {
+                            float s = h1[i] / (1.0f + expf(-h1[i]));
+                            silu_out[i] = s * h3[i];
+                        }
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    DIM, SEQ, HIDDEN, 1.0f, lw[L].W2, HIDDEN, silu_out, SEQ, 0.0f, o_out, SEQ);
+                        vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ * DIM));
+                    }
+                    dszo_loss_minus[L] = dszo_compute_layer_loss(x_cur, rms_final, cembed, ctargets, CV,
+                                                                   dszo_aux_norm, dszo_aux_logits, dszo_aux_dlogits);
+                }
+                rmsnorm(xnorm_buf, x_cur, rms_final, DIM, SEQ);
+                cblas_sgemm(CblasRowMajor, CblasTrans, CblasTrans,
+                            SEQ, CV, DIM, 1.0f, xnorm_buf, SEQ, cembed, DIM, 0.0f, logits, CV);
+                loss_minus = cross_entropy_loss(dlogits, logits, ctargets, CV, SEQ);
+                t_dszo_fwd += tb_ms(mach_absolute_time() - t0);
+
+                // 5. Restore to original weights
+                t0 = mach_absolute_time();
+                dszo_perturb_all_layers(lora_layers, lw, rms_final, NLAYERS, mezo_seed, +epsilon);
+
+                // 6. Per-layer update using per-layer gradients
+                dszo_update_all_layers(lora_layers, lw, rms_final, NLAYERS,
+                                       dszo_loss_plus, dszo_loss_minus,
+                                       mezo_seed, epsilon, lr);
+
+                // Re-merge LoRA weights after update
+                if (lora_split) {
+                    for (int L = 0; L < NLAYERS; L++) {
+                        lora_merge_weight(lw[L].Wq, lora_layers[L].Wq_base, lora_layers[L].Bq, lora_layers[L].Aq, Q_DIM, lora_rank, DIM);
+                        lora_merge_weight(lw[L].Wk, lora_layers[L].Wk_base, lora_layers[L].Bk, lora_layers[L].Ak, KV_DIM, lora_rank, DIM);
+                        lora_merge_weight(lw[L].Wv, lora_layers[L].Wv_base, lora_layers[L].Bv, lora_layers[L].Av, KV_DIM, lora_rank, DIM);
+                        lora_merge_weight(lw[L].Wo, lora_layers[L].Wo_base, lora_layers[L].Bo, lora_layers[L].Ao, DIM, lora_rank, Q_DIM);
+                    }
+                }
+                t_dszo_update += tb_ms(mach_absolute_time() - t0);
+
+                // Global proj_grad for logging compatibility
+                proj_grad = (loss_plus - loss_minus) / (2.0f * epsilon);
+
+                // Logging
+                double step_ms = tb_ms(mach_absolute_time() - t_step);
+                if (step % 100 == 0 || step == start_step) {
+                    printf("step %d  loss_plus=%.4f  loss_minus=%.4f  proj_grad=%.6f  "
+                           "lr=%.2e  step_ms=%.0f (fwd=%.0f perturb=%.0f update=%.0f) [DSZO]\n",
+                           step, loss_plus, loss_minus, proj_grad, lr,
+                           step_ms, t_dszo_fwd, t_perturb, t_dszo_update);
+                    // Print per-layer loss deltas for first 4 and last 4 layers
+                    if (step % 500 == 0 || step == start_step) {
+                        printf("  Per-layer loss deltas: ");
+                        for (int L = 0; L < 4 && L < NLAYERS; L++)
+                            printf("L%d:%.4f ", L, dszo_loss_plus[L] - dszo_loss_minus[L]);
+                        printf("... ");
+                        for (int L = NLAYERS-4; L < NLAYERS; L++)
+                            printf("L%d:%.4f ", L, dszo_loss_plus[L] - dszo_loss_minus[L]);
+                        printf("\n");
+                    }
+                }
+
+                // LR schedule: cosine decay
+                float progress = (float)(step - start_step) / (float)(total_steps - start_step);
+                lr = base_lr * 0.5f * (1.0f + cosf(3.14159f * progress));
+
+            } else if (ff_lora) {
+                // ===== FF-LORA: Forward-Forward + LoRA =====
+                // Two forward passes per step: positive (real data) + negative (corrupted data).
+                // Per-layer LoRA update from local goodness gradient. No backward pass.
+                double t_ff_fwd_pos = 0, t_ff_fwd_neg = 0, t_ff_grad = 0, t_ff_opt = 0;
+
+                // --- Step 1: Generate negative tokens (corrupted) ---
+                uint16_t neg_tokens[SEQ];
+                long neg_seed = (long)(init_seed + (long)step * 31337LL);
+                ff_generate_negative_tokens(neg_tokens, input_tokens, SEQ, VOCAB, ff_corrupt, neg_seed);
+
+                // --- Step 2: POSITIVE forward pass (real data) ---
+                // Modified forward that saves per-projection y, z, xnorm for FF gradient.
+                t0 = mach_absolute_time();
+                embed_lookup(x_cur, embed, input_tokens, DIM, SEQ, VOCAB);
+                for (int L = 0; L < NLAYERS; L++) {
+                    FFLayerState *ffs = &ff_states[L];
+                    LoRALayer *ll = &lora_layers[L];
+
+                    rmsnorm(xnorm_buf, x_cur, lw[L].rms_att, DIM, SEQ);
+                    // Save xnorm for FF gradient (shared by q,k,v)
+                    memcpy(ffs->q.xnorm_pos, xnorm_buf, (size_t)DIM * SEQ * 4);
+
+                    // Q = Wq_base @ xnorm + Bq @ (Aq @ xnorm)
+                    if (cpu_only) {
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    Q_DIM, SEQ, DIM, 1.0f, lw[L].Wq, DIM, xnorm_buf, SEQ, 0.0f, Q, SEQ);
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    KV_DIM, SEQ, DIM, 1.0f, lw[L].Wk, DIM, xnorm_buf, SEQ, 0.0f, K, SEQ);
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    KV_DIM, SEQ, DIM, 1.0f, lw[L].Wv, DIM, xnorm_buf, SEQ, 0.0f, V, SEQ);
+                    } else if (conv_fused) {
+                        io_write_conv_acts(dk.qkvConv[L]->ioIn, xnorm_buf, DIM, SEQ);
+                        ane_eval(dk.qkvConv[L]);
+                        { IOSurfaceLock(dk.qkvConv[L]->ioOut, kIOSurfaceLockReadOnly, NULL);
+                          _Float16 *qkv_buf = (_Float16*)IOSurfaceGetBaseAddress(dk.qkvConv[L]->ioOut);
+                          cvt_f16_f32(Q, qkv_buf, Q_DIM * SEQ);
+                          cvt_f16_f32(K, qkv_buf + Q_DIM * SEQ, KV_DIM * SEQ);
+                          cvt_f16_f32(V, qkv_buf + (Q_DIM + KV_DIM) * SEQ, KV_DIM * SEQ);
+                          IOSurfaceUnlock(dk.qkvConv[L]->ioOut, kIOSurfaceLockReadOnly, NULL); }
+                    }
+                    // LoRA corrections with z storage for FF gradients
+                    lora_addmm_ff(Q, ll->Aq, ll->Bq, xnorm_buf, lora_tmp, ffs->q.z_pos,
+                                  Q_DIM, ll->rank, DIM);
+                    lora_addmm_ff(K, ll->Ak, ll->Bk, xnorm_buf, lora_tmp, ffs->k.z_pos,
+                                  KV_DIM, ll->rank, DIM);
+                    lora_addmm_ff(V, ll->Av, ll->Bv, xnorm_buf, lora_tmp, ffs->v.z_pos,
+                                  KV_DIM, ll->rank, DIM);
+                    // Save y_pos for QKV (full projection output including base + LoRA)
+                    memcpy(ffs->q.y_pos, Q, (size_t)Q_DIM * SEQ * 4);
+                    memcpy(ffs->k.y_pos, K, (size_t)KV_DIM * SEQ * 4);
+                    memcpy(ffs->v.y_pos, V, (size_t)KV_DIM * SEQ * 4);
+
+                    // RoPE + SDPA + Wo (standard forward)
+                    rope_forward_inplace(Q, SEQ, Q_DIM, HD);
+                    rope_forward_inplace(K, SEQ, KV_DIM, HD);
+                    gqa_tile_kv(k_tiled, K, SEQ);
+                    gqa_tile_kv(v_tiled, V, SEQ);
+                    cpu_sdpa_forward(Q, k_tiled, v_tiled, attn_out, HEADS, HD, SEQ);
+
+                    // Save attn_out as xnorm for o projection
+                    memcpy(ffs->o.xnorm_pos, attn_out, (size_t)Q_DIM * SEQ * 4);
+
+                    // Wo = Wo_base @ attn_out + Bo @ (Ao @ attn_out)
+                    if (cpu_only) {
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    DIM, SEQ, Q_DIM, 1.0f, lw[L].Wo, Q_DIM, attn_out, SEQ, 0.0f, o_out, SEQ);
+                    } else if (conv_fused) {
+                        io_write_conv_acts(dk.woConv[L]->ioIn, attn_out, Q_DIM, SEQ);
+                        ane_eval(dk.woConv[L]);
+                        io_read_dyn(dk.woConv[L]->ioOut, o_out, DIM, SEQ);
+                    }
+                    lora_addmm_ff(o_out, ll->Ao, ll->Bo, attn_out, lora_tmp, ffs->o.z_pos,
+                                  DIM, ll->rank, Q_DIM);
+                    memcpy(ffs->o.y_pos, o_out, (size_t)DIM * SEQ * 4);
+
+                    // Residual + FFN (standard, no FF tracking on FFN)
+                    vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ * DIM));
+                    rmsnorm(xnorm_buf, x_cur, lw[L].rms_ffn, DIM, SEQ);
+                    if (conv_fused) {
+                        io_write_ffn_fused_conv_input(dk.ffnConv[L]->ioIn, xnorm_buf, x_cur, DIM, SEQ);
+                        ane_eval(dk.ffnConv[L]);
+                        io_read_dyn(dk.ffnConv[L]->ioOut, x_cur, DIM, SEQ);
+                    } else {
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    HIDDEN, SEQ, DIM, 1.0f, lw[L].W1, DIM, xnorm_buf, SEQ, 0.0f, h1, SEQ);
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    HIDDEN, SEQ, DIM, 1.0f, lw[L].W3, DIM, xnorm_buf, SEQ, 0.0f, h3, SEQ);
+                        for (int i = 0; i < HIDDEN * SEQ; i++) {
+                            float s = h1[i] / (1.0f + expf(-h1[i]));
+                            silu_out[i] = s * h3[i];
+                        }
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    DIM, SEQ, HIDDEN, 1.0f, lw[L].W2, HIDDEN, silu_out, SEQ, 0.0f, o_out, SEQ);
+                        vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ * DIM));
+                    }
+                }
+                // Compute cross-entropy loss for monitoring (not used for gradient)
+                rmsnorm(xnorm_buf, x_cur, rms_final, DIM, SEQ);
+                cblas_sgemm(CblasRowMajor, CblasTrans, CblasTrans,
+                            SEQ, CV, DIM, 1.0f, xnorm_buf, SEQ, cembed, DIM, 0.0f, logits, CV);
+                float ff_train_loss = cross_entropy_loss(dlogits, logits, ctargets, CV, SEQ);
+                t_ff_fwd_pos = tb_ms(mach_absolute_time() - t0);
+
+                // --- Step 2b: Calibrate thresholds on first step ---
+                if (!ff_thresholds_calibrated) {
+                    ff_calibrate_thresholds(ff_states, NLAYERS, 0.8f);
+                    ff_thresholds_calibrated = true;
+                    printf("FF-LoRA: Thresholds calibrated from first positive pass\n");
+                    for (int L = 0; L < NLAYERS; L += 8) {
+                        printf("  L%02d: theta_q=%.3f theta_k=%.3f theta_v=%.3f theta_o=%.3f\n",
+                               L, ff_states[L].q.theta, ff_states[L].k.theta,
+                               ff_states[L].v.theta, ff_states[L].o.theta);
+                    }
+                }
+
+                // --- Step 3: NEGATIVE forward pass (corrupted data) ---
+                t0 = mach_absolute_time();
+                embed_lookup(x_cur, embed, neg_tokens, DIM, SEQ, VOCAB);
+                for (int L = 0; L < NLAYERS; L++) {
+                    FFLayerState *ffs = &ff_states[L];
+                    LoRALayer *ll = &lora_layers[L];
+
+                    rmsnorm(xnorm_buf, x_cur, lw[L].rms_att, DIM, SEQ);
+                    memcpy(ffs->q.xnorm_neg, xnorm_buf, (size_t)DIM * SEQ * 4);
+
+                    if (cpu_only) {
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    Q_DIM, SEQ, DIM, 1.0f, lw[L].Wq, DIM, xnorm_buf, SEQ, 0.0f, Q, SEQ);
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    KV_DIM, SEQ, DIM, 1.0f, lw[L].Wk, DIM, xnorm_buf, SEQ, 0.0f, K, SEQ);
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    KV_DIM, SEQ, DIM, 1.0f, lw[L].Wv, DIM, xnorm_buf, SEQ, 0.0f, V, SEQ);
+                    } else if (conv_fused) {
+                        io_write_conv_acts(dk.qkvConv[L]->ioIn, xnorm_buf, DIM, SEQ);
+                        ane_eval(dk.qkvConv[L]);
+                        { IOSurfaceLock(dk.qkvConv[L]->ioOut, kIOSurfaceLockReadOnly, NULL);
+                          _Float16 *qkv_buf = (_Float16*)IOSurfaceGetBaseAddress(dk.qkvConv[L]->ioOut);
+                          cvt_f16_f32(Q, qkv_buf, Q_DIM * SEQ);
+                          cvt_f16_f32(K, qkv_buf + Q_DIM * SEQ, KV_DIM * SEQ);
+                          cvt_f16_f32(V, qkv_buf + (Q_DIM + KV_DIM) * SEQ, KV_DIM * SEQ);
+                          IOSurfaceUnlock(dk.qkvConv[L]->ioOut, kIOSurfaceLockReadOnly, NULL); }
+                    }
+                    lora_addmm_ff(Q, ll->Aq, ll->Bq, xnorm_buf, lora_tmp, ffs->q.z_neg,
+                                  Q_DIM, ll->rank, DIM);
+                    lora_addmm_ff(K, ll->Ak, ll->Bk, xnorm_buf, lora_tmp, ffs->k.z_neg,
+                                  KV_DIM, ll->rank, DIM);
+                    lora_addmm_ff(V, ll->Av, ll->Bv, xnorm_buf, lora_tmp, ffs->v.z_neg,
+                                  KV_DIM, ll->rank, DIM);
+                    memcpy(ffs->q.y_neg, Q, (size_t)Q_DIM * SEQ * 4);
+                    memcpy(ffs->k.y_neg, K, (size_t)KV_DIM * SEQ * 4);
+                    memcpy(ffs->v.y_neg, V, (size_t)KV_DIM * SEQ * 4);
+
+                    rope_forward_inplace(Q, SEQ, Q_DIM, HD);
+                    rope_forward_inplace(K, SEQ, KV_DIM, HD);
+                    gqa_tile_kv(k_tiled, K, SEQ);
+                    gqa_tile_kv(v_tiled, V, SEQ);
+                    cpu_sdpa_forward(Q, k_tiled, v_tiled, attn_out, HEADS, HD, SEQ);
+
+                    memcpy(ffs->o.xnorm_neg, attn_out, (size_t)Q_DIM * SEQ * 4);
+
+                    if (cpu_only) {
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    DIM, SEQ, Q_DIM, 1.0f, lw[L].Wo, Q_DIM, attn_out, SEQ, 0.0f, o_out, SEQ);
+                    } else if (conv_fused) {
+                        io_write_conv_acts(dk.woConv[L]->ioIn, attn_out, Q_DIM, SEQ);
+                        ane_eval(dk.woConv[L]);
+                        io_read_dyn(dk.woConv[L]->ioOut, o_out, DIM, SEQ);
+                    }
+                    lora_addmm_ff(o_out, ll->Ao, ll->Bo, attn_out, lora_tmp, ffs->o.z_neg,
+                                  DIM, ll->rank, Q_DIM);
+                    memcpy(ffs->o.y_neg, o_out, (size_t)DIM * SEQ * 4);
+
+                    vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ * DIM));
+                    rmsnorm(xnorm_buf, x_cur, lw[L].rms_ffn, DIM, SEQ);
+                    if (conv_fused) {
+                        io_write_ffn_fused_conv_input(dk.ffnConv[L]->ioIn, xnorm_buf, x_cur, DIM, SEQ);
+                        ane_eval(dk.ffnConv[L]);
+                        io_read_dyn(dk.ffnConv[L]->ioOut, x_cur, DIM, SEQ);
+                    } else {
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    HIDDEN, SEQ, DIM, 1.0f, lw[L].W1, DIM, xnorm_buf, SEQ, 0.0f, h1, SEQ);
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    HIDDEN, SEQ, DIM, 1.0f, lw[L].W3, DIM, xnorm_buf, SEQ, 0.0f, h3, SEQ);
+                        for (int i = 0; i < HIDDEN * SEQ; i++) {
+                            float s = h1[i] / (1.0f + expf(-h1[i]));
+                            silu_out[i] = s * h3[i];
+                        }
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    DIM, SEQ, HIDDEN, 1.0f, lw[L].W2, HIDDEN, silu_out, SEQ, 0.0f, o_out, SEQ);
+                        vDSP_vsma(o_out, 1, &res_alpha, x_cur, 1, x_cur, 1, (vDSP_Length)(SEQ * DIM));
+                    }
+                }
+                t_ff_fwd_neg = tb_ms(mach_absolute_time() - t0);
+
+                // --- Step 4: Per-layer FF-LoRA gradient computation ---
+                t0 = mach_absolute_time();
+                float total_G_gap = 0;
+                for (int L = 0; L < NLAYERS; L++) {
+                    FFLayerState *ffs = &ff_states[L];
+                    LoRALayer *ll = &lora_layers[L];
+                    LoRAGrads *lg = &ff_lora_grads[L];
+                    int r = ll->rank;
+
+                    // Zero gradients for this step
+                    lora_grads_zero(lg, r);
+
+                    // Compute FF gradients for each projection
+                    float Gq_pos, Gq_neg, Gk_pos, Gk_neg, Gv_pos, Gv_neg, Go_pos, Go_neg;
+
+                    // Q projection: A[rank, DIM], B[Q_DIM, rank]
+                    ff_lora_compute_grads(
+                        lg->Aq, lg->Bq, &ffs->q.theta,
+                        ffs->q.y_pos, ffs->q.z_pos, ffs->q.xnorm_pos,
+                        ffs->q.y_neg, ffs->q.z_neg, ffs->q.xnorm_neg,
+                        ll->Aq, ll->Bq,
+                        Q_DIM, r, DIM,
+                        &Gq_pos, &Gq_neg);
+
+                    // K projection: A[rank, DIM], B[KV_DIM, rank]
+                    ff_lora_compute_grads(
+                        lg->Ak, lg->Bk, &ffs->k.theta,
+                        ffs->k.y_pos, ffs->k.z_pos, ffs->k.xnorm_pos,
+                        ffs->k.y_neg, ffs->k.z_neg, ffs->k.xnorm_neg,
+                        ll->Ak, ll->Bk,
+                        KV_DIM, r, DIM,
+                        &Gk_pos, &Gk_neg);
+
+                    // V projection: A[rank, DIM], B[KV_DIM, rank]
+                    ff_lora_compute_grads(
+                        lg->Av, lg->Bv, &ffs->v.theta,
+                        ffs->v.y_pos, ffs->v.z_pos, ffs->v.xnorm_pos,
+                        ffs->v.y_neg, ffs->v.z_neg, ffs->v.xnorm_neg,
+                        ll->Av, ll->Bv,
+                        KV_DIM, r, DIM,
+                        &Gv_pos, &Gv_neg);
+
+                    // O projection: A[rank, Q_DIM], B[DIM, rank]
+                    ff_lora_compute_grads(
+                        lg->Ao, lg->Bo, &ffs->o.theta,
+                        ffs->o.y_pos, ffs->o.z_pos, ffs->o.xnorm_pos,
+                        ffs->o.y_neg, ffs->o.z_neg, ffs->o.xnorm_neg,
+                        ll->Ao, ll->Bo,
+                        DIM, r, Q_DIM,
+                        &Go_pos, &Go_neg);
+
+                    // Track average goodness gap for logging
+                    total_G_gap += (Gq_pos - Gq_neg) + (Gk_pos - Gk_neg)
+                                 + (Gv_pos - Gv_neg) + (Go_pos - Go_neg);
+
+                    // Store layer-level goodness for diagnostic prints
+                    ffs->G_layer_pos = (Gq_pos + Gk_pos + Gv_pos + Go_pos) / 4.0f;
+                    ffs->G_layer_neg = (Gq_neg + Gk_neg + Gv_neg + Go_neg) / 4.0f;
+
+                    // Detailed per-layer logging (every 100 steps, first 4 + last 4 layers)
+                    if ((step % 100 == 0 || step == start_step) &&
+                        (L < 4 || L >= NLAYERS - 4)) {
+                        ff_print_layer_stats(ffs, L,
+                                             Gq_pos, Gq_neg, Gk_pos, Gk_neg,
+                                             Gv_pos, Gv_neg, Go_pos, Go_neg);
+                    }
+                }
+                float avg_G_gap = total_G_gap / (float)(NLAYERS * 4);
+                t_ff_grad = tb_ms(mach_absolute_time() - t0);
+
+                // --- Step 5: Adam optimizer update ---
+                t0 = mach_absolute_time();
+                ff_adam_t++;
+                float adam_b1 = 0.9f, adam_b2 = 0.95f, adam_eps = 1e-8f;
+                float wd = 0.0f;
+                for (int L = 0; L < NLAYERS; L++) {
+                    LoRALayer *ll = &lora_layers[L];
+                    LoRAGrads *lg = &ff_lora_grads[L];
+                    LoRAAdam *la_l = &ff_lora_adam[L];
+                    adam_update(ll->Aq, lg->Aq, &la_l->Aq, ff_adam_t, lr, adam_b1, adam_b2, adam_eps, wd);
+                    adam_update(ll->Bq, lg->Bq, &la_l->Bq, ff_adam_t, lr, adam_b1, adam_b2, adam_eps, wd);
+                    adam_update(ll->Ak, lg->Ak, &la_l->Ak, ff_adam_t, lr, adam_b1, adam_b2, adam_eps, wd);
+                    adam_update(ll->Bk, lg->Bk, &la_l->Bk, ff_adam_t, lr, adam_b1, adam_b2, adam_eps, wd);
+                    adam_update(ll->Av, lg->Av, &la_l->Av, ff_adam_t, lr, adam_b1, adam_b2, adam_eps, wd);
+                    adam_update(ll->Bv, lg->Bv, &la_l->Bv, ff_adam_t, lr, adam_b1, adam_b2, adam_eps, wd);
+                    adam_update(ll->Ao, lg->Ao, &la_l->Ao, ff_adam_t, lr, adam_b1, adam_b2, adam_eps, wd);
+                    adam_update(ll->Bo, lg->Bo, &la_l->Bo, ff_adam_t, lr, adam_b1, adam_b2, adam_eps, wd);
+                    // Re-merge effective weights after LoRA update
+                    lora_merge_weight(lw[L].Wq, ll->Wq_base, ll->Bq, ll->Aq, Q_DIM, lora_rank, DIM);
+                    lora_merge_weight(lw[L].Wk, ll->Wk_base, ll->Bk, ll->Ak, KV_DIM, lora_rank, DIM);
+                    lora_merge_weight(lw[L].Wv, ll->Wv_base, ll->Bv, ll->Av, KV_DIM, lora_rank, DIM);
+                    lora_merge_weight(lw[L].Wo, ll->Wo_base, ll->Bo, ll->Ao, DIM, lora_rank, Q_DIM);
+                }
+                t_ff_opt = tb_ms(mach_absolute_time() - t0);
+
+                // Set loss_plus for compatibility with validation/reporting
+                loss_plus = ff_train_loss;
+                loss_minus = ff_train_loss;  // FF doesn't have a second loss; use same
+
+                // Logging
+                double step_ms = tb_ms(mach_absolute_time() - t_step);
+                total_train_ms += step_ms;
+                total_steps_done++;
+                last_loss_plus = loss_plus;
+                last_loss_minus = loss_minus;
+
+                if (step % 10 == 0 || step == start_step) {
+                    printf("step %d  [FF-LoRA] loss=%.4f  G_gap=%.4f  lr=%.2e  "
+                           "%.1fms/step (fwd+=%.0f fwd-=%.0f grad=%.0f opt=%.0f)\n",
+                           step, ff_train_loss, avg_G_gap, lr, step_ms,
+                           t_ff_fwd_pos, t_ff_fwd_neg, t_ff_grad, t_ff_opt);
+                }
+
+                // LR schedule: cosine decay
+                float progress = (float)(step - start_step) / (float)(total_steps - start_step);
+                lr = base_lr * 0.5f * (1.0f + cosf(3.14159f * progress));
+
             } else if (fzoo_K > 0) {
                 // ===== FZOO: Multi-perturbation one-sided gradient estimation =====
                 // Step 1: Unperturbed forward pass -> loss_0
@@ -2535,7 +3104,9 @@ int main(int argc, char *argv[]) {
         printf("total_seconds:    %.1f\n", wall / 1000.0);
         printf("num_steps:        %d\n", total_steps_done);
         printf("num_params_M:     %.1f\n", ((double)NLAYERS * LAYER_PARAMS + DIM + (double)VOCAB * DIM) / 1e6);
-        printf("mode:             mezo-%s%s%s\n", cpu_only ? "cpu" : "ane",
+        printf("mode:             %s-%s%s%s\n",
+               ff_lora ? "ff-lora" : "mezo",
+               cpu_only ? "cpu" : "ane",
                conv_hybrid ? "-conv-hybrid" : "",
                lora_split ? "-lora-split" : (use_lora ? "-lora" : ""));
         printf("epsilon:          %g\n", epsilon);
@@ -2545,8 +3116,16 @@ int main(int argc, char *argv[]) {
         if (pgap_r > 0) printf("pgap_r:           %d\npgap_k:           %d\npgap_h:           %d\npgap_xi:          %g\npgap_delta0:      %g\n", pgap_r, pgap_k, pgap_h, pgap_xi, pgap_delta0);
         if (sparse_ratio > 0) printf("sparse_ratio:     %g\nmask_refresh:     %d\n", sparse_ratio, mask_refresh);
         if (hessian_alpha > 0) printf("hessian_alpha:    %g\n", hessian_alpha);
+        if (ff_lora) printf("ff_lora:          true\nff_corrupt:       %g\n", ff_corrupt);
 
         // Cleanup
+        if (ff_lora && use_lora) {
+            for (int L = 0; L < NLAYERS; L++) {
+                ff_layer_free(&ff_states[L]);
+                lora_grads_free(&ff_lora_grads[L]);
+                lora_adam_free(&ff_lora_adam[L]);
+            }
+        }
         if (pgap_bases) {
             for (int mi = 0; mi < pgap_total_mats; mi++) pgap_basis_free(&pgap_bases[mi]);
             free(pgap_bases);
