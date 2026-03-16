@@ -452,6 +452,9 @@ Full findings with methodology: **[docs/FINDINGS.md](docs/FINDINGS.md)**
 | **21** | **Conv-fused MeZO+LoRA-split: 1.71x faster than CPU** | **262ms/step vs 447ms, val_loss within 0.03%** |
 | 22 | FZOO K=4 provides zero wall-time convergence benefit | 2.5x more forward passes offsets better gradient quality |
 | 23 | P-GAP does not transfer to LoRA ZO training | Paper params diverge; standard params neutral; LoRA rank-8 too small for SVD |
+| 24 | Sparse MeZO hurts LoRA ZO convergence (all sparsity levels) | -31% to -87% worse at 500 steps; reducing active params reduces ZO signal |
+| 25 | HiZOO diagonal Hessian hurts LoRA ZO convergence | -34% to -82% worse; 1/√H dampens perturbation amplitude |
+| 26 | LoRA ZO has fundamentally different dynamics from full-param ZO | Methods that improve full-param ZO (Sparse MeZO 3.5x, HiZOO 8x) actively harm LoRA ZO |
 
 ---
 
