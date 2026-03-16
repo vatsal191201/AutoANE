@@ -1,0 +1,71 @@
+=== MeZO (Zeroth-Order) Training: SmolLM2-360M (32 layers, GQA 15/5) ===
+dim=960 q_dim=960 kv_dim=320 hd=64 hidden=2560 seq=256 vocab=49152
+Params: 361.8M | Mode: CPU-only
+MeZO+LoRA: lr=0.0001 epsilon=0.001 seed=42 val_every=50 rank=8
+  hessian_alpha=1.00e-08
+Memory: ~1457MB (inference only, no gradients/optimizer)
+[RESUMED from step 100, loss=2.0583]
+  (using CLI lr=0.0001 instead of checkpoint lr)
+LoRA: rank=8, adapter params=1638.4K, trainable RMS params=62.4K
+  Adapters on: Wq, Wk, Wv, Wo | Frozen: W1, W2, W3, embed
+  Perturbation: LoRA A/B + RMS only (~1700.8K params vs 361.8M full)
+  Mode: adapter-as-input (zero restaging, CPU-side LoRA correction)
+  [Sparse-HiZOO] total_params=1700800  LoRA_mean_mag=0.176889  RMS_mean_mag=0.240954
+  Hessian buffer: 6.5 MB (uses Gaussian z for per-element differentiation)
+Tokens: 20000000 (train: 18000000, val: 2000000)
+Vocab compaction: 49152 -> 16893 active
+CPU-only mode: skipping ANE kernel compilation
+
+Starting MeZO training...
+
+  [Hessian@100] min=1.0000e+00 max=1.0001e+00 mean=1.0000e+00 std=4.1139e-06 ratio=1.0
+step 100  loss_plus=1.9001  loss_minus=1.8924  proj_grad=3.879368  lr=1.00e-04  step_ms=987 (fwd=912 perturb=71 transpose=0)  L0=1.8961 dL=3.3283e-04
+  [Hessian@101] min=1.0000e+00 max=1.0001e+00 mean=1.0000e+00 std=6.5793e-06 ratio=1.0
+  [Hessian@102] min=1.0000e+00 max=1.0002e+00 mean=1.0000e+00 std=1.4199e-05 ratio=1.0
+  [Hessian@103] min=1.0000e+00 max=1.0004e+00 mean=1.0000e+00 std=2.5420e-05 ratio=1.0
+  [Hessian@104] min=1.0000e+00 max=1.0004e+00 mean=1.0000e+00 std=2.5495e-05 ratio=1.0
+  [Hessian@105] min=1.0000e+00 max=1.0004e+00 mean=1.0000e+00 std=2.7059e-05 ratio=1.0
+  [Hessian@106] min=1.0000e+00 max=1.0004e+00 mean=1.0000e+00 std=2.7334e-05 ratio=1.0
+  [Hessian@107] min=1.0000e+00 max=1.0004e+00 mean=1.0001e+00 std=3.0408e-05 ratio=1.0
+  [Hessian@108] min=1.0000e+00 max=1.0004e+00 mean=1.0001e+00 std=3.1384e-05 ratio=1.0
+  [Hessian@109] min=1.0000e+00 max=1.0004e+00 mean=1.0001e+00 std=3.5564e-05 ratio=1.0
+  [Hessian@110] min=1.0000e+00 max=1.0004e+00 mean=1.0001e+00 std=3.7400e-05 ratio=1.0
+  [val_loss=2.0643 at step 150]
+  [val_loss=2.0634 at step 200]
+  [Hessian@200] min=1.0003e+00 max=1.0014e+00 mean=1.0007e+00 std=1.0635e-04 ratio=1.0
+step 200  loss_plus=1.8849  loss_minus=1.8815  proj_grad=1.698494  lr=9.14e-05  step_ms=749 (fwd=677 perturb=69 transpose=0)  L0=1.8829 dL=6.3181e-04
+  [val_loss=2.0603 at step 250]
+  [val_loss=2.0602 at step 300]
+  [Hessian@300] min=1.0007e+00 max=1.0024e+00 mean=1.0014e+00 std=1.5496e-04 ratio=1.0
+step 300  loss_plus=1.9508  loss_minus=1.9421  proj_grad=4.348636  lr=6.89e-05  step_ms=727 (fwd=655 perturb=68 transpose=0)  L0=1.9462 dL=4.4417e-04
+  [val_loss=2.0602 at step 350]
+  [val_loss=2.0587 at step 400]
+  [Hessian@400] min=1.0013e+00 max=1.0034e+00 mean=1.0021e+00 std=1.9426e-04 ratio=1.0
+step 400  loss_plus=1.5240  loss_minus=1.5281  proj_grad=-2.091408  lr=4.11e-05  step_ms=743 (fwd=670 perturb=69 transpose=0)  L0=1.5259 dL=3.5095e-04
+  [val_loss=2.0581 at step 450]
+  [ckpt saved, best_val=2.0581]
+  [val_loss=2.0582 at step 500]
+  [Hessian@500] min=1.0019e+00 max=1.0042e+00 mean=1.0029e+00 std=2.2622e-04 ratio=1.0
+step 500  loss_plus=1.7514  loss_minus=1.7462  proj_grad=2.572000  lr=1.86e-05  step_ms=755 (fwd=681 perturb=70 transpose=0)  L0=1.7482 dL=1.1497e-03
+  [val_loss=2.0577 at step 550]
+  [ckpt saved, best_val=2.0577]
+  [val_loss=2.0574 at step 600]
+  [ckpt saved, best_val=2.0574]
+
+=== MeZO Efficiency Report ===
+Total steps:  500
+Train time:   380326ms (760.7ms/step)
+Wall time:    408.6s
+
+---
+final_loss_plus:  2.338974
+final_loss_minus: 2.341343
+training_seconds: 380.3
+total_seconds:    408.6
+num_steps:        500
+num_params_M:     361.8
+mode:             mezo-cpu-lora-split
+epsilon:          0.001
+lr:               1.00009e-05
+lora_rank:        8
+hessian_alpha:    1e-08

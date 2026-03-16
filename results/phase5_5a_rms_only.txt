@@ -1,0 +1,59 @@
+=== MeZO (Zeroth-Order) Training: SmolLM2-360M (32 layers, GQA 15/5) ===
+dim=960 q_dim=960 kv_dim=320 hd=64 hidden=2560 seq=256 vocab=49152
+Params: 361.8M | Mode: CPU-only
+MeZO+LoRA: lr=0.0001 epsilon=0.001 seed=42 val_every=50 rank=8
+  sparse_ratio=0.037  mask_refresh=100
+Memory: ~1457MB (inference only, no gradients/optimizer)
+[RESUMED from step 100, loss=2.0583]
+  (using CLI lr=0.0001 instead of checkpoint lr)
+LoRA: rank=8, adapter params=1638.4K, trainable RMS params=62.4K
+  Adapters on: Wq, Wk, Wv, Wo | Frozen: W1, W2, W3, embed
+  Perturbation: LoRA A/B + RMS only (~1700.8K params vs 361.8M full)
+  Mode: adapter-as-input (zero restaging, CPU-side LoRA correction)
+  [Sparse-HiZOO] total_params=1700800  LoRA_mean_mag=0.176889  RMS_mean_mag=0.240954
+  [Sparse mask] ratio=0.037  threshold=0.333337  active=1637870/1700800 (96.3%)
+Tokens: 20000000 (train: 18000000, val: 2000000)
+Vocab compaction: 49152 -> 16893 active
+CPU-only mode: skipping ANE kernel compilation
+
+Starting MeZO training...
+
+step 100  loss_plus=1.8951  loss_minus=1.8974  proj_grad=-1.183569  lr=1.00e-04  step_ms=684 (fwd=675 perturb=8 transpose=0)
+  [val_loss=2.0654 at step 150]
+  [val_loss=2.0654 at step 200]
+  [Sparse mask] ratio=0.037  threshold=0.333945  active=1637870/1700800 (96.3%)
+step 200  loss_plus=1.8888  loss_minus=1.8919  proj_grad=-1.536190  lr=9.14e-05  step_ms=619 (fwd=440 perturb=8 transpose=0)
+  [val_loss=2.0633 at step 250]
+  [val_loss=2.0628 at step 300]
+  [Sparse mask] ratio=0.037  threshold=0.334340  active=1637870/1700800 (96.3%)
+step 300  loss_plus=1.9418  loss_minus=1.9440  proj_grad=-1.079023  lr=6.89e-05  step_ms=617 (fwd=437 perturb=8 transpose=0)
+  [val_loss=2.0621 at step 350]
+  [val_loss=2.0612 at step 400]
+  [Sparse mask] ratio=0.037  threshold=0.334573  active=1637870/1700800 (96.3%)
+step 400  loss_plus=1.5250  loss_minus=1.5235  proj_grad=0.727057  lr=4.11e-05  step_ms=619 (fwd=439 perturb=7 transpose=0)
+  [val_loss=2.0588 at step 450]
+  [val_loss=2.0585 at step 500]
+  [Sparse mask] ratio=0.037  threshold=0.334717  active=1637870/1700800 (96.3%)
+step 500  loss_plus=1.7463  loss_minus=1.7421  proj_grad=2.095580  lr=1.86e-05  step_ms=619 (fwd=437 perturb=7 transpose=0)
+  [val_loss=2.0586 at step 550]
+  [val_loss=2.0582 at step 600]
+  [ckpt saved, best_val=2.0582]
+
+=== MeZO Efficiency Report ===
+Total steps:  500
+Train time:   226229ms (452.5ms/step)
+Wall time:    250.8s
+
+---
+final_loss_plus:  2.345402
+final_loss_minus: 2.339951
+training_seconds: 226.2
+total_seconds:    250.8
+num_steps:        500
+num_params_M:     361.8
+mode:             mezo-cpu-lora-split
+epsilon:          0.001
+lr:               1.00009e-05
+lora_rank:        8
+sparse_ratio:     0.037
+mask_refresh:     100
