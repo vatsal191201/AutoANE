@@ -107,23 +107,29 @@ For each step:
 
 ## Phase 4: P-GAP (Gradient-Aligned Perturbations)
 
-**What**: Project perturbations into a gradient-aligned subspace via SVD.
+**What**: Project perturbations into a gradient-aligned subspace via per-matrix SVD.
 
-**Algorithm** (from arXiv:2510.18228):
-1. Every k steps (lazy update, k=16 or k=512):
-   a. Estimate gradient direction using h probe perturbations
-   b. SVD: G_hat ≈ U_r * S_r * V_r^T (retain r leading directions)
-2. Between updates:
-   a. Generate random Z_init in r-dimensional space
-   b. Project onto alignment hyperplane
-   c. Map back: Z_f = U_r * Z * V_r^T
-3. Use Z_f as perturbation direction
+**Algorithm** (from arXiv:2510.18228, corrected after deep literature review):
 
-**Memory**: ~0.7-1.9 GB overhead for basis matrices (OPT-2.7B scale). For our 1.7M trainable params: negligible.
+**Probe phase** (every k=100 steps, costs 2h forward passes):
+1. For j=1..h: sample Gaussian Q_j for all params, SPSA → scalar ρ_j
+2. For each LoRA matrix W_l: accumulate G_l += (ρ_j/h) × Q_l^j
+3. Per-matrix SVD: G_l = U_r × S_r × V_r^T (truncated to rank r)
 
-**Reported speedups**: 5.25x on SST-2, 3.33x on SNLI, 5.88x on DROP (iterations to same loss).
+**Training step** (between probes):
+1. For each LoRA matrix W_l:
+   a. Sample Z_init ~ N(0, I_{r×r})
+   b. PROJECTION: Z = Z_init - α×S_r where α = (⟨S_r,Z_init⟩_F - ξ√δ‖S_r‖_F)/‖S_r‖²_F
+   c. Map back: Z_f = U_r × Z × V_r^T ∈ R^{m×n}
+2. For RMS norms (1D): z ~ N(0, I)
+3. Concatenate into full perturbation z, SPSA with ε → scalar G_t
+4. Update: W_l -= η × G_t × Z_f^l
 
-**Complexity**: Higher than other phases — requires SVD computation, subspace management. Consider deferring if Phases 1-3 deliver sufficient improvement.
+**Paper's hyperparameters for LoRA**: ε=0.1, lr={1e-2..5e-2}, r=8, k=100, h=10, δ: 2→0
+
+**Memory**: ~22 MB (per-matrix SVD bases + perturbation buffers). Negligible.
+
+**Reported speedups**: P-GAP+LoRA on OPT-2.7B: 76.6% SQuAD (vs 63.4% MeZO LoRA), 8.7% of training GPU hours on RTE.
 
 **Go/no-go gate**: Must show measurable convergence improvement at 500 steps.
 
@@ -131,16 +137,17 @@ For each step:
 
 | Phase | Speed (ms/step) | vs CPU | Convergence | Status |
 |-------|----------------|--------|-------------|--------|
-| Baseline (CPU) | 452.5 | 1.00x | reference | - |
-| 1: Conv1x1 hybrid | 403-429 | 1.05-1.12x | 1.0x | ✅ Done |
-| 2: Fused conv kernels | 254 | 1.78x | 1.0x | ✅ Done |
+| Baseline (CPU) | 447 | 1.00x | reference | - |
+| 1: Conv1x1 hybrid | 403-429 | 1.04-1.11x | 1.0x | ✅ Done |
+| 2: Fused conv kernels | 262 | 1.71x | 1.0x | ✅ Done |
 | 3: FZOO K=4 | 2.5x slower/step | no wall-time benefit | ✅ Done |
-| 4: P-GAP r=4 | same speed | 0.35x (degrades) | ❌ Negative |
-| 4: P-GAP r=8 | same speed | 0.67x (degrades) | ❌ Negative |
+| 4: Flat-vector subspace (NOT P-GAP) | same speed | degrades | ❌ Negative |
+| 4: Faithful P-GAP | — | — | 🔄 In progress |
 
-**Best configuration: Phase 2 (conv-fused) at 254ms/step = 1.78x faster than CPU.**
+**Best configuration: Phase 2 (conv-fused) at ~262ms/step = 1.71x faster than CPU.**
+Triple-checked: 50-step average. val_loss within 0.03% of CPU baseline.
 
-Phase 3 (FZOO) provides better gradient quality but costs 2.5x more forward passes, netting zero wall-time convergence improvement. Phase 4 (P-GAP) actively degrades convergence because projected perturbation captures ~r/d of gradient energy (see docs/specs/2026-03-16-phase4-pgap-research-log.md).
+Phase 3 (FZOO) provides better gradient quality but costs 2.5x more forward passes, netting zero wall-time convergence improvement. Previous Phase 4 test used a simplified flat-vector approach that differs fundamentally from P-GAP (per-matrix SVD, gradient alignment constraint, 100x larger ε). Faithful P-GAP implementation in progress.
 
 ## Assumptions — Final Status
 
@@ -151,7 +158,7 @@ Phase 3 (FZOO) provides better gradient quality but costs 2.5x more forward pass
 | A3 | QKV combined conv kernel compiles | Medium | ✅ Confirmed |
 | A4 | One-sided Rademacher has O(ε²) bias | Low | ✅ Confirmed (literature) |
 | A5 | FZOO sigma-normalized update helps | Low | ⚠️ Helps gradient quality, not wall-time |
-| A6 | P-GAP transfers to LoRA fine-tuning | High | ❌ Disproven (SNR << 1, random basis) |
+| A6 | P-GAP transfers to LoRA fine-tuning | High | ⚠️ Simplified version failed; faithful impl. in progress |
 | A7 | Conv1x1 requires LoRA-split | None | ✅ Hard constraint, satisfied |
 
 ## Literature References
