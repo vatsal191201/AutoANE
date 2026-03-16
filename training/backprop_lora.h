@@ -72,6 +72,15 @@ typedef struct {
     // GQA tile buffers for SDPA backward (K_tiled, V_tiled at HEADS*HD)
     float *k_tiled;     // [Q_DIM, SEQ]
     float *v_tiled;     // [Q_DIM, SEQ]
+    // Pre-allocated per-layer temporaries (eliminates malloc/free churn)
+    float *dx2_scaled;  // [DIM, SEQ]
+    float *dW_Wo;       // [DIM, Q_DIM]
+    float *Q_rope;      // [Q_DIM, SEQ]
+    float *K_rope;      // [KV_DIM, SEQ]
+    float *dW_q;        // [Q_DIM, DIM]
+    float *dW_kv;       // [KV_DIM, DIM] (reused for Wk and Wv)
+    float *dx_rms;      // [DIM, SEQ]
+    float *dx_rms_final;// [DIM, SEQ]
 } BP_WorkBufs;
 
 static BP_WorkBufs bp_work_alloc(void) {
@@ -94,6 +103,14 @@ static BP_WorkBufs bp_work_alloc(void) {
     b.silu_tmp2 = (float*)safe_calloc((size_t)HIDDEN * SEQ, 4);
     b.k_tiled   = (float*)safe_calloc((size_t)Q_DIM * SEQ, 4);
     b.v_tiled   = (float*)safe_calloc((size_t)Q_DIM * SEQ, 4);
+    b.dx2_scaled    = (float*)safe_calloc((size_t)DIM * SEQ, 4);
+    b.dW_Wo         = (float*)safe_calloc((size_t)DIM * Q_DIM, 4);
+    b.Q_rope        = (float*)safe_calloc((size_t)Q_DIM * SEQ, 4);
+    b.K_rope        = (float*)safe_calloc((size_t)KV_DIM * SEQ, 4);
+    b.dW_q          = (float*)safe_calloc((size_t)Q_DIM * DIM, 4);
+    b.dW_kv         = (float*)safe_calloc((size_t)KV_DIM * DIM, 4);
+    b.dx_rms        = (float*)safe_calloc((size_t)DIM * SEQ, 4);
+    b.dx_rms_final  = (float*)safe_calloc((size_t)DIM * SEQ, 4);
     return b;
 }
 
@@ -104,6 +121,8 @@ static void bp_work_free(BP_WorkBufs *b) {
     free(b->dk); free(b->dv);
     free(b->silu_tmp); free(b->silu_tmp2);
     free(b->k_tiled); free(b->v_tiled);
+    free(b->dx2_scaled); free(b->dW_Wo); free(b->Q_rope); free(b->K_rope);
+    free(b->dW_q); free(b->dW_kv); free(b->dx_rms); free(b->dx_rms_final);
 }
 
 // ===== P16 Backward Pass =====
@@ -139,10 +158,9 @@ static void bp_lora_backward(
                 DIM, SEQ, CV, 1.0f, cembed, DIM, dlogits, CV, 0.0f, work->dy, SEQ);
 
     // --- Final RMSNorm backward ---
-    float *dx_rms = (float*)safe_calloc((size_t)SEQ * DIM, 4);
-    rmsnorm_bwd(dx_rms, grms_final_out, work->dy, x_final, rms_final, DIM, SEQ);
-    memcpy(work->dy, dx_rms, (size_t)SEQ * DIM * 4);
-    free(dx_rms);
+    memset(work->dx_rms_final, 0, (size_t)SEQ * DIM * 4);
+    rmsnorm_bwd(work->dx_rms_final, grms_final_out, work->dy, x_final, rms_final, DIM, SEQ);
+    memcpy(work->dy, work->dx_rms_final, (size_t)SEQ * DIM * 4);
 
     // --- Per-layer backward (reversed) ---
     for (int L = NLAYERS - 1; L >= 0; L--) {
@@ -198,41 +216,31 @@ static void bp_lora_backward(
         for (int i = 0; i < SEQ * DIM; i++) work->dx2[i] += work->dy[i];
 
         // 6. Wo backward: da = (alpha * dx2) @ Wo^T
-        float *dx2_scaled = (float*)safe_malloc((size_t)SEQ * DIM * 4);
-        vDSP_vsmul(work->dx2, 1, &res_alpha, dx2_scaled, 1, (vDSP_Length)(SEQ * DIM));
+        vDSP_vsmul(work->dx2, 1, &res_alpha, work->dx2_scaled, 1, (vDSP_Length)(SEQ * DIM));
         cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
-                    Q_DIM, SEQ, DIM, 1.0f, lw[L].Wo, Q_DIM, dx2_scaled, SEQ,
+                    Q_DIM, SEQ, DIM, 1.0f, lw[L].Wo, Q_DIM, work->dx2_scaled, SEQ,
                     0.0f, work->da, SEQ);
 
         // 7. dW Wo -> LoRA gradient
-        {
-            float *dW_Wo = (float*)safe_calloc((size_t)DIM * Q_DIM, 4);
-            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
-                        DIM, Q_DIM, SEQ, 1.0f, dx2_scaled, SEQ, ac->attn_out, SEQ,
-                        0.0f, dW_Wo, Q_DIM);
-            lora_grad_project(lg->Ao, lg->Bo, dW_Wo, ll->Ao, ll->Bo, DIM, r, Q_DIM);
-            free(dW_Wo);
-        }
-        free(dx2_scaled);
+        memset(work->dW_Wo, 0, (size_t)DIM * Q_DIM * 4);
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                    DIM, Q_DIM, SEQ, 1.0f, work->dx2_scaled, SEQ, ac->attn_out, SEQ,
+                    0.0f, work->dW_Wo, Q_DIM);
+        lora_grad_project(lg->Ao, lg->Bo, work->dW_Wo, ll->Ao, ll->Bo, DIM, r, Q_DIM);
 
         // 8. SDPA backward: need Q,K,V with RoPE applied
-        // Re-apply RoPE to saved Q, K (saved pre-RoPE)
-        float *Q_rope = (float*)safe_malloc((size_t)Q_DIM * SEQ * 4);
-        float *K_rope = (float*)safe_malloc((size_t)KV_DIM * SEQ * 4);
-        memcpy(Q_rope, ac->Q, (size_t)Q_DIM * SEQ * 4);
-        memcpy(K_rope, ac->K, (size_t)KV_DIM * SEQ * 4);
-        rope_forward_inplace(Q_rope, SEQ, Q_DIM, HD);
-        rope_forward_inplace(K_rope, SEQ, KV_DIM, HD);
+        memcpy(work->Q_rope, ac->Q, (size_t)Q_DIM * SEQ * 4);
+        memcpy(work->K_rope, ac->K, (size_t)KV_DIM * SEQ * 4);
+        rope_forward_inplace(work->Q_rope, SEQ, Q_DIM, HD);
+        rope_forward_inplace(work->K_rope, SEQ, KV_DIM, HD);
 
         // GQA tile K, V for SDPA backward
-        gqa_tile_kv(work->k_tiled, K_rope, SEQ);
+        gqa_tile_kv(work->k_tiled, work->K_rope, SEQ);
         gqa_tile_kv(work->v_tiled, ac->V, SEQ);
 
         // SDPA backward (CPU fp32)
-        cpu_sdpa_backward(Q_rope, work->k_tiled, work->v_tiled, work->da,
+        cpu_sdpa_backward(work->Q_rope, work->k_tiled, work->v_tiled, work->da,
                           work->dq_full, work->dk_full, work->dv_full, HEADS, HD, SEQ);
-        free(Q_rope);
-        free(K_rope);
 
         // GQA reduce dK, dV from HEADS -> KV_HEADS
         gqa_reduce_kv(work->dk, work->dk_full, SEQ);
@@ -243,28 +251,22 @@ static void bp_lora_backward(
         rope_backward_inplace(work->dq_full, SEQ, Q_DIM, HD);
         rope_backward_inplace(work->dk, SEQ, KV_DIM, HD);
 
-        // 9. dW Wq/Wk/Wv -> LoRA gradients
-        {
-            float *dW = (float*)safe_calloc((size_t)Q_DIM * DIM, 4);
-            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
-                        Q_DIM, DIM, SEQ, 1.0f, work->dq_full, SEQ, ac->xnorm, SEQ, 0.0f, dW, DIM);
-            lora_grad_project(lg->Aq, lg->Bq, dW, ll->Aq, ll->Bq, Q_DIM, r, DIM);
-            free(dW);
-        }
-        {
-            float *dW = (float*)safe_calloc((size_t)KV_DIM * DIM, 4);
-            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
-                        KV_DIM, DIM, SEQ, 1.0f, work->dk, SEQ, ac->xnorm, SEQ, 0.0f, dW, DIM);
-            lora_grad_project(lg->Ak, lg->Bk, dW, ll->Ak, ll->Bk, KV_DIM, r, DIM);
-            free(dW);
-        }
-        {
-            float *dW = (float*)safe_calloc((size_t)KV_DIM * DIM, 4);
-            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
-                        KV_DIM, DIM, SEQ, 1.0f, work->dv, SEQ, ac->xnorm, SEQ, 0.0f, dW, DIM);
-            lora_grad_project(lg->Av, lg->Bv, dW, ll->Av, ll->Bv, KV_DIM, r, DIM);
-            free(dW);
-        }
+        // 9. dW Wq/Wk/Wv -> LoRA gradients (reuse pre-allocated dW buffers)
+        // dW_q for Wq [Q_DIM, DIM]
+        memset(work->dW_q, 0, (size_t)Q_DIM * DIM * 4);
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                    Q_DIM, DIM, SEQ, 1.0f, work->dq_full, SEQ, ac->xnorm, SEQ, 0.0f, work->dW_q, DIM);
+        lora_grad_project(lg->Aq, lg->Bq, work->dW_q, ll->Aq, ll->Bq, Q_DIM, r, DIM);
+        // dW_kv for Wk [KV_DIM, DIM] (reuse same buffer)
+        memset(work->dW_kv, 0, (size_t)KV_DIM * DIM * 4);
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                    KV_DIM, DIM, SEQ, 1.0f, work->dk, SEQ, ac->xnorm, SEQ, 0.0f, work->dW_kv, DIM);
+        lora_grad_project(lg->Ak, lg->Bk, work->dW_kv, ll->Ak, ll->Bk, KV_DIM, r, DIM);
+        // dW_kv for Wv [KV_DIM, DIM] (reuse same buffer)
+        memset(work->dW_kv, 0, (size_t)KV_DIM * DIM * 4);
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                    KV_DIM, DIM, SEQ, 1.0f, work->dv, SEQ, ac->xnorm, SEQ, 0.0f, work->dW_kv, DIM);
+        lora_grad_project(lg->Av, lg->Bv, work->dW_kv, ll->Av, ll->Bv, KV_DIM, r, DIM);
 
         // 10. dx through Wq, Wk, Wv
         cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
@@ -278,11 +280,10 @@ static void bp_lora_backward(
                     1.0f, work->dx_attn, SEQ);
 
         // 11. RMSNorm1 backward + residual
-        float *dx_rms1 = (float*)safe_calloc((size_t)SEQ * DIM, 4);
-        rmsnorm_bwd(dx_rms1, grms_att[L], work->dx_attn, ac->x_pre, lw[L].rms_att, DIM, SEQ);
-        // dy for next (earlier) layer = dx_rms1 + dx2
-        for (int i = 0; i < SEQ * DIM; i++) work->dy[i] = dx_rms1[i] + work->dx2[i];
-        free(dx_rms1);
+        memset(work->dx_rms, 0, (size_t)SEQ * DIM * 4);
+        rmsnorm_bwd(work->dx_rms, grms_att[L], work->dx_attn, ac->x_pre, lw[L].rms_att, DIM, SEQ);
+        // dy for next (earlier) layer = dx_rms + dx2
+        for (int i = 0; i < SEQ * DIM; i++) work->dy[i] = work->dx_rms[i] + work->dx2[i];
     }
 }
 
