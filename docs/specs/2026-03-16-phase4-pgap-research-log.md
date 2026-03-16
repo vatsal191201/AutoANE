@@ -1,12 +1,28 @@
-# Phase 4: P-GAP Research Log — Validated Negative Result
+# Phase 4: P-GAP Research Log — Partial Negative Result (Simplified Implementation)
 
 ## Summary
 
-P-GAP (Gradient-Aligned Perturbations) does NOT work for LoRA-based zeroth-order training. The projected perturbation captures ~r/d ≈ 2.4×10⁻⁶ of gradient energy, rendering exploitation steps effectively useless. Convergence improvement is proportional to the fraction of standard (unprojected) MeZO steps, confirming that P-GAP-projected steps contribute zero useful gradient signal.
+A simplified flat-vector subspace projection approach was tested and found to degrade convergence. However, post-hoc literature review reveals that the implementation differs fundamentally from the actual P-GAP algorithm in several critical ways. The negative result validates that "flat-vector QR-based random subspace projection with standard MeZO hyperparameters" does not work, but does NOT invalidate P-GAP as described in the paper.
 
 ## Background
 
-P-GAP (arXiv:2510.18228) proposes projecting SPSA perturbations into a gradient-aligned subspace estimated via SVD. The paper reports 3-5x fewer iterations on SST-2, SNLI, DROP for full-parameter ZO optimization.
+P-GAP (arXiv:2510.18228) proposes projecting SPSA perturbations into a gradient-aligned subspace estimated via SVD. The paper reports 3-5x fewer iterations on SST-2, SNLI, DROP, and specifically tests P-GAP+LoRA with strong results (76.6% SQuAD vs 63.4% MeZO LoRA on OPT-2.7B).
+
+## CRITICAL: Implementation vs Paper Differences
+
+Post-experiment literature review revealed that our implementation differs from P-GAP in fundamental ways:
+
+| Aspect | Our Implementation | Paper's Algorithm |
+|--------|-------------------|-------------------|
+| Subspace structure | Flat d=1.7M vector, QR | Per-matrix SVD (each LoRA matrix separately) |
+| Perturbation type | Rademacher {±1}^d | Gaussian N(0, I_{r×r}) |
+| Epsilon | 0.001 (MeZO default) | **0.1 for LoRA** (100x larger) |
+| Learning rate | 1e-4 | **1e-2 to 5e-2** (100-500x larger) |
+| Gradient alignment | None (random QR basis) | Delta-projection constraint |
+| Probes per estimate | h=1 (single SPSA scalar × z) | h=10 (averaged gradient) |
+| SVD granularity | Global (all params as vector) | Per-layer per-matrix |
+
+These differences explain the negative result: our approach is not P-GAP, it's a much simpler "random subspace projection" that lacks P-GAP's core innovations (per-matrix structure, gradient alignment constraint, aggressive hyperparameters).
 
 Our setup: SmolLM2-360M with LoRA rank-8, attention-only adapters. Trainable params d = 1,700,800 (1,638,400 LoRA + 62,400 RMS norms).
 
