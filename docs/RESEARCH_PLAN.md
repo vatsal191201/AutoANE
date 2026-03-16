@@ -365,15 +365,16 @@ Result: **GAP WIDENS**: 12% at 120s → 37% at 600s. ANE loss diverges (4.69→4
 14. **IOSurface memory pressure ceiling** (E38) — first known ANE training scaling study across model dimensions. DIM=1536 (220MB IOSurfaces): parity. DIM=2048 (379MB): ANE 2x SLOWER due to memory pressure. No ANE throughput advantage at any tested dimension.
 15. **CPU-only is the correct default for ALL model sizes** (E38/V15) — updated train.py to default to --cpu-only.
 
-### Recommended next steps (revised 2026-03-11):
+### Recommended next steps (revised 2026-03-16):
 
-**ANE research (diminishing returns):**
-1. ~~Power measurement~~: **COMPLETE (2026-03-12)**. ANE does NOT save power — package power identical (~12.5-13.3W) across all modes. CPU-only is most energy-efficient per step.
-2. ~~Kernel fusion~~: Would improve ANE utilization (30%→94%) but fusion hurts generalization (V12). Dead end for training.
-3. ~~Larger model scaling~~: **DISPROVED by E38** — IOSurface memory pressure degrades ANE at DIM≥2048.
-4. **Dual-input IOSurface** (imperatormk approach): Might avoid spatial packing overhead. Requires significant code changes. Medium-term research.
-5. **_ANEChainingRequest** (U12): Firmware-level chained execution could eliminate CPU round-trips. Unexplored API. High-risk, high-reward research.
-6. **INT8 for bandwidth savings**: Reduces IOSurface size by 2x, potentially moving the memory pressure cliff higher.
+**ANE research — MeZO+LoRA-split BREAKTHROUGH:**
+1. ~~Power measurement~~: **COMPLETE (2026-03-12)**. ANE does NOT save power for backprop — package power identical (~12.5-13.3W).
+2. ~~Kernel fusion hurts generalization~~: **OVERTURNED by MeZO**. Kernel fusion in MeZO (forward-only, no backprop) achieves 1.71x speedup with zero convergence impact. The "fusion hurts" finding was specific to fp16 backprop with fused non-linear ops.
+3. ~~Larger model scaling~~: **DISPROVED for backprop by E38** — IOSurface memory pressure at DIM≥2048. MeZO+LoRA-split uses much smaller IOSurfaces (activation-only, no weight staging) — **may not hit this ceiling**. Untested.
+4. **P9 MeZO+LoRA-split — COMPLETE (2026-03-16)**: 262ms/step = 1.71x faster than CPU. First ANE-faster-than-CPU training result. See design spec for full 4-phase optimization pipeline.
+5. **Cross-layer fusion**: Current fusion is intra-layer. Further IO reduction possible but LoRA corrections between layers prevent full fusion.
+6. **INT8 LoRA corrections**: Leverage ANE's 1.88x INT8 throughput for LoRA A/B matrices.
+7. **_ANEChainingRequest** (U12): **DEAD on macOS 15+** (confirmed by maderix PR #40).
 
 **Autoresearch (high value):**
 7. ✓ **Build the autoresearch loop** — COMPLETE. autoresearch.py orchestrates configs via run_experiment.sh.
@@ -393,12 +394,20 @@ Result: **GAP WIDENS**: 12% at 120s → 37% at 600s. ANE loss diverges (4.69→4
 2. ✓ **Longer budget runs** (E41) — 512d/4L wins at ALL budgets (120-600s). No crossover. Gap widens. (U15 resolved)
 3. ✓ **Update train.py defaults** — Changed to 512d/4L with LR=5e-4.
 
-### Remaining research directions (post-E41):
+### Remaining research directions (post-E41, updated 2026-03-16):
 
 1. **Data scaling** — Current bottleneck is data volume (20M tokens), not model capacity. Test with multiple data shards or larger dataset to see if larger models catch up.
 2. **Sequence length sweep** — SEQ=256 limits context. Test SEQ=512/1024 to see effect on val_loss and throughput.
 3. **Weight decay sweep** — 768d/2L overfits heavily. Higher WD (0.2-0.5) might help shallow models.
 4. **Longer training (10-30 min)** — 512d/4L is still underfitting at 600s (val < train). How far can it go?
+
+### MeZO+LoRA research directions (NEW, 2026-03-16):
+
+5. **Cross-layer fusion** — Current fusion is intra-layer (QKV combined, FFN mega-kernel). Fusing across layers could further reduce 96 IO round-trips. Challenge: LoRA corrections between layers prevent full fusion.
+6. **Larger model MeZO** — Test MeZO+LoRA-split on models larger than SmolLM2-360M. Conv1x1 advantage should increase with wider dimensions. IOSurface pressure may be lower (activation-only surfaces, no weight staging).
+7. **INT8 LoRA** — LoRA A/B matrices (rank-8) could potentially use INT8 compute on ANE (1.88x throughput). Risk: low-rank matrices may lose too much precision.
+8. **Mobile MeZO** — Deploy MeZO+LoRA-split to iOS/iPad. ANE may be the only thermally viable compute for sustained on-device fine-tuning.
+9. **Better ZO gradient estimators** — FZOO and P-GAP didn't help for LoRA ZO. Explore: GraDFree (coordinate-wise), SZOFW (Frank-Wolfe), variance-reduced ZO methods. Key constraint: must work with rank-8 LoRA matrices.
 
 ### E42: Independent Verification (2026-03-11)
 

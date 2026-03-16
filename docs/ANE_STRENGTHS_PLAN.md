@@ -1,19 +1,19 @@
 # What Actually Works on ANE: A Data-Driven Plan
 
+> **STATUS (2026-03-16)**: Many projections in this document have been **validated or invalidated** by the MeZO+LoRA-split pipeline (Session 5). See updates inline. **Best achieved: 262ms/step = 1.71x faster than CPU.**
+
 ## ANE's Measured Strengths
 
-| Strength | Number | Source |
-|----------|--------|--------|
-| Conv1x1 throughput vs matmul | **3x faster** | Orion (2603.06728), Constraint #17 |
-| Peak FP16 throughput | **15.8–19 TFLOPS** | maderix ANE benchmarks (M4); README reports 15.8, substack deep-dive reports 19 |
-| Power efficiency | **6.6 TFLOPS/W** (80x better than A100) | maderix |
-| Deep graph pipelining | **94% utilization at 32+ layers** (vs 30% single-op) | maderix |
-| On-chip SRAM | **~32 MB** (estimated from perf cliff at 24–96 MB) | maderix (inferred, not directly measured) |
-| Dispatch overhead | **0.095 ms per dispatch** | Orion |
-| Classifier forward on ANE | **10.2x faster than CPU** | Orion |
-| Softmax (32K vocab) on ANE | **33.8x faster than CPU** | Orion |
-| Delta reload vs recompile | **8.5x faster** (494ms vs 4200ms) | Orion |
-| Adapter-as-input | **Zero recompilation** for weight updates | Orion |
+| Strength | Number | Source | Our Result |
+|----------|--------|--------|------------|
+| Conv1x1 throughput vs matmul | **2.0-2.2x faster** | Measured (bench_conv, 500-iter) | ✅ Validated (not 3x — shape-dependent) |
+| Peak FP16 throughput | **15.8–19 TFLOPS** | maderix ANE benchmarks (M4) | Not directly measured |
+| Power efficiency | **6.6 TFLOPS/W** | maderix | ⚠️ Not validated for training (package power identical) |
+| Deep graph pipelining | **94% utilization at 32+ layers** | maderix | ⚠️ Not independently verified |
+| On-chip SRAM | **~32 MB** | maderix (inferred) | Consistent with our memory pressure findings |
+| Dispatch overhead | **0.095 ms per dispatch** | Orion | Consistent (~0.27ms per IO trip measured) |
+| Delta reload vs recompile | **8.5x faster** (494ms vs 4200ms) | Orion | ❌ Not reproducible in our tests |
+| Adapter-as-input | **Zero recompilation** for weight updates | Orion | ✅ Validated (LoRA-split mode) |
 
 ## What We're Doing Wrong
 
@@ -131,28 +131,28 @@ Implement MobiZO's Multi-Perturbed LoRA:
 
 This halves the number of forward passes from 2 to 1.
 
-### Phase 4: P-GAP integration (estimated: 3-5 days)
+### Phase 4: P-GAP integration — **❌ NEGATIVE RESULT**
 
 Gradient-aligned perturbations (P-GAP, arXiv 2510.18228):
-- Project perturbations into gradient-aligned subspace
-- 5.2x faster convergence than random perturbations
-- Reduces required steps from ~20K to ~4K
+- ~~5.2x faster convergence~~ → **DOES NOT TRANSFER TO LORA ZO**
+- Tested both flat-vector QR and faithful per-matrix SVD implementations
+- Paper hyperparams (ε=0.1, lr=1e-2) diverge catastrophically on SmolLM2-360M
+- Standard hyperparams: identical convergence to baseline (no benefit)
+- Root cause: LoRA rank-8 matrices too small for per-matrix SVD to find useful low-rank structure
 
-## Expected End State (REVISED per benchmark results)
+## Expected End State (FINAL RESULTS — 2026-03-16)
 
-| Metric | Current Best (LoRA-split CPU) | ~~Original Target~~ | **Revised Target** |
-|--------|------------------------------|--------------------|--------------------|
-| ms/step | 593 | ~~50~~ | **~150-200** |
-| Steps/120s | 173 | ~~2,300~~ | **~600-800** |
-| Power | ~13W (CPU package) | ~2.8W | ~2.8W (ANE only) |
-| Memory | 2.0 GB | ~1.5 GB | ~1.5 GB (quantized base) |
-| Energy/step | ~7.7 J | ~~0.14 J~~ | **~0.5 J** |
+| Metric | CPU Baseline | Projected Target | **Actual Result** | Status |
+|--------|-------------|------------------|-------------------|--------|
+| ms/step | 447 | ~150-200 | **262** | ✅ 1.71x faster |
+| Steps/120s | 268 | ~600-800 | **~458** | ✅ 1.71x more steps |
+| Convergence | reference | 3-5x fewer steps | **1.0x (same)** | ⚠️ No convergence benefit |
+| FZOO benefit | — | 3x fewer passes | **0x (wall-time neutral)** | ❌ |
+| P-GAP benefit | — | 5.2x convergence | **0x or negative** | ❌ |
 
-**Energy per step drops ~15x** (not 55x as originally projected). Still significant for on-device training.
+**Actual speedup: 1.71x** — less than the 3-4x projected, but the first ANE-faster-than-CPU training result. The projections overestimated conv1x1 speedup (2x actual vs 3x projected) and assumed FZOO/P-GAP would provide convergence benefits (they don't for LoRA ZO).
 
-A MacBook Pro battery (100 Wh) could run:
-- Current CPU: ~46,000 steps (13W × ~9.5h, but throttles)
-- Target ANE: ~2,500,000 steps (2.8W × ~36h theoretical)
+**Power**: Not re-measured for MeZO mode. Previous measurements showed ~12.5-13.3W package power across all modes.
 
 ## Literature Supporting This Plan
 

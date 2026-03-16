@@ -1,9 +1,9 @@
 # AutoANE: Complete Findings, Methodology & Audit Trail
 
 **Project**: Training Llama-family transformers on Apple's Neural Engine via reverse-engineered private APIs
-**Duration**: March 10-12, 2026 (55 commits, 4 sessions)
+**Duration**: March 10-16, 2026 (65 commits, 5 sessions)
 **Hardware**: Apple M2 Pro, macOS 15+
-**Codebase**: ~3,555 lines C/ObjC + 8 Python scripts + 8 regression tests
+**Codebase**: ~3,555 lines C/ObjC (training) + ~2,100 lines C/ObjC (MeZO) + 8 Python scripts + 8 regression tests
 
 ---
 
@@ -33,7 +33,7 @@ The Neural Engine (ANE) is a dedicated machine learning accelerator on every App
 
 AutoANE builds on maderix's work to implement a complete training pipeline for Llama-architecture transformers (RMSNorm, RoPE, GQA attention, SwiGLU FFN, AdamW optimizer). It then runs 44 controlled experiments to characterize when and whether ANE training is useful.
 
-**The short answer**: ANE's raw matmul is 2.5x faster than CPU, but overhead from weight staging via IOSurface negates this. CPU-only training produces better models faster at every tested size. However, three untested approaches (zeroth-order training, mega-kernel fusion, function parameter IOSurfaces) could change this conclusion.
+**The short answer**: ANE's raw matmul is 2.5x faster than CPU, but overhead from weight staging via IOSurface negates this for standard backprop training. CPU-only backprop training produces better models faster at every tested size. However, **MeZO zeroth-order training with LoRA-split and conv-fused kernels achieves 1.71x faster than CPU** — the first ANE-faster-than-CPU training result. The key insight: LoRA-split freezes base weights as BLOBFILE constants (eliminating per-step IOSurface staging), and conv1x1 with kernel fusion reduces IO round-trips from 224 to 96.
 
 ---
 
@@ -175,6 +175,27 @@ The Orion paper claims 8.5x faster recompilation via unload/reload. We could not
 100 random-perturbation experiments found a config claiming val_loss 3.288 (17% improvement). Independent verification shows this config typically produces ~3.8. Run-to-run variance (~0.3 nats from random initialization) exceeds most improvement signals in the search. The manually-tuned baseline (LR=4e-4, ACCUM=10) reliably produces ~3.5.
 
 **Evidence**: E44 (100 experiments), independent verification runs
+
+### Finding 8: MeZO+LoRA-Split Achieves First ANE-Faster-Than-CPU Training
+
+MeZO (zeroth-order optimizer) with LoRA-split mode on SmolLM2-360M (pretrained, 32L, DIM=960, 1.7M trainable params) achieves ANE training 1.71x faster than CPU:
+
+| Phase | Speed (ms/step) | vs CPU (447ms) | Convergence | Status |
+|-------|----------------|----------------|-------------|--------|
+| Baseline (CPU MeZO) | 447 | 1.00x | reference | — |
+| Conv1x1 hybrid | 403-429 | 1.04-1.11x | 1.0x | ✅ |
+| **Fused conv kernels** | **~262** | **1.71x** | **1.0x** | **✅** |
+| FZOO K=4 | 2.5x slower/step | — | no wall-time benefit | ✅ |
+| P-GAP (paper params) | same | — | DIVERGES | ❌ |
+| P-GAP (standard params) | same | — | neutral | ❌ |
+
+**Why this works when Finding 1 said CPU always wins**: Finding 1 tested *backprop* training with *dynamic weight staging* — weights are converted fp32→fp16 and staged via IOSurface every step. MeZO+LoRA-split eliminates this overhead entirely: base weights are frozen as BLOBFILE constants (compiled once, never re-staged), and only LoRA corrections (rank-8 matrices, ~50KB/layer) are applied on CPU. Conv1x1 with fused kernels further reduces IO round-trips from 224 to 96 per forward pass.
+
+**Convergence verification**: val_loss within 0.03% of CPU MeZO baseline over 50-step average. Phase 2 does not degrade training quality.
+
+**Negative results documented**: FZOO provides better per-estimate gradient quality but the 2.5x computational overhead eliminates the benefit. P-GAP (gradient-aligned perturbations) was tested with both a simplified flat-vector implementation and a faithful per-matrix SVD implementation matching arXiv:2510.18228. Paper hyperparameters (ε=0.1, lr=1e-2) diverge catastrophically on SmolLM2-360M LoRA. Standard hyperparameters produce identical convergence to baseline. Root cause: LoRA rank-8 matrices are too small for per-matrix SVD to find useful low-rank structure.
+
+**Evidence**: Design spec (2026-03-15), Phase 4 research log (2026-03-16), bench_conv 500-iter averages, 50-step timing averages
 
 ---
 
@@ -362,7 +383,7 @@ All 7 cited references verified against source papers:
 | UP1 | Runtime weight injection via IOSurface inputs | imperatormk/ane-train | Our pipeline already does this |
 | UP4 | Mega-kernel fusion: 3-4x forward speedup | maderix PR #24 | Not tested (conflicts with runtime weights) |
 | UP5 | _ANEChainingRequest is DEAD on macOS 15+ | maderix PR #40 | Confirmed — requires Espresso IR |
-| UP14 | MeZO: forward-only gradient estimation | Princeton NLP 2023 | Not tested — highest-impact research direction |
+| UP14 | MeZO: forward-only gradient estimation | Princeton NLP 2023 | **✅ IMPLEMENTED** — 1.71x faster than CPU with LoRA-split+conv-fused |
 | UP17 | Function parameter IOSurfaces: 30% faster | maderix PR #22 | Not tested — requires MIL gen changes |
 | UP19 | ACCUM_STEPS=100 gives 4.74x throughput | maderix Issue #24 | Tested: 2.2-3.0x (lower than claimed) |
 | UP22 | Layer fusion: 3-4x forward speedup | maderix Issue #24 | Not tested |
@@ -386,29 +407,36 @@ All 7 cited references verified against source papers:
 
 4. **On-device training on iOS/iPad**: On mobile devices, ANE may be the only thermally viable compute unit for sustained workloads. CPU throttles faster, GPU heats the shared thermal envelope. ANE's dedicated cooling path could enable training that's impossible any other way. **Untested hypothesis.**
 
-### 9.3 What Could Change This Picture
+### 9.3 What Changed This Picture — And What Remains
 
-Three approaches could make ANE training competitive:
+**RESOLVED — MeZO+LoRA-split works (Finding 8)**: Zeroth-order training with LoRA-split mode achieves 1.71x faster than CPU. The key was eliminating per-step weight staging entirely: base weights are BLOBFILE constants, LoRA corrections are CPU-side, and conv1x1 with fused kernels reduces IO overhead. This validates the hypothesis that ANE's forward-pass speed advantage could be unlocked by avoiding the weight-staging bottleneck.
 
-1. **Zeroth-order training (MeZO/FwdLLM/MobiEdit)**: Uses only forward passes to estimate gradients. Eliminates backward kernels entirely. ANE's strength IS fast forward passes. No one has tried this on ANE. This is the highest-impact research direction.
+**Remaining approaches** that could further improve ANE training:
 
-2. **Mega-kernel fusion + high accumulation**: Fusing 6 transformer layers into one ANE dispatch gets 3-4x forward speedup. Combined with ACCUM_STEPS=100 to amortize recompilation, the overhead equation changes fundamentally.
+1. **Cross-layer fusion**: Current fusion is intra-layer (QKV combined, FFN mega-kernel). Fusing across multiple transformer layers into fewer ANE dispatches could further reduce IO round-trips. Challenge: LoRA corrections between layers prevent full fusion.
 
-3. **Function parameter IOSurfaces**: 30% faster than our spatial packing approach. Eliminates 12 slice/reshape/transpose ops per attention kernel. A targeted MIL generation change, not an architectural overhaul.
+2. **INT8 quantized LoRA corrections**: LoRA A/B matrices could potentially be quantized to INT8 for ANE compute, leveraging ANE's 1.88x INT8 throughput advantage. Risk: rank-8 matrices may lose too much precision.
+
+3. **Larger model scaling**: SmolLM2-360M (960d/32L) has conv1x1 advantageous for 5/7 projections. Larger models with wider dimensions should see even greater conv1x1 benefits. The 1.71x speedup may increase at larger scale.
+
+4. **Function parameter IOSurfaces**: 30% faster than spatial packing for remaining matmul kernels (Wk, Wv). A targeted MIL generation change.
 
 ---
 
 ## 10. Open Research Directions
 
-Ranked by expected impact:
+Ranked by expected impact (updated 2026-03-16):
 
-| Priority | Direction | Why | Effort |
-|----------|-----------|-----|--------|
-| P9 | Zeroth-order training (MeZO) | Forward-only = ANE's strength. Eliminates backward pass. 2-25x memory reduction. | 2-3 days |
-| P1 | Runtime weight injection (dual-input) | Function parameter IOSurfaces: 30% faster. Compile once. | 2-3 days |
-| P2 | Mega-kernel fusion | 3-4x forward speedup. Requires const() weights (conflicts with P1). | 3-5 days |
-| P5 | Larger dataset | Test if findings generalize beyond 20M tokens. | 0.5-2 days |
-| P8 | Delta compilation (Orion approach) | 8.5x recompile speedup. Only useful for larger models. | 1-2 days |
+| Priority | Direction | Why | Effort | Status |
+|----------|-----------|-----|--------|--------|
+| P9 | MeZO+LoRA-split+conv-fused | Forward-only + frozen base weights + fused kernels | Done | **✅ 1.71x CPU** |
+| P11 | Cross-layer fusion | Further reduce IO round-trips beyond intra-layer fusion | 3-5 days | NEW |
+| P12 | Larger model scaling (MeZO) | Test if 1.71x speedup increases at >360M params | 2-3 days | NEW |
+| P13 | INT8 quantized LoRA | Leverage ANE's 1.88x INT8 throughput for LoRA corrections | 2-3 days | NEW |
+| P5 | Larger dataset | Test if findings generalize beyond 20M tokens | 0.5-2 days | Open |
+| P1 | Function parameter IOSurfaces | 30% faster for remaining Wk/Wv matmul kernels | 2-3 days | Open |
+| P14 | MeZO+LoRA on mobile (iOS/iPad) | ANE may be only viable compute for sustained mobile training | 1 week | NEW |
+| P15 | Better ZO gradient estimators | Beyond FZOO/P-GAP — explore GraDFree, SZOFW, or variance reduction | Research | NEW |
 
 ---
 
@@ -490,6 +518,12 @@ Reviewed ALL upstream PRs/issues (~260 total), discovered 3 game-changing develo
 **Exhaustive verification sweep**
 
 Deployed 6 parallel verification agents, found and fixed RMSNorm backward bug (critical), removed 66.7MB dead allocations, added GQA validation and data file validation, converted 4 remaining raw calloc calls, experimentally confirmed UP19 at lower magnitude, caught 3 agent false positives. 2 commits.
+
+### Session 5 (Mar 13-16, ~12 hours)
+
+**MeZO+LoRA training pipeline — P9 COMPLETE**
+
+Implemented MeZO zeroth-order training with LoRA-split on SmolLM2-360M (pretrained, 32 layers, DIM=960). Four optimization phases: (1) Conv1x1 hybrid with BLOBFILE weight baking — 403-429ms/step; (2) Fused conv kernels (QKV combined + FFN mega-kernel) — **262ms/step = 1.71x faster than CPU**; (3) FZOO multi-perturbation K=4 — no wall-time benefit; (4) P-GAP gradient-aligned perturbations — negative result (both simplified and faithful implementations). Added Gaussian RNG (Box-Muller), per-matrix SVD (LAPACK ssyev_), PROJECTION constraint. Detailed design spec and research log documenting methodology, results, and mathematical analysis of why P-GAP fails for LoRA ZO. 10 commits.
 
 ---
 

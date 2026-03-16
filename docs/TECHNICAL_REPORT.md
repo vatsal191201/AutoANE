@@ -6,7 +6,7 @@
 
 ## Abstract
 
-We present AutoANE, the first open-source system for training Llama-family transformers on Apple's Neural Engine (ANE) via reverse-engineered private APIs. Through 43 controlled experiments and a 100-experiment autonomous hyperparameter search, we characterize the ANE compute/precision/power tradeoff for training workloads. Our central finding is negative: **CPU-only training dominates ANE at every tested model size (36M-281M params), in both throughput and energy efficiency.** ANE achieves 2.5x faster matmuls but IOSurface weight-staging overhead and irreducible fp16 precision loss negate this advantage. Direct power measurement via `powermetrics` shows identical package power (~12.5-13.3W) across all training modes, contradicting assumptions of ANE power efficiency gains for training. We additionally demonstrate that in a fixed time window on Apple Silicon, more optimizer steps beats more parameters — a regime-specific manifestation of Kaplan et al.'s data scaling exponent exceeding the parameter exponent.
+We present AutoANE, the first open-source system for training Llama-family transformers on Apple's Neural Engine (ANE) via reverse-engineered private APIs. Through 43 controlled experiments, a 100-experiment autonomous hyperparameter search, and a 4-phase zeroth-order optimization pipeline, we characterize the ANE compute/precision/power tradeoff for training workloads. Our initial finding for standard backprop training is negative: CPU-only training dominates ANE at every tested model size (36M-281M params) due to IOSurface weight-staging overhead and irreducible fp16 precision loss. However, **MeZO zeroth-order training with LoRA-split and conv-fused kernels achieves 1.71x faster than CPU (262ms/step vs 447ms)** — the first demonstration of ANE training outperforming CPU on Apple Silicon. The key insight: LoRA-split freezes base weights as BLOBFILE constants (eliminating per-step IOSurface staging), while conv1x1 with fused kernels reduces IO round-trips from 224 to 96. We also report negative results for two advanced ZO gradient estimators (FZOO multi-perturbation and P-GAP gradient-aligned subspaces) and demonstrate that in a fixed time window, more optimizer steps beats more parameters.
 
 ---
 
@@ -367,21 +367,70 @@ All experimental claims, architecture rankings, and research conclusions hold un
 
 ---
 
-## 11. Limitations
+## 11. MeZO Zeroth-Order Training (Sessions 5, March 2026)
 
-1. **Single dataset**: All results are on TinyStories (20M tokens). At 23-329x below Chinchilla optimal data:parameter ratio, all models are severely data-starved. The "smaller model wins" finding is regime-specific — at sufficient data, larger models would eventually overtake.
+### 11.1 Motivation
 
-2. **Single hardware**: All experiments on a single M4 chip. ANE architecture and performance characteristics differ across M1/M2/M3/M4 generations.
+Findings 1-5 established that backprop training on ANE is limited by two bottlenecks: (1) per-step IOSurface weight staging overhead, and (2) irreducible fp16 precision loss in non-linear operations. MeZO (Memory-Efficient Zeroth-Order Optimizer, Malladi et al. 2023) eliminates both: it uses only forward passes (no backward kernels), and LoRA-split mode freezes base weights as BLOBFILE constants (no per-step weight staging).
+
+### 11.2 System Design
+
+MeZO estimates gradients via SPSA (Simultaneous Perturbation Stochastic Approximation): perturb all trainable parameters by ±ε·z (where z is Rademacher ±1), compute two forward passes, and estimate the gradient as `g ≈ [(L⁺ - L⁻) / (2ε)] · z`.
+
+**Model**: SmolLM2-360M (pretrained), 32 layers, DIM=960, Q_DIM=960, KV_DIM=320, HIDDEN=2560.
+
+**LoRA-split**: Rank-8 attention-only adapters. 8 matrices per layer × 32 layers = 256 LoRA matrices. Trainable parameters: 1,700,800 (1,638,400 LoRA + 62,400 RMS norms). Base weights frozen as BLOBFILE constants in conv1x1 kernels.
+
+### 11.3 Four-Phase Optimization Pipeline
+
+**Phase 1 — Conv1x1 Hybrid**: Replace matmul MIL kernels with conv1x1 where faster. Selective: Wq (2.05x), Wo (2.11x), W1 (2.20x), W2 (1.93x), W3 (2.20x) use conv; Wk (0.36x), Wv (0.36x) stay as matmul. BLOBFILE weight baking eliminates per-step weight staging for conv projections. Bit-exact numerical correctness verified. Result: 403-429ms/step (1.04-1.11x CPU).
+
+**Phase 2 — Fused Conv Kernels**: Combine multiple operations per layer into fewer MIL programs. QKV combined kernel (3→1), FFN mega-kernel (conv W1 + conv W3 + SiLU + conv W2 + residual, 3→1), Wo conv (1). Total: 3 kernels/layer instead of 7, reducing IO round-trips from 224 to 96. Result: **~262ms/step = 1.71x faster than CPU** (447ms baseline). Val_loss within 0.03% of CPU baseline. Triple-checked via 50-step average.
+
+**Phase 3 — FZOO Multi-Perturbation**: Replace central-difference (2 passes, 1 estimate) with K one-sided perturbations (K+1 passes, K estimates). Uses Rademacher perturbations (O(ε²) bias proven by ZOSA, arXiv:2511.09156). K=4: 2.5x more forward passes, better gradient quality, but zero wall-time convergence improvement. The better per-estimate quality is exactly offset by the computational overhead.
+
+**Phase 4 — P-GAP Gradient-Aligned Perturbations**: Two implementations tested:
+1. *Simplified (flat-vector QR)*: Degrades convergence. Projected gradient 1000x smaller (√(r/d) = √(4/1.7M) ≈ 0.0015).
+2. *Faithful (per-matrix SVD, arXiv:2510.18228)*: 256 per-matrix SVD bases, PROJECTION constraint, Gaussian perturbations (Box-Muller), delta linear decay. Paper hyperparameters (ε=0.1, lr=1e-2) diverge catastrophically. Standard hyperparameters neutral. Root cause: LoRA rank-8 matrices (8×960) have at most 8 singular values — the SVD rank equals the matrix rank, leaving no dimensionality reduction to exploit.
+
+### 11.4 Key Results
+
+| Metric | Value |
+|--------|-------|
+| Best config | Phase 2 (conv-fused), 262ms/step |
+| Speedup vs CPU | 1.71x |
+| Convergence impact | Zero (val_loss within 0.03% of CPU) |
+| IO round-trips | 96 (vs 224 Phase 1, vs ~448 backprop dynamic) |
+| FZOO benefit | Zero wall-time improvement |
+| P-GAP benefit | Zero (neutral) to negative (diverges) |
+
+### 11.5 Why This Contradicts Finding 1
+
+Finding 1 ("CPU beats ANE at every tested size") applies specifically to *backprop training with dynamic weight staging*. MeZO+LoRA-split changes the equation:
+- No backward pass → eliminates the most complex ANE code path
+- LoRA-split → base weights frozen as BLOBFILE constants → no per-step IOSurface staging
+- Conv1x1 with fused kernels → fewer IO round-trips → lower overhead per forward pass
+- Forward-only → ANE's strength (fast matmuls) without its weakness (weight staging)
+
+The IOSurface overhead that dominated backprop training (8.1ms at DIM=1024) is eliminated because BLOBFILE constants are compiled into the kernel — they don't traverse the IOSurface path.
+
+## 12. Limitations
+
+1. **Single dataset**: Backprop experiments use TinyStories (20M tokens). MeZO experiments use SmolLM2-360M pretrained weights fine-tuned on TinyStories. Results may not generalize to other datasets or tasks.
+
+2. **Single hardware**: All experiments on M2 Pro (macOS 15). ANE architecture and performance characteristics differ across M1/M2/M3/M4 generations.
 
 3. **No comparison to MLX or PyTorch**: We compare CPU vs ANE within AutoANE's framework but do not benchmark against established frameworks. MLX would likely achieve higher throughput on GPU for models larger than ~50M params.
 
-4. **Dynamic weight staging only**: The static compilation approach (conv 1x1, recompile per weight update) was not tested end-to-end because delta compilation failed. If a working delta compilation mechanism exists (as Orion claims), the throughput picture could change substantially.
+4. **MeZO convergence rate**: MeZO converges slower than backprop per step. The 1.71x speedup is measured per-step, not per unit of convergence. Total training time to reach a target loss may still favor CPU backprop for tasks where backprop is feasible.
 
 5. **Private APIs**: Results depend on `_ANEClient` and `_ANECompiler` behavior in macOS 15. These are undocumented and may change.
 
+6. **Single model size for MeZO**: MeZO+LoRA-split tested only on SmolLM2-360M. The 1.71x speedup may differ at other model sizes. Conv1x1 advantages should increase with wider dimensions, but IOSurface behavior at larger scales is untested in this mode.
+
 ---
 
-## 12. Assumptions Registry
+## 13. Assumptions Registry
 
 Every assumption is tracked in [docs/ASSUMPTIONS.md](ASSUMPTIONS.md) with status, evidence, and confidence level. As of this writing: 27 verified, 8 disproved, 13 unverified/resolved. Notable disproved assumptions:
 
@@ -391,13 +440,17 @@ Every assumption is tracked in [docs/ASSUMPTIONS.md](ASSUMPTIONS.md) with status
 
 ---
 
-## 13. Conclusions
+## 14. Conclusions
 
-ANE has genuine computational advantages for matrix multiplication (2.5x over CPU AMX) but these are negated by the weight-staging overhead inherent in the dynamic compilation approach. The fp16 precision constraint further degrades training quality by ~16%, an irreducible hardware limitation. Delta compilation, which could theoretically eliminate the overhead, could not be made to work.
+ANE has genuine computational advantages for matrix multiplication (2.5x over CPU AMX) but for *standard backprop training*, these are negated by IOSurface weight-staging overhead and irreducible fp16 precision loss.
 
-For training on Apple Silicon today, CPU-only (via Accelerate/AMX) is the right choice at every tested model size. ANE's value proposition for training lies in the future: on mobile devices (iPhone/iPad) where the CPU is thermally constrained but ANE can sustain throughput, and with potential API improvements that enable efficient weight updates.
+However, **MeZO zeroth-order training with LoRA-split fundamentally changes the equation**. By freezing base weights as BLOBFILE constants and using conv1x1 with fused kernels, we achieve 1.71x faster than CPU (262ms/step vs 447ms) with zero convergence impact. This is the first demonstration of ANE training outperforming CPU on Apple Silicon. The key insight is architectural: the problem was never ANE's compute speed (which is 2.5x faster than CPU for matmuls), but the per-step weight-staging overhead. LoRA-split eliminates this overhead entirely.
 
-The autonomous hyperparameter search demonstrates the Karpathy keep/revert protocol in a constrained search space (hyperparameters only, compiled training binary). However, verification revealed that run-to-run variance (~0.3 nats from random initialization) exceeds the optimization signal — the search's "best" config (val_loss 3.288) typically produces ~3.8, while the manually-tuned baseline reliably produces ~3.5. This highlights a fundamental limitation of single-evaluation keep/revert: it is susceptible to hill-climbing on noise when per-run variance is large relative to the improvement signal.
+Two advanced ZO gradient estimators were tested and found unhelpful for this regime: FZOO multi-perturbation provides better gradient quality but costs 2.5x more forward passes (net zero benefit), and P-GAP gradient-aligned perturbations either diverge (paper hyperparameters) or provide zero benefit (standard hyperparameters). The P-GAP negative result has a clear structural cause: LoRA rank-8 matrices are too small for per-matrix SVD to find useful low-rank structure.
+
+For *backprop* training on Apple Silicon, CPU-only remains the right choice. For *zeroth-order fine-tuning* (MeZO+LoRA), ANE with conv-fused kernels is 1.71x faster. ANE's value proposition for training is now validated for the LoRA fine-tuning use case, with mobile deployment (iPhone/iPad) as the highest-impact application.
+
+The autonomous hyperparameter search demonstrates that run-to-run variance (~0.3 nats) can exceed the optimization signal in keep/revert protocols — the search's "best" config typically produces ~3.8 while the manually-tuned baseline reliably produces ~3.5.
 
 ---
 
@@ -413,3 +466,8 @@ The autonomous hyperparameter search demonstrates the Karpathy keep/revert proto
 8. Smith, S.L. et al. (2018). Don't Decay the Learning Rate, Increase the Batch Size. *arXiv:1711.00489*.
 9. Wang, H. et al. (2022). DeepNet: Scaling Transformers to 1,000 Layers. *arXiv:2203.00555*.
 10. Murai Labs (2026). Orion: ANE Training and Inference Runtime. *GitHub: [mechramc/Orion](https://github.com/mechramc/Orion)*.
+11. Malladi, S. et al. (2023). Fine-Tuning Language Models with Just Forward Passes. *NeurIPS 2023*. *arXiv:2305.17333* (MeZO).
+12. Liu, Y. et al. (2025). FZOO: An Efficient and Scalable Framework for Zeroth-Order Optimization. *arXiv:2506.09034*.
+13. Li, B. et al. (2025). P-GAP: Gradient-Aligned Perturbations for Zeroth-Order Optimization. *arXiv:2510.18228*.
+14. Zhang, X. et al. (2025). ZOSA: Zeroth-Order Stochastic Approximation with Rademacher Perturbations. *arXiv:2511.09156*.
+15. Zhang, Y. et al. (2025). MobiZO: Parallelized Zeroth-Order Optimization for Mobile/Edge Devices. *EMNLP 2025*. *10.18653/v1/2025.emnlp-main.1022*.
