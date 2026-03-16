@@ -787,6 +787,62 @@ static bool mezo_load_checkpoint(const char *path, int *step, float *lr, float *
     return true;
 }
 
+// ===== P16 LoRA adapter checkpoint (separate from base weight checkpoint) =====
+// Format: "LORA" magic + rank + NLAYERS × (Aq, Bq, Ak, Bk, Av, Bv, Ao, Bo) + adam_t
+#define LORA_CKPT_MAGIC 0x4C4F5241  // "LORA"
+
+static void lora_save_checkpoint(const char *path, LoRALayer *ll, int rank, int adam_t) {
+    FILE *f = fopen(path, "wb");
+    if (!f) { fprintf(stderr, "Cannot write LoRA checkpoint %s\n", path); return; }
+    int magic = LORA_CKPT_MAGIC;
+    int nlayers = NLAYERS;
+    fwrite(&magic, 4, 1, f);
+    fwrite(&rank, 4, 1, f);
+    fwrite(&nlayers, 4, 1, f);
+    fwrite(&adam_t, 4, 1, f);
+    for (int L = 0; L < NLAYERS; L++) {
+        fwrite(ll[L].Aq, 4, (size_t)rank * DIM, f);
+        fwrite(ll[L].Bq, 4, (size_t)Q_DIM * rank, f);
+        fwrite(ll[L].Ak, 4, (size_t)rank * DIM, f);
+        fwrite(ll[L].Bk, 4, (size_t)KV_DIM * rank, f);
+        fwrite(ll[L].Av, 4, (size_t)rank * DIM, f);
+        fwrite(ll[L].Bv, 4, (size_t)KV_DIM * rank, f);
+        fwrite(ll[L].Ao, 4, (size_t)rank * Q_DIM, f);
+        fwrite(ll[L].Bo, 4, (size_t)DIM * rank, f);
+    }
+    fclose(f);
+    printf("  [lora ckpt saved: %s, rank=%d, adam_t=%d]\n", path, rank, adam_t);
+}
+
+static bool lora_load_checkpoint(const char *path, LoRALayer *ll, int rank, int *adam_t) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    int magic, file_rank, nlayers, file_adam_t;
+    if (fread(&magic, 4, 1, f) != 1 || magic != LORA_CKPT_MAGIC) { fclose(f); return false; }
+    if (fread(&file_rank, 4, 1, f) != 1 || file_rank != rank) {
+        fprintf(stderr, "LoRA checkpoint rank mismatch: file=%d, expected=%d\n", file_rank, rank);
+        fclose(f); return false;
+    }
+    if (fread(&nlayers, 4, 1, f) != 1 || nlayers != NLAYERS) {
+        fprintf(stderr, "LoRA checkpoint layer mismatch: file=%d, expected=%d\n", nlayers, NLAYERS);
+        fclose(f); return false;
+    }
+    if (fread(&file_adam_t, 4, 1, f) != 1) { fclose(f); return false; }
+    *adam_t = file_adam_t;
+    for (int L = 0; L < NLAYERS; L++) {
+        fread(ll[L].Aq, 4, (size_t)rank * DIM, f);
+        fread(ll[L].Bq, 4, (size_t)Q_DIM * rank, f);
+        fread(ll[L].Ak, 4, (size_t)rank * DIM, f);
+        fread(ll[L].Bk, 4, (size_t)KV_DIM * rank, f);
+        fread(ll[L].Av, 4, (size_t)rank * DIM, f);
+        fread(ll[L].Bv, 4, (size_t)KV_DIM * rank, f);
+        fread(ll[L].Ao, 4, (size_t)rank * Q_DIM, f);
+        fread(ll[L].Bo, 4, (size_t)DIM * rank, f);
+    }
+    fclose(f);
+    return true;
+}
+
 int main(int argc, char *argv[]) {
     @autoreleasepool {
         setbuf(stdout, NULL);
@@ -1066,6 +1122,39 @@ int main(int argc, char *argv[]) {
             grms_final = (float*)safe_calloc(DIM, 4);
             la_rms_final = adam_alloc(DIM);
             printf("P16: Allocated LoRA gradient + Adam state for backprop mode\n");
+
+            // Try to load LoRA sidecar checkpoint on resume
+            if (ckpt_load_path) {
+                // Derive LoRA sidecar path from base checkpoint: replace .bin with _lora.bin
+                char lora_ckpt_path[512];
+                snprintf(lora_ckpt_path, sizeof(lora_ckpt_path), "%s", CKPT_PATH);
+                char *dot = strrchr(lora_ckpt_path, '.');
+                if (dot) snprintf(dot, sizeof(lora_ckpt_path) - (dot - lora_ckpt_path), "_lora.bin");
+                else strncat(lora_ckpt_path, "_lora.bin", sizeof(lora_ckpt_path) - strlen(lora_ckpt_path) - 1);
+
+                int loaded_adam_t = 0;
+                if (lora_load_checkpoint(lora_ckpt_path, lora_layers, lora_rank, &loaded_adam_t)) {
+                    adam_t_bp = loaded_adam_t;
+                    // Un-merge base weights: Wq_base currently = merged (from mezo checkpoint)
+                    // Need: Wq_base = merged - B@A (to recover true base)
+                    for (int L = 0; L < NLAYERS; L++) {
+                        LoRALayer *ll = &lora_layers[L];
+                        // Wq_base -= Bq @ Aq
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    Q_DIM, DIM, lora_rank, -1.0f, ll->Bq, lora_rank, ll->Aq, DIM, 1.0f, ll->Wq_base, DIM);
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    KV_DIM, DIM, lora_rank, -1.0f, ll->Bk, lora_rank, ll->Ak, DIM, 1.0f, ll->Wk_base, DIM);
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    KV_DIM, DIM, lora_rank, -1.0f, ll->Bv, lora_rank, ll->Av, DIM, 1.0f, ll->Wv_base, DIM);
+                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                    DIM, Q_DIM, lora_rank, -1.0f, ll->Bo, lora_rank, ll->Ao, Q_DIM, 1.0f, ll->Wo_base, Q_DIM);
+                    }
+                    printf("P16: Loaded LoRA adapters from %s (adam_t=%d), base weights un-merged\n",
+                           lora_ckpt_path, adam_t_bp);
+                } else {
+                    printf("P16: No LoRA sidecar at %s, starting with fresh adapters\n", lora_ckpt_path);
+                }
+            }
         }
 
         // === FF-LoRA: allocate per-layer FF state + LoRA grads + Adam state ===
@@ -2029,8 +2118,13 @@ int main(int argc, char *argv[]) {
                 memset(grms_final, 0, DIM * 4);
                 t_bp_opt = tb_ms(mach_absolute_time() - t0);
 
-                // Logging
+                // Logging + tracking
                 double step_ms = tb_ms(mach_absolute_time() - t_step);
+                total_train_ms += step_ms;
+                total_steps_done++;
+                last_loss_plus = train_loss;
+                last_loss_minus = train_loss;  // P16 has no loss_minus; use train_loss
+
                 if (step % 10 == 0 || step == start_step) {
                     printf("step %d  loss=%.4f  lr=%.2e  %.1fms/step (fwd=%.0f bwd=%.0f opt=%.0f)\n",
                            step, train_loss, lr, step_ms, t_bp_fwd, t_bp_bwd, t_bp_opt);
@@ -3087,38 +3181,63 @@ int main(int argc, char *argv[]) {
                                         total_train_ms, wall, total_steps_done,
                                         lw, rms_final, embed);
                     printf("  [ckpt saved, best_val=%.4f]\n", best_loss);
+                    // P16: also save LoRA adapter sidecar
+                    if (backprop_lora && use_lora) {
+                        char lora_ckpt_path[512];
+                        snprintf(lora_ckpt_path, sizeof(lora_ckpt_path), "%s", CKPT_PATH);
+                        char *dot = strrchr(lora_ckpt_path, '.');
+                        if (dot) snprintf(dot, sizeof(lora_ckpt_path) - (dot - lora_ckpt_path), "_lora.bin");
+                        else strncat(lora_ckpt_path, "_lora.bin", sizeof(lora_ckpt_path) - strlen(lora_ckpt_path) - 1);
+                        lora_save_checkpoint(lora_ckpt_path, lora_layers, lora_rank, adam_t_bp);
+                    }
                 }
             }
         }
 
         // ===== Final report =====
         double wall = tb_ms(mach_absolute_time() - t_wall_start);
-        printf("\n=== MeZO Efficiency Report ===\n");
-        printf("Total steps:  %d\n", total_steps_done);
-        printf("Train time:   %.0fms (%.1fms/step)\n", total_train_ms, total_train_ms / fmax(1, total_steps_done));
-        printf("Wall time:    %.1fs\n", wall / 1000.0);
+        printf("\n=== %s Efficiency Report ===\n", backprop_lora ? "P16 Backprop-LoRA" : "MeZO");
+        printf("Total steps:         %d\n", total_steps_done);
+        printf("Train time:          %.0fms (%.1fms/step)\n", total_train_ms, total_train_ms / fmax(1, total_steps_done));
+        printf("Wall time:           %.1fs\n", wall / 1000.0);
         printf("\n---\n");
-        printf("final_loss_plus:  %.6f\n", last_loss_plus);
-        printf("final_loss_minus: %.6f\n", last_loss_minus);
-        printf("training_seconds: %.1f\n", total_train_ms / 1000.0);
-        printf("total_seconds:    %.1f\n", wall / 1000.0);
-        printf("num_steps:        %d\n", total_steps_done);
-        printf("num_params_M:     %.1f\n", ((double)NLAYERS * LAYER_PARAMS + DIM + (double)VOCAB * DIM) / 1e6);
-        printf("mode:             %s-%s%s%s\n",
-               ff_lora ? "ff-lora" : "mezo",
+        printf("final_loss:          %.6f\n", last_loss_plus);
+        if (!backprop_lora)
+            printf("final_loss_minus:    %.6f\n", last_loss_minus);
+        printf("final_val_loss:      %.6f\n", best_loss);
+        printf("training_seconds:    %.1f\n", total_train_ms / 1000.0);
+        printf("total_seconds:       %.1f\n", wall / 1000.0);
+        printf("avg_ms_per_step:     %.1f\n", total_train_ms / fmax(1, total_steps_done));
+        printf("num_steps:           %d\n", total_steps_done);
+        printf("num_params_M:        %.1f\n", ((double)NLAYERS * LAYER_PARAMS + DIM + (double)VOCAB * DIM) / 1e6);
+        printf("mode:                %s-%s%s%s\n",
+               backprop_lora ? "backprop-lora" : (ff_lora ? "ff-lora" : "mezo"),
                cpu_only ? "cpu" : "ane",
                conv_hybrid ? "-conv-hybrid" : "",
                lora_split ? "-lora-split" : (use_lora ? "-lora" : ""));
-        printf("epsilon:          %g\n", epsilon);
-        printf("lr:               %g\n", lr);
-        if (use_lora) printf("lora_rank:        %d\n", lora_rank);
-        if (fzoo_K > 0) printf("fzoo_K:           %d\n", fzoo_K);
-        if (pgap_r > 0) printf("pgap_r:           %d\npgap_k:           %d\npgap_h:           %d\npgap_xi:          %g\npgap_delta0:      %g\n", pgap_r, pgap_k, pgap_h, pgap_xi, pgap_delta0);
-        if (sparse_ratio > 0) printf("sparse_ratio:     %g\nmask_refresh:     %d\n", sparse_ratio, mask_refresh);
-        if (hessian_alpha > 0) printf("hessian_alpha:    %g\n", hessian_alpha);
-        if (ff_lora) printf("ff_lora:          true\nff_corrupt:       %g\n", ff_corrupt);
+        if (!backprop_lora) printf("epsilon:             %g\n", epsilon);
+        printf("lr:                  %g\n", lr);
+        if (use_lora) printf("lora_rank:           %d\n", lora_rank);
+        if (fzoo_K > 0) printf("fzoo_K:              %d\n", fzoo_K);
+        if (pgap_r > 0) printf("pgap_r:              %d\npgap_k:              %d\npgap_h:              %d\npgap_xi:             %g\npgap_delta0:         %g\n", pgap_r, pgap_k, pgap_h, pgap_xi, pgap_delta0);
+        if (sparse_ratio > 0) printf("sparse_ratio:        %g\nmask_refresh:        %d\n", sparse_ratio, mask_refresh);
+        if (hessian_alpha > 0) printf("hessian_alpha:       %g\n", hessian_alpha);
+        if (ff_lora) printf("ff_lora:             true\nff_corrupt:          %g\n", ff_corrupt);
+        if (backprop_lora) printf("backprop_lora:       true\n");
 
         // Cleanup
+        if (backprop_lora && use_lora) {
+            for (int L = 0; L < NLAYERS; L++) {
+                lora_grads_free(&lora_grads_arr[L]);
+                lora_adam_free(&lora_adam_arr[L]);
+                free(grms_att[L]);
+                free(grms_ffn[L]);
+                adam_free(&la_rms_att[L]);
+                adam_free(&la_rms_ffn[L]);
+            }
+            free(grms_final);
+            adam_free(&la_rms_final);
+        }
         if (ff_lora && use_lora) {
             for (int L = 0; L < NLAYERS; L++) {
                 ff_layer_free(&ff_states[L]);

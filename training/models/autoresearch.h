@@ -14,7 +14,5 @@
 #define NLAYERS 4
 #define VOCAB 49152
 
-#define ROPE_THETA 10000.0f
-
 #define DEFAULT_DATA_PATH "../tinystories_smollm2_data00.bin"
 #define CKPT_PATH "ane_autoresearch_ckpt.bin"
