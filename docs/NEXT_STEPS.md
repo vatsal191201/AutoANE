@@ -373,14 +373,44 @@ This was previously identified as "likely highest ROI" but is now confirmed impo
 
 **Estimated effort**: 3-5 days engineering.
 
-### Updated Priority Ranking (2026-03-16)
+### Updated Priority Ranking (2026-03-16, evening)
 
 | Rank | ID | Direction | Expected Impact | Status |
 |------|-----|-----------|----------------|--------|
-| 1 | **P16** | **MeBP+ANE hybrid** | **Convergence + speed** | NEW |
-| 2 | P11 | Cross-layer fusion | Further reduce IO overhead | Open |
-| 3 | P12 | Larger model scaling | Test speedup scaling | Open |
-| 4 | P13 | INT8 quantized LoRA | Leverage ANE INT8 | Open |
-| 5 | P15 | Variance reduction ZO | Better ZO gradients | Research |
-| 6 | P5 | Larger dataset | Generalization test | Open |
-| 7 | P14 | Mobile deployment | iOS/iPad training | Open |
+| 1 | **P16** | **MeBP+ANE hybrid** | **Convergence + speed** | IN PROGRESS (scaffold done) |
+| 2 | **P17** | **Autoresearch integration for P16** | Agent loop with backprop quality | After P16 |
+| 3 | P11 | Cross-layer fusion | Further reduce IO overhead | Open |
+| 4 | P12 | Larger model scaling | Test speedup scaling | Open |
+| 5 | P13 | INT8 quantized LoRA | Leverage ANE INT8 | Open |
+| 6 | P15 | Variance reduction ZO | Better ZO gradients | Deprioritized (Finding 9: quality ceiling) |
+| 7 | P5 | Larger dataset | Generalization test | Open |
+| 8 | P14 | Mobile deployment | iOS/iPad training | Open |
+
+### P17: Autoresearch Integration for P16 [HIGH — After P16]
+
+**What**: Wire P16 hybrid mode into the autoresearch agent loop so the AI agent
+can autonomously optimize hyperparameters with backprop-quality training on ANE.
+
+**Current state**: The autoresearch infrastructure already exists:
+- `training/train.py` — agent-editable config, compiles binary, runs, parses output
+- `training/run_autosearch.py` — autonomous search loop (random perturbations, keep/revert)
+- `training/autoresearch.py` — grid search orchestrator
+- `training/program.md` — agent protocol (edit → run → evaluate → keep/discard)
+
+**Changes needed** (after P16 is validated):
+1. Add `MODE = "backprop-lora"` option to `train.py` (passes `--backprop-lora --conv-fused --lora-split`)
+2. Update `train.py` to compile `train_mezo` instead of `train` when MODE = "backprop-lora"
+3. Add LoRA-specific hyperparams to search space in `run_autosearch.py` (lr, rank, warmup)
+4. Update `program.md` with P16 mode instructions
+5. Add val_loss parsing from P16 output format
+
+**Estimated effort**: 1 day (train.py changes are ~30 lines).
+
+**Why after P16**: Need validated P16 performance first. The agent loop will only
+be effective if the per-step quality is high (backprop-quality gradients) AND
+the per-step speed is competitive (ANE forward advantage).
+
+**Integration sequence**:
+```
+P16 implementation → P16 validation → P17 train.py integration → P17 run_autosearch → agent loop runs
+```
