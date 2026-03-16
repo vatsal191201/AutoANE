@@ -127,19 +127,58 @@ This circularity is masked in the original paper because:
 - Code written: ~200 lines (helper functions + training loop branch)
 - Analysis time: Several hours (mathematical derivation, literature review)
 
+## Experiment V3: Faithful P-GAP Implementation
+
+After identifying the critical implementation differences (V2 above), a faithful P-GAP implementation was built matching the paper algorithm:
+
+**Implementation details:**
+- Per-matrix SVD bases: 256 bases (32 layers × 8 LoRA matrices)
+- Gaussian perturbations (Box-Muller from xoshiro256+)
+- PROJECTION constraint: Z = Z_init - α×S_r for gradient alignment
+- Probe phase: h=10 Gaussian SPSA probes, accumulate G per-matrix, SVD each
+- Training step: Z_f = U × Z × V^T per matrix, concatenate, SPSA update
+- Delta linear decay (2→0)
+
+**Results (pretrained SmolLM2-360M, 500 steps from step 100, seed 42):**
+
+| Config | val@200 | val@300 | val@400 | val@500 | Δloss | Result |
+|--------|---------|---------|---------|---------|-------|--------|
+| Baseline (lr=1e-4, ε=1e-3) | 2.0648 | 2.0596 | 2.0576 | 2.0571 | -0.0077 | Reference |
+| P-GAP paper (lr=1e-2, ε=0.1) | 15.7452 | 15.3284 | 15.2529 | 15.0869 | DIVERGED | ❌ |
+| P-GAP intermediate (lr=1e-3, ε=0.01) | 2.1983 | 6.5786 | 7.6616 | 7.6157 | DIVERGED | ❌ |
+| P-GAP standard (lr=1e-4, ε=1e-3) | 2.0648 | 2.0587 | 2.0579 | 2.0571 | -0.0077 | Neutral |
+
+**Key findings:**
+1. Paper's hyperparameters (ε=0.1, lr=1e-2) diverge catastrophically on SmolLM2-360M LoRA
+2. Intermediate hyperparameters (ε=0.01, lr=1e-3) also diverge, more slowly
+3. Standard MeZO hyperparameters: P-GAP matches baseline exactly — no benefit, no harm
+4. The per-matrix SVD structure and PROJECTION constraint are mathematically correct (verified) but do not improve convergence
+
+**Analysis of divergence with paper hyperparams:**
+The paper tests P-GAP+LoRA on OPT-2.7B (2.7B params). SmolLM2-360M is 7.5x smaller. The ε=0.1 perturbation with LoRA rank-8 matrices (8×960) applies perturbation magnitude ~0.1 × ||z|| where ||z|| ≈ √(8×960) ≈ 87.6, giving ||ε*z|| ≈ 8.76. For matrices with ||W|| ≈ O(1), this is a massive perturbation. The paper's aggressive hyperparameters assume much larger weight matrices where the relative perturbation is proportionally smaller.
+
+**Analysis of neutral result with standard hyperparams:**
+With ε=1e-3, the per-matrix SVD projection does not change convergence because:
+1. For LoRA rank-8 matrices, SVD has at most 8 singular values — the subspace IS the full matrix
+2. The PROJECTION constraint aligns perturbation with gradient direction, but with r=svd_r=8 (same as matrix rank), the projection is nearly identity
+3. The probe cost (10 probes × 2 forward passes = ~8s every 100 steps) adds overhead with zero convergence benefit
+
 ## Recommendations
 
-1. **Do not pursue P-GAP for LoRA ZO training.** The fundamental SNR limitation makes it impossible to build a useful gradient subspace from practical numbers of probes.
+1. **Do not pursue P-GAP for LoRA ZO training.** Tested both simplified (V2) and faithful (V3) implementations. Neither provides convergence improvement. Paper hyperparams diverge; standard hyperparams are neutral.
 
-2. **P-GAP might work for full-parameter ZO** where per-layer gradient matrices have meaningful low-rank structure. This was not tested (we only use LoRA).
+2. **Root cause**: LoRA rank-8 matrices are too small for P-GAP's per-matrix SVD to find meaningful low-rank structure. The SVD rank equals the matrix rank — there is no dimensionality reduction to exploit.
 
-3. **Focus on proven optimizations**: Phase 2 (conv-fused) delivers 1.75x speedup (254ms/step vs 452ms CPU) with zero convergence impact. This is the best result from the pipeline.
+3. **P-GAP might work for full-parameter ZO** where per-layer gradient matrices are large (960×960) and may have genuine low-rank structure. Not tested (we only use LoRA).
+
+4. **Focus on proven optimizations**: Phase 2 (conv-fused) delivers 1.71x speedup (~262ms/step vs 447ms CPU) with zero convergence impact. This is the best result from the pipeline.
 
 ## Phase Summary
 
 | Phase | Status | Result |
 |-------|--------|--------|
-| 1: Conv1x1 hybrid | ✅ Done | 403ms/step (0.89x CPU, IO-limited) |
-| 2: Fused conv kernels | ✅ Done | 254ms/step (1.78x CPU, 1.75x gate) |
+| 1: Conv1x1 hybrid | ✅ Done | 403ms/step (1.04-1.11x CPU) |
+| 2: Fused conv kernels | ✅ Done | ~262ms/step (1.71x CPU) |
 | 3: FZOO multi-perturbation | ✅ Done | No wall-time convergence benefit |
-| **4: P-GAP** | **❌ Negative** | **Degrades convergence vs baseline** |
+| 4: Simplified flat-vector subspace | ❌ Negative | Degrades convergence |
+| **4: Faithful P-GAP** | **❌ Negative** | **Diverges (paper params) or neutral (standard params)** |

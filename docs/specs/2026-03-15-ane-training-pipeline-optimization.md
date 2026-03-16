@@ -142,12 +142,13 @@ For each step:
 | 2: Fused conv kernels | 262 | 1.71x | 1.0x | ✅ Done |
 | 3: FZOO K=4 | 2.5x slower/step | no wall-time benefit | ✅ Done |
 | 4: Flat-vector subspace (NOT P-GAP) | same speed | degrades | ❌ Negative |
-| 4: Faithful P-GAP | — | — | 🔄 In progress |
+| 4: Faithful P-GAP (paper ε=0.1, lr=1e-2) | same speed | DIVERGES | ❌ Negative |
+| 4: Faithful P-GAP (standard ε=1e-3, lr=1e-4) | same speed | neutral (0x) | ❌ No benefit |
 
 **Best configuration: Phase 2 (conv-fused) at ~262ms/step = 1.71x faster than CPU.**
 Triple-checked: 50-step average. val_loss within 0.03% of CPU baseline.
 
-Phase 3 (FZOO) provides better gradient quality but costs 2.5x more forward passes, netting zero wall-time convergence improvement. Previous Phase 4 test used a simplified flat-vector approach that differs fundamentally from P-GAP (per-matrix SVD, gradient alignment constraint, 100x larger ε). Faithful P-GAP implementation in progress.
+Phase 3 (FZOO) provides better gradient quality but costs 2.5x more forward passes, netting zero wall-time convergence improvement. Phase 4 tested both simplified (flat-vector QR) and faithful (per-matrix SVD with PROJECTION constraint) P-GAP implementations. Paper hyperparameters diverge catastrophically on SmolLM2-360M; standard hyperparameters produce identical convergence to baseline. Root cause: LoRA rank-8 matrices are too small for per-matrix SVD to find useful low-rank structure.
 
 ## Assumptions — Final Status
 
@@ -158,7 +159,7 @@ Phase 3 (FZOO) provides better gradient quality but costs 2.5x more forward pass
 | A3 | QKV combined conv kernel compiles | Medium | ✅ Confirmed |
 | A4 | One-sided Rademacher has O(ε²) bias | Low | ✅ Confirmed (literature) |
 | A5 | FZOO sigma-normalized update helps | Low | ⚠️ Helps gradient quality, not wall-time |
-| A6 | P-GAP transfers to LoRA fine-tuning | High | ⚠️ Simplified version failed; faithful impl. in progress |
+| A6 | P-GAP transfers to LoRA fine-tuning | High | ❌ Disproven: diverges (paper params) or neutral (standard params) |
 | A7 | Conv1x1 requires LoRA-split | None | ✅ Hard constraint, satisfied |
 
 ## Literature References
