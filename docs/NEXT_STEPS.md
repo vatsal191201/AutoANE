@@ -1,6 +1,6 @@
 # AutoANE: Next Steps & Research Roadmap
 
-**Created**: 2026-03-12 | **Status**: Active
+**Created**: 2026-03-12 | **Updated**: 2026-03-17 | **Status**: Active (paper submission is top priority)
 
 ---
 
@@ -373,18 +373,21 @@ This was previously identified as "likely highest ROI" but is now confirmed impo
 
 **Estimated effort**: 3-5 days engineering.
 
-### Updated Priority Ranking (2026-03-16, evening)
+### Updated Priority Ranking (2026-03-17, final)
 
 | Rank | ID | Direction | Expected Impact | Status |
 |------|-----|-----------|----------------|--------|
-| 1 | **P16** | **MeBP+ANE hybrid** | **Convergence + speed** | IN PROGRESS (scaffold done) |
-| 2 | **P17** | **Autoresearch integration for P16** | Agent loop with backprop quality | After P16 |
-| 3 | P11 | Cross-layer fusion | Further reduce IO overhead | Open |
-| 4 | P12 | Larger model scaling | Test speedup scaling | Open |
-| 5 | P13 | INT8 quantized LoRA | Leverage ANE INT8 | Open |
-| 6 | P15 | Variance reduction ZO | Better ZO gradients | Deprioritized (Finding 9: quality ceiling) |
+| 1 | **Paper** | **Submit ZO-LoRA quality ceiling paper** | **Core contribution** | **Draft complete** |
+| 2 | **P16** | **Backprop-LoRA hybrid (ANE fwd + CPU bwd)** | **Best quality: val_loss 1.7972** | **Done** |
+| 3 | **P17** | **Autoresearch integration for P16** | Agent loop with backprop quality | **Done** |
+| 4 | P11 | Cross-layer fusion | Further reduce IO overhead | Open |
+| 5 | P12 | Larger model scaling | Test speedup scaling | Open |
+| 6 | P13 | INT8 quantized LoRA | Leverage ANE INT8 | Open |
 | 7 | P5 | Larger dataset | Generalization test | Open |
 | 8 | P14 | Mobile deployment | iOS/iPad training | Open |
+| 9 | P15 | Variance reduction ZO | 5 methods failed; deprioritized (Finding 9: quality ceiling) | Deprioritized |
+
+**Key lesson from Session 6**: Five ZO improvement methods were tested (FZOO, P-GAP, Sparse MeZO, HiZOO, FF-LoRA) and all failed to lower the ZO-LoRA quality ceiling. The correct path forward is backprop-LoRA (P16), not more ZO algorithm exploration. The paper draft documenting this negative result is the highest-priority deliverable.
 
 ### P17: Autoresearch Integration for P16 [HIGH — After P16]
 

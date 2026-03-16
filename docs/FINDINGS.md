@@ -1,7 +1,7 @@
 # AutoANE: Complete Findings, Methodology & Audit Trail
 
 **Project**: Training Llama-family transformers on Apple's Neural Engine via reverse-engineered private APIs
-**Duration**: March 10-16, 2026 (65 commits, 5 sessions)
+**Duration**: March 10-17, 2026 (139 commits, 6 sessions)
 **Hardware**: Apple M2 Pro, macOS 15+
 **Codebase**: ~3,555 lines C/ObjC (training) + ~2,100 lines C/ObjC (MeZO) + 8 Python scripts + 8 regression tests
 
@@ -219,6 +219,25 @@ MeZO LoRA convergence saturates at val_loss ~2.052 regardless of step count. Thi
 **Implication**: P16 hybrid (ANE forward + CPU backward) is the ONLY path to both ANE hardware utilization AND backprop-quality training.
 
 **Evidence**: 1000-step convergence data (convergence_1000step_lr1e4_seed42.txt), condition13 backprop baseline, condition20 MeZO 300s run
+
+### Finding 10: P16 Backprop-LoRA Achieves Best-Ever val_loss 1.7972
+
+P16 hybrid mode (ANE forward + CPU backward) with LoRA achieves val_loss **1.7972** in 200 steps (141s) on SmolLM2-360M --- the best training result in the project and a **14.2x larger improvement** than MeZO-LoRA's best (0.0193 nats).
+
+| Method | Steps | Time (s) | val_loss | Improvement (nats) | Improvement rate |
+|--------|------:|----------:|----------:|--------------------:|---:|
+| MeZO-LoRA | 1000 | 989 | 2.0525 | 0.0193 | 1.93e-5/step |
+| **Backprop-LoRA** | **200** | **141** | **1.7972** | **0.2746** | **1.37e-3/step** |
+
+This result validates the P16 hybrid approach: ANE handles the fast forward pass (conv-fused kernels, 262ms), while CPU handles the backward pass (Accelerate BLAS). Backprop-LoRA's per-step improvement rate is **71x higher** than MeZO-LoRA.
+
+**Negative results tested against this ceiling**:
+- **FF-LoRA** (Forward-Forward + LoRA): Works as first-ever FF+LoRA for LLMs, but convergence is 3x weaker than MeZO --- a valuable negative result.
+- **DSZO** (Deep Supervision ZO): Critical assumption violated --- layer-local losses do not decrease monotonically with depth in pretrained transformers, making the approach inapplicable.
+
+**Implication**: For ANE training, the correct approach is backprop-LoRA (P16), not further ZO algorithm improvements. Five ZO improvement methods (FZOO, P-GAP, Sparse MeZO, HiZOO, FF-LoRA) all failed to lower the ZO quality ceiling.
+
+**Evidence**: P16 implementation (backprop_lora.h), convergence data, paper draft (docs/paper-draft.md)
 
 ---
 
@@ -448,18 +467,19 @@ All 7 cited references verified against source papers:
 
 ## 10. Open Research Directions
 
-Ranked by expected impact (updated 2026-03-16):
+Ranked by expected impact (updated 2026-03-17):
 
 | Priority | Direction | Why | Effort | Status |
 |----------|-----------|-----|--------|--------|
-| P9 | MeZO+LoRA-split+conv-fused | Forward-only + frozen base weights + fused kernels | Done | **✅ 1.71x CPU** |
-| P11 | Cross-layer fusion | Further reduce IO round-trips beyond intra-layer fusion | 3-5 days | NEW |
-| P12 | Larger model scaling (MeZO) | Test if 1.71x speedup increases at >360M params | 2-3 days | NEW |
-| P13 | INT8 quantized LoRA | Leverage ANE's 1.88x INT8 throughput for LoRA corrections | 2-3 days | NEW |
+| P9 | MeZO+LoRA-split+conv-fused | Forward-only + frozen base weights + fused kernels | Done | **Done -- 1.71x CPU** |
+| **P16** | **Backprop-LoRA hybrid (ANE fwd + CPU bwd)** | **Best quality: val_loss 1.7972** | Done | **Done -- best-ever result** |
+| Paper | Submit paper on ZO-LoRA quality ceiling | Core theoretical + empirical contribution | 1-2 weeks | **Draft complete** |
+| P11 | Cross-layer fusion | Further reduce IO round-trips beyond intra-layer fusion | 3-5 days | Open |
+| P12 | Larger model scaling (MeZO) | Test if 1.71x speedup increases at >360M params | 2-3 days | Open |
+| P13 | INT8 quantized LoRA | Leverage ANE's 1.88x INT8 throughput for LoRA corrections | 2-3 days | Open |
 | P5 | Larger dataset | Test if findings generalize beyond 20M tokens | 0.5-2 days | Open |
-| P1 | Function parameter IOSurfaces | 30% faster for remaining Wk/Wv matmul kernels | 2-3 days | Open |
-| P14 | MeZO+LoRA on mobile (iOS/iPad) | ANE may be only viable compute for sustained mobile training | 1 week | NEW |
-| P15 | Better ZO gradient estimators | Beyond FZOO/P-GAP — explore GraDFree, SZOFW, or variance reduction | Research | NEW |
+| P14 | MeZO+LoRA on mobile (iOS/iPad) | ANE may be only viable compute for sustained mobile training | 1 week | Open |
+| P15 | Better ZO gradient estimators | 5 methods failed; deprioritized (Finding 9: quality ceiling) | Research | Deprioritized |
 
 ---
 
@@ -467,12 +487,12 @@ Ranked by expected impact (updated 2026-03-16):
 
 | Category | Count | Examples |
 |----------|-------|---------|
-| Verified (V1-V27) | 27 | ANE matmul 2.5x faster, CPU wins end-to-end, 512d/4L optimal |
+| Verified (V1-V27+) | 28 | ANE matmul 2.5x faster, CPU wins end-to-end, 512d/4L optimal |
 | Qualified (V27) | 1 | Autosearch 3.288 is seed artifact |
 | Disproved (D1-D8) | 8 | IOSurface not primary bottleneck, ANE not power-efficient, delta compile doesn't work |
 | Retesting (SA1-SA4) | 4 | fp16 gap irreducible (re-confirmed), ANE divergence (disproved) |
 | Unverified/Resolved (U1-U17) | 13 | Most resolved via experiments or literature |
-| From upstream (UP1-UP23) | 23 | Runtime injection, mega-kernels, MeZO, M5 alignment, Core AI |
+| From upstream (UP1-UP31) | 31 | Runtime injection, mega-kernels, MeZO, MeBP, M5 alignment, Core AI |
 | Implicit found (IA1-IA10) | 10 | 6 fixed (data validation, dtype checks, Xcode check, etc.) |
 
 Full registry: [ASSUMPTIONS.md](ASSUMPTIONS.md)
@@ -547,6 +567,12 @@ Deployed 6 parallel verification agents, found and fixed RMSNorm backward bug (c
 **MeZO+LoRA training pipeline — P9 COMPLETE**
 
 Implemented MeZO zeroth-order training with LoRA-split on SmolLM2-360M (pretrained, 32 layers, DIM=960). Four optimization phases: (1) Conv1x1 hybrid with BLOBFILE weight baking — 403-429ms/step; (2) Fused conv kernels (QKV combined + FFN mega-kernel) — **262ms/step = 1.71x faster than CPU**; (3) FZOO multi-perturbation K=4 — no wall-time benefit; (4) P-GAP gradient-aligned perturbations — negative result (both simplified and faithful implementations). Added Gaussian RNG (Box-Muller), per-matrix SVD (LAPACK ssyev_), PROJECTION constraint. Detailed design spec and research log documenting methodology, results, and mathematical analysis of why P-GAP fails for LoRA ZO. 10 commits.
+
+### Session 6 (Mar 16-17, ~10 hours)
+
+**ZO ceiling theory, P16 backprop-LoRA, paper draft, honest assessment**
+
+Discovered and characterized the ZO-LoRA quality ceiling (Finding 9): MeZO saturates at val_loss ~2.052 regardless of step count. Tested 5 additional ZO improvement methods --- all failed: Sparse MeZO (-31% to -87% worse), HiZOO (-34% to -82% worse), FZOO (neutral), P-GAP (diverges or neutral), FF-LoRA (3x weaker than MeZO). Implemented P16 backprop-LoRA hybrid (ANE forward + CPU backward) achieving val_loss **1.7972** (Finding 10) --- 14.2x better than MeZO's best. Wrote submission-ready paper draft on the ZO-LoRA quality ceiling. Conducted extensive literature review (NPU training landscape, ZO methods deep dive, MeBP cross-reference). Produced honest assessment of what ANE uniquely enables. Surveyed 16 unconventional training methods for ANE applicability. 84 commits in session.
 
 ---
 

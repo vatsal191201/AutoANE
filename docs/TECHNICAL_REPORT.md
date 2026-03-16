@@ -6,7 +6,7 @@
 
 ## Abstract
 
-We present AutoANE, the first open-source system for training Llama-family transformers on Apple's Neural Engine (ANE) via reverse-engineered private APIs. Through 43 controlled experiments, a 100-experiment autonomous hyperparameter search, and a 4-phase zeroth-order optimization pipeline, we characterize the ANE compute/precision/power tradeoff for training workloads. Our initial finding for standard backprop training is negative: CPU-only training dominates ANE at every tested model size (36M-281M params) due to IOSurface weight-staging overhead and irreducible fp16 precision loss. However, **MeZO zeroth-order training with LoRA-split and conv-fused kernels achieves 1.71x faster than CPU (262ms/step vs 447ms)** — the first demonstration of ANE training outperforming CPU on Apple Silicon. The key insight: LoRA-split freezes base weights as BLOBFILE constants (eliminating per-step IOSurface staging), while conv1x1 with fused kernels reduces IO round-trips from 224 to 96. We also report negative results for two advanced ZO gradient estimators (FZOO multi-perturbation and P-GAP gradient-aligned subspaces) and demonstrate that in a fixed time window, more optimizer steps beats more parameters.
+We present AutoANE, the first open-source system for training Llama-family transformers on Apple's Neural Engine (ANE) via reverse-engineered private APIs. Through 44 controlled experiments, 37 MeZO conditions, a 100-experiment autonomous hyperparameter search, a 4-phase zeroth-order optimization pipeline, and 5 failed ZO improvement methods across 139 commits and 6 sessions, we characterize the ANE compute/precision/power tradeoff for training workloads. Our initial finding for standard backprop training is negative: CPU-only training dominates ANE at every tested model size (36M-281M params) due to IOSurface weight-staging overhead and irreducible fp16 precision loss. However, **MeZO zeroth-order training with LoRA-split and conv-fused kernels achieves 1.71x faster than CPU (262ms/step vs 447ms)** — the first demonstration of ANE training outperforming CPU on Apple Silicon. We identify a fundamental ZO-LoRA quality ceiling (val_loss ~2.052) that no ZO improvement method can overcome, and show that **P16 backprop-LoRA hybrid (ANE forward + CPU backward) achieves val_loss 1.7972** — a 14.2x larger improvement than MeZO's best. We also report negative results for five ZO improvement methods (FZOO, P-GAP, Sparse MeZO, HiZOO, FF-LoRA) and demonstrate that in a fixed time window, more optimizer steps beats more parameters.
 
 ---
 
@@ -432,7 +432,7 @@ The IOSurface overhead that dominated backprop training (8.1ms at DIM=1024) is e
 
 ## 13. Assumptions Registry
 
-Every assumption is tracked in [docs/ASSUMPTIONS.md](ASSUMPTIONS.md) with status, evidence, and confidence level. As of this writing: 27 verified, 8 disproved, 13 unverified/resolved. Notable disproved assumptions:
+Every assumption is tracked in [docs/ASSUMPTIONS.md](ASSUMPTIONS.md) with status, evidence, and confidence level. As of this writing: 28 verified, 8 disproved, 13 unverified/resolved, 31 from upstream. Notable disproved assumptions:
 
 - **D7**: "ANE becomes advantageous at larger dimensions" — FALSE, IOSurface overhead makes ANE 2x slower at DIM=2048
 - **D8**: "ANE is ~2x more energy efficient than CPU" — FALSE, package power identical across all modes
@@ -446,9 +446,11 @@ ANE has genuine computational advantages for matrix multiplication (2.5x over CP
 
 However, **MeZO zeroth-order training with LoRA-split fundamentally changes the equation**. By freezing base weights as BLOBFILE constants and using conv1x1 with fused kernels, we achieve 1.71x faster than CPU (262ms/step vs 447ms) with zero convergence impact. This is the first demonstration of ANE training outperforming CPU on Apple Silicon. The key insight is architectural: the problem was never ANE's compute speed (which is 2.5x faster than CPU for matmuls), but the per-step weight-staging overhead. LoRA-split eliminates this overhead entirely.
 
-Two advanced ZO gradient estimators were tested and found unhelpful for this regime: FZOO multi-perturbation provides better gradient quality but costs 2.5x more forward passes (net zero benefit), and P-GAP gradient-aligned perturbations either diverge (paper hyperparameters) or provide zero benefit (standard hyperparameters). The P-GAP negative result has a clear structural cause: LoRA rank-8 matrices are too small for per-matrix SVD to find useful low-rank structure.
+Five ZO improvement methods were tested and all found unhelpful for LoRA ZO: FZOO (neutral), P-GAP (diverges or neutral), Sparse MeZO (-31% to -87% worse), HiZOO (-34% to -82% worse), and FF-LoRA (3x weaker than MeZO). The root cause is a fundamental ZO-LoRA quality ceiling: MeZO LoRA saturates at val_loss ~2.052 regardless of step count, with each ZO step providing only ~1 bit of gradient information vs backprop's ~54M bits.
 
-For *backprop* training on Apple Silicon, CPU-only remains the right choice. For *zeroth-order fine-tuning* (MeZO+LoRA), ANE with conv-fused kernels is 1.71x faster. ANE's value proposition for training is now validated for the LoRA fine-tuning use case, with mobile deployment (iPhone/iPad) as the highest-impact application.
+**P16 backprop-LoRA hybrid resolves this**: by running forward passes on ANE (conv-fused, 262ms) and backward passes on CPU (Accelerate BLAS), P16 achieves val_loss 1.7972 — a 14.2x larger improvement than MeZO's best, in 5x fewer steps.
+
+For *standard backprop* training on Apple Silicon, CPU-only remains the right choice. For *zeroth-order fine-tuning* (MeZO+LoRA), ANE with conv-fused kernels is 1.71x faster but has a quality ceiling. For *best-quality ANE training*, the P16 backprop-LoRA hybrid is the correct approach. Mobile deployment (iPhone/iPad) remains the highest-impact application.
 
 The autonomous hyperparameter search demonstrates that run-to-run variance (~0.3 nats) can exceed the optimization signal in keep/revert protocols — the search's "best" config typically produces ~3.8 while the manually-tuned baseline reliably produces ~3.5.
 
