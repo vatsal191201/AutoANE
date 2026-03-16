@@ -242,6 +242,221 @@ static size_t count_lora_params(LoRALayer *ll, int nlayers) {
     return total;
 }
 
+// ===== Gaussian RNG: Box-Muller from xoshiro256+ =====
+// Returns two N(0,1) samples per call. Uses global xo_s[] state.
+static inline void gaussian_pair(float *out1, float *out2) {
+    // Generate two uniform (0,1) from xoshiro
+    uint64_t r1 = xo_next(), r2 = xo_next();
+    // Map to (0,1) — avoid exact 0 for log safety
+    double u1 = ((double)(r1 >> 11) + 0.5) / (double)(1ULL << 53);
+    double u2 = ((double)(r2 >> 11) + 0.5) / (double)(1ULL << 53);
+    double r = sqrt(-2.0 * log(u1));
+    double theta = 2.0 * M_PI * u2;
+    *out1 = (float)(r * cos(theta));
+    *out2 = (float)(r * sin(theta));
+}
+
+// Fill buffer with N(0,1) Gaussian samples
+static void gaussian_fill(float *buf, size_t n) {
+    size_t i = 0;
+    for (; i + 1 < n; i += 2) {
+        gaussian_pair(&buf[i], &buf[i+1]);
+    }
+    if (i < n) {
+        float tmp;
+        gaussian_pair(&buf[i], &tmp);
+    }
+}
+
+// ===== Faithful P-GAP: Per-matrix SVD basis =====
+// Each LoRA matrix gets its own SVD basis (U, S, V) for gradient-aligned perturbation.
+// For a matrix W ∈ R^{m×n}, the probe accumulates G ∈ R^{m×n}, then:
+//   SVD(G) = U_r × diag(S_r) × V_r^T  (truncated to rank pgap_svd_r)
+// Training perturbation: Z_init ~ N(0, I_{r×r}), PROJECTION, Z_f = U × Z × V^T
+typedef struct {
+    int rows, cols;       // matrix dimensions (m, n)
+    int svd_r;            // SVD truncation rank (min(rows,cols,pgap_svd_r))
+    float *G;             // Accumulated gradient [rows × cols]
+    float *U;             // Left singular vectors [rows × svd_r]
+    float *S;             // Singular values [svd_r]
+    float *Vt;            // Right singular vectors transposed [svd_r × cols]
+    float *Z_f;           // Current perturbation for this matrix [rows × cols]
+    bool has_basis;       // Whether SVD has been computed
+} PGAPMatrixBasis;
+
+// Number of LoRA matrices per layer (attention-only: 8, with FFN: 14)
+#define PGAP_ATTN_MATS 8
+#define PGAP_FFN_MATS  6
+#define PGAP_RMS_PER_LAYER 2  // rms_att, rms_ffn (1D vectors, no SVD)
+
+// Initialize P-GAP basis for one LoRA matrix
+static PGAPMatrixBasis pgap_basis_init(int rows, int cols, int max_svd_r) {
+    PGAPMatrixBasis b;
+    b.rows = rows;
+    b.cols = cols;
+    b.svd_r = max_svd_r;
+    if (b.svd_r > rows) b.svd_r = rows;
+    if (b.svd_r > cols) b.svd_r = cols;
+    b.G  = (float*)safe_calloc((size_t)rows * cols, 4);
+    b.U  = (float*)safe_calloc((size_t)rows * b.svd_r, 4);
+    b.S  = (float*)safe_calloc(b.svd_r, 4);
+    b.Vt = (float*)safe_calloc((size_t)b.svd_r * cols, 4);
+    b.Z_f = (float*)safe_calloc((size_t)rows * cols, 4);
+    b.has_basis = false;
+    return b;
+}
+
+static void pgap_basis_free(PGAPMatrixBasis *b) {
+    free(b->G); free(b->U); free(b->S); free(b->Vt); free(b->Z_f);
+    memset(b, 0, sizeof(*b));
+}
+
+// Per-matrix SVD via eigendecomposition of the smaller Gram matrix.
+// For G[m×n]: if m <= n, compute G·G^T [m×m], else G^T·G [n×n].
+// Eigendecompose to get singular values and vectors.
+static void pgap_compute_svd(PGAPMatrixBasis *b) {
+    int m = b->rows, n = b->cols, r = b->svd_r;
+    // Determine which Gram matrix to use
+    bool use_GGt = (m <= n);  // G·G^T is m×m
+    int gram_dim = use_GGt ? m : n;
+
+    float *gram = (float*)safe_calloc((size_t)gram_dim * gram_dim, 4);
+
+    if (use_GGt) {
+        // gram = G · G^T [m×m], G is [m×n] row-major
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                    m, m, n, 1.0f, b->G, n, b->G, n, 0.0f, gram, m);
+    } else {
+        // gram = G^T · G [n×n]
+        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                    n, n, m, 1.0f, b->G, n, b->G, n, 0.0f, gram, n);
+    }
+
+    // Eigendecomposition: gram = V_g · diag(eig) · V_g^T
+    float *eigenvalues = (float*)safe_malloc(gram_dim * 4);
+    {
+        char jobz = 'V', uplo = 'U';
+        __LAPACK_int nn = gram_dim, lda = gram_dim, info = 0;
+        __LAPACK_int lwork = -1;
+        float work_query;
+        ssyev_(&jobz, &uplo, &nn, gram, &lda, eigenvalues, &work_query, &lwork, &info);
+        lwork = (__LAPACK_int)work_query;
+        float *work = (float*)safe_malloc(lwork * 4);
+        ssyev_(&jobz, &uplo, &nn, gram, &lda, eigenvalues, work, &lwork, &info);
+        free(work);
+        if (info != 0) {
+            fprintf(stderr, "pgap_compute_svd: ssyev failed info=%d\n", info);
+            free(gram); free(eigenvalues);
+            return;
+        }
+    }
+
+    // Eigenvalues are ascending. Take top-r (from end).
+    // Singular values = sqrt(eigenvalues). Store descending.
+    for (int i = 0; i < r; i++) {
+        float ev = eigenvalues[gram_dim - 1 - i];
+        b->S[i] = (ev > 0) ? sqrtf(ev) : 0.0f;
+    }
+
+    if (use_GGt) {
+        // gram columns (LAPACK column-major) are eigenvectors of G·G^T = left singular vectors U
+        // ssyev stores eigenvectors in columns of gram (column-major, gram_dim=m)
+        // Top-r eigenvectors are last r columns (ascending eigenvalue order)
+        // U[m × r] — extract last r columns, reverse order (largest first)
+        for (int i = 0; i < r; i++) {
+            // Column (gram_dim - 1 - i) of gram (column-major) → column i of U
+            float *src_col = gram + (size_t)(gram_dim - 1 - i) * m;
+            for (int row = 0; row < m; row++) {
+                b->U[row * r + i] = src_col[row];  // Store U row-major
+            }
+        }
+        // Recover V^T: V^T = diag(1/S) · U^T · G
+        // V^T[r × n] = diag(1/S)[r×r] · U^T[r×m] · G[m×n]
+        // First: tmp[r×n] = U^T · G
+        float *tmp = (float*)safe_malloc((size_t)r * n * 4);
+        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                    r, n, m, 1.0f, b->U, r, b->G, n, 0.0f, tmp, n);
+        // Scale each row i by 1/S[i]
+        for (int i = 0; i < r; i++) {
+            float inv_s = (b->S[i] > 1e-10f) ? 1.0f / b->S[i] : 0.0f;
+            for (int j = 0; j < n; j++) {
+                b->Vt[i * n + j] = tmp[i * n + j] * inv_s;
+            }
+        }
+        free(tmp);
+    } else {
+        // gram columns are eigenvectors of G^T·G = right singular vectors V
+        // Vt[r × n] — extract last r columns, reverse, transpose
+        for (int i = 0; i < r; i++) {
+            float *src_col = gram + (size_t)(gram_dim - 1 - i) * n;
+            for (int col = 0; col < n; col++) {
+                b->Vt[i * n + col] = src_col[col];  // Store V^T row-major
+            }
+        }
+        // Recover U: U = G · V · diag(1/S)
+        // U[m × r] = G[m×n] · V[n×r] · diag(1/S)
+        // V[n×r] is Vt transposed
+        float *V_mat = (float*)safe_malloc((size_t)n * r * 4);
+        for (int i = 0; i < r; i++)
+            for (int j = 0; j < n; j++)
+                V_mat[j * r + i] = b->Vt[i * n + j];
+
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                    m, r, n, 1.0f, b->G, n, V_mat, r, 0.0f, b->U, r);
+        // Scale each column i by 1/S[i]
+        for (int i = 0; i < r; i++) {
+            float inv_s = (b->S[i] > 1e-10f) ? 1.0f / b->S[i] : 0.0f;
+            for (int row = 0; row < m; row++) {
+                b->U[row * r + i] *= inv_s;
+            }
+        }
+        free(V_mat);
+    }
+
+    b->has_basis = true;
+    free(gram);
+    free(eigenvalues);
+}
+
+// P-GAP PROJECTION constraint:
+// Given Z_init[r×r], S[r] (diagonal as matrix), compute:
+//   alpha = (<S, Z_init>_F - xi*sqrt(delta)*||S||_F) / (||S||^2_F + 1e-12)
+//   Z = Z_init - alpha * S
+// This ensures <S, Z>_F = xi*sqrt(delta)*||S||_F (gradient alignment)
+static void pgap_project(float *Z_init, const float *S, int r, float xi, float delta) {
+    // S is diagonal stored as vector S[r]. In the r×r matrix view:
+    //   <S_mat, Z>_F = sum_i S[i] * Z[i*r+i]  (only diagonal contributes)
+    //   ||S_mat||_F = sqrt(sum_i S[i]^2)
+    float S_dot_Z = 0, S_norm_sq = 0;
+    for (int i = 0; i < r; i++) {
+        S_dot_Z += S[i] * Z_init[i * r + i];  // diagonal element
+        S_norm_sq += S[i] * S[i];
+    }
+    float S_norm = sqrtf(S_norm_sq);
+    float target = xi * sqrtf(fabsf(delta)) * S_norm;
+    float alpha = (S_dot_Z - target) / (S_norm_sq + 1e-12f);
+
+    // Z_init[i,j] -= alpha * S_mat[i,j]
+    // S_mat is diagonal, so only Z_init[i*r+i] -= alpha * S[i]
+    for (int i = 0; i < r; i++) {
+        Z_init[i * r + i] -= alpha * S[i];
+    }
+}
+
+// Generate perturbation Z_f = U × Z × V^T for one matrix
+// Z_init is r×r, U is [m×r], V^T is [r×n], Z_f is [m×n]
+static void pgap_gen_perturbation(PGAPMatrixBasis *b, float *Z_init) {
+    int m = b->rows, n = b->cols, r = b->svd_r;
+    // tmp[m×r] = U[m×r] × Z_init[r×r]
+    float *tmp = (float*)safe_malloc((size_t)m * r * 4);
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                m, r, r, 1.0f, b->U, r, Z_init, r, 0.0f, tmp, r);
+    // Z_f[m×n] = tmp[m×r] × Vt[r×n]
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                m, n, r, 1.0f, tmp, r, b->Vt, n, 0.0f, b->Z_f, n);
+    free(tmp);
+}
+
 // ===== Perturb ALL model weights using deterministic seed =====
 // NOTE: perturbs `embed` (full VOCAB*DIM), not cembed. Caller must rebuild
 // cembed = vocab_compact_embed(embed, &vm, DIM) before any forward pass.
@@ -428,8 +643,10 @@ int main(int argc, char *argv[]) {
         int lora_rank = 8;
         int fzoo_K = 0;  // FZOO multi-perturbation: 0=disabled (standard MeZO), K>=1=use K directions
         int pgap_r = 0;  // P-GAP: subspace rank (0=disabled, r>0=use r-rank subspace)
-        int pgap_k = 16; // P-GAP: subspace refresh interval (every k steps)
-        int pgap_h = 0;  // P-GAP: probe perturbations for subspace estimation (default: 2*r)
+        int pgap_k = 100; // P-GAP: subspace refresh interval (every k steps) — paper default 100
+        int pgap_h = 10;  // P-GAP: probe perturbations for subspace estimation — paper default 10
+        float pgap_xi = 1.0f;    // P-GAP: alignment strength parameter
+        float pgap_delta0 = 2.0f; // P-GAP: initial delta (decays linearly to 0)
         int probe_gradient = 0; // Diagnostic: probe gradient subspace and report SVD spectrum
         long init_seed = 42;
         int val_every = 500;
@@ -458,6 +675,8 @@ int main(int argc, char *argv[]) {
             else if (strcmp(argv[i], "--pgap") == 0 && i+1 < argc) { pgap_r = atoi(argv[++i]); }
             else if (strcmp(argv[i], "--pgap-k") == 0 && i+1 < argc) { pgap_k = atoi(argv[++i]); }
             else if (strcmp(argv[i], "--pgap-h") == 0 && i+1 < argc) { pgap_h = atoi(argv[++i]); }
+            else if (strcmp(argv[i], "--pgap-xi") == 0 && i+1 < argc) { pgap_xi = atof(argv[++i]); }
+            else if (strcmp(argv[i], "--pgap-delta0") == 0 && i+1 < argc) { pgap_delta0 = atof(argv[++i]); }
             else if (strcmp(argv[i], "--probe-gradient") == 0 && i+1 < argc) { probe_gradient = atoi(argv[++i]); }
         }
 
@@ -1230,30 +1449,67 @@ int main(int argc, char *argv[]) {
         }
 
         // P-GAP defaults and validation
-        if (pgap_r > 0 && pgap_h == 0) pgap_h = 2 * pgap_r;  // default h = 2r
         if (pgap_r > 0 && !lora_split) {
             fprintf(stderr, "ERROR: --pgap requires --lora-split\n");
             return 1;
         }
 
-        // P-GAP state allocation
-        float *pgap_Q_basis = NULL;  // Orthonormal basis [d × r], column-major
-        float *pgap_G_hist  = NULL;  // Gradient history [d × r], column-major
-        float *pgap_z_proj  = NULL;  // Current projected perturbation [d]
-        float *pgap_z_tmp   = NULL;  // Temporary for z extraction [d]
-        size_t pgap_d = 0;
-        int pgap_col = 0;        // Columns filled in G_hist
+        // Faithful P-GAP state: per-matrix SVD bases for all LoRA matrices
+        // Each layer has 8 attention LoRA matrices (Aq,Bq,Ak,Bk,Av,Bv,Ao,Bo)
+        // Plus 2 RMS norm vectors (1D, perturbed with Gaussian, no SVD needed)
+        // Plus rms_final (1D)
+        int pgap_n_mats_per_layer = PGAP_ATTN_MATS;  // 8 for attention-only
+        int pgap_total_mats = pgap_n_mats_per_layer * NLAYERS;
+        PGAPMatrixBasis *pgap_bases = NULL;
+        float *pgap_z_rms = NULL;       // Gaussian perturbation for RMS norms [NLAYERS*2*DIM + DIM]
+        size_t pgap_rms_size = 0;
         bool pgap_basis_ready = false;
+        int pgap_probe_count = 0;       // How many probes accumulated so far
+        size_t pgap_d = 0;              // Total trainable params
+        float *pgap_z_flat = NULL;      // Full flat perturbation vector [pgap_d] for perturb_lora_with_z
 
         if (pgap_r > 0 && lora_split) {
             pgap_d = count_lora_params(lora_layers, NLAYERS);
-            pgap_Q_basis = (float *)safe_calloc(pgap_d * (size_t)pgap_r, 4);
-            pgap_G_hist  = (float *)safe_calloc(pgap_d * (size_t)pgap_r, 4);
-            pgap_z_proj  = (float *)safe_malloc(pgap_d * 4);
-            pgap_z_tmp   = (float *)safe_malloc(pgap_d * 4);
-            printf("P-GAP: r=%d, k=%d, h=%d, d=%zu, mem=%.1fMB\n",
-                   pgap_r, pgap_k, pgap_h, pgap_d,
-                   (double)(pgap_d * pgap_r * 4 * 2 + pgap_d * 4 * 2) / 1e6);
+            pgap_rms_size = (size_t)NLAYERS * 2 * DIM + DIM;
+            pgap_z_rms = (float*)safe_malloc(pgap_rms_size * 4);
+            pgap_z_flat = (float*)safe_malloc(pgap_d * 4);
+
+            // Allocate per-matrix bases
+            pgap_bases = (PGAPMatrixBasis*)safe_calloc(pgap_total_mats, sizeof(PGAPMatrixBasis));
+            size_t total_basis_mem = 0;
+            for (int L = 0; L < NLAYERS; L++) {
+                int r = lora_layers[L].rank;
+                int base = L * PGAP_ATTN_MATS;
+                // Matrix shapes: [rows, cols] for each LoRA matrix
+                int shapes[][2] = {
+                    {r, DIM},    // Aq
+                    {Q_DIM, r},  // Bq
+                    {r, DIM},    // Ak
+                    {KV_DIM, r}, // Bk
+                    {r, DIM},    // Av
+                    {KV_DIM, r}, // Bv
+                    {r, Q_DIM},  // Ao
+                    {DIM, r},    // Bo
+                };
+                for (int mi = 0; mi < PGAP_ATTN_MATS; mi++) {
+                    pgap_bases[base + mi] = pgap_basis_init(shapes[mi][0], shapes[mi][1], pgap_r);
+                    PGAPMatrixBasis *b = &pgap_bases[base + mi];
+                    total_basis_mem += (size_t)b->rows * b->cols * 4  // G
+                        + (size_t)b->rows * b->svd_r * 4             // U
+                        + (size_t)b->svd_r * 4                       // S
+                        + (size_t)b->svd_r * b->cols * 4             // Vt
+                        + (size_t)b->rows * b->cols * 4;             // Z_f
+                }
+            }
+            printf("P-GAP (faithful): svd_r=%d, k=%d, h=%d, xi=%.1f, delta0=%.1f\n",
+                   pgap_r, pgap_k, pgap_h, pgap_xi, pgap_delta0);
+            printf("  %d per-matrix bases (%d layers × %d mats), total_params=%zu\n",
+                   pgap_total_mats, NLAYERS, PGAP_ATTN_MATS, pgap_d);
+            printf("  Basis memory: %.1f MB\n", (double)total_basis_mem / 1e6);
+            // Paper hyperparameters for LoRA: epsilon=0.1, lr=1e-2..5e-2
+            if (epsilon < 0.01f) {
+                printf("  WARNING: P-GAP paper uses epsilon=0.1 for LoRA (current: %g)\n", epsilon);
+            }
         }
 
         // ===== MeZO Training Loop =====
@@ -1413,31 +1669,62 @@ int main(int argc, char *argv[]) {
                            proj_grad, lr, step_ms);
                 }
 
-            } else if (pgap_r > 0 && pgap_basis_ready && (step % pgap_k) >= pgap_r) {
-                // ===== P-GAP: Projected perturbation step =====
-                // Use Q-projected perturbation instead of random Rademacher
+            } else if (pgap_r > 0 && pgap_basis_ready) {
+                // ===== Faithful P-GAP: Per-matrix projected perturbation step =====
+                // For each LoRA matrix: Z_init ~ N(0, I_{r×r}), PROJECTION, Z_f = U×Z×V^T
+                // For RMS norms: z ~ N(0, I)
+                // Concatenate all into flat z vector, SPSA with epsilon
 
-                // Generate projected z: z_proj = Q @ z_small (z_small ∈ {±1}^r)
                 t0 = mach_absolute_time();
+                // Compute delta for this step (linear decay from delta0 to 0)
+                float pgap_delta = pgap_delta0 * (1.0f - (float)(step - start_step) / (float)(total_steps - start_step));
+                if (pgap_delta < 0) pgap_delta = 0;
+
+                // Generate per-matrix perturbations
+                xo_seed(mezo_seed + 31337ULL);
+                for (int L = 0; L < NLAYERS; L++) {
+                    int base = L * PGAP_ATTN_MATS;
+                    for (int mi = 0; mi < PGAP_ATTN_MATS; mi++) {
+                        PGAPMatrixBasis *b = &pgap_bases[base + mi];
+                        int r = b->svd_r;
+                        // Z_init ~ N(0, I_{r×r})
+                        float Z_init[64 * 64];  // max svd_r=8, so 8×8=64 elements
+                        gaussian_fill(Z_init, (size_t)r * r);
+                        // PROJECTION constraint
+                        pgap_project(Z_init, b->S, r, pgap_xi, pgap_delta);
+                        // Z_f = U × Z × V^T
+                        pgap_gen_perturbation(b, Z_init);
+                    }
+                }
+                // Generate Gaussian perturbation for RMS norms
+                gaussian_fill(pgap_z_rms, pgap_rms_size);
+
+                // Assemble flat z vector from per-matrix Z_f + RMS z
                 {
-                    xo_seed(mezo_seed + 31337ULL);
-                    float z_small[16];  // pgap_r ≤ 16
-                    for (int i = 0; i < pgap_r; i++) {
-                        uint64_t rv = xo_next();
-                        z_small[i] = (rv & 1) ? 1.0f : -1.0f;
+                    size_t off = 0;
+                    for (int L = 0; L < NLAYERS; L++) {
+                        int base = L * PGAP_ATTN_MATS;
+                        for (int mi = 0; mi < PGAP_ATTN_MATS; mi++) {
+                            PGAPMatrixBasis *b = &pgap_bases[base + mi];
+                            size_t sz = (size_t)b->rows * b->cols;
+                            memcpy(pgap_z_flat + off, b->Z_f, sz * 4);
+                            off += sz;
+                        }
+                        // rms_att, rms_ffn
+                        memcpy(pgap_z_flat + off, pgap_z_rms + (size_t)L * 2 * DIM, DIM * 4);
+                        off += DIM;
+                        memcpy(pgap_z_flat + off, pgap_z_rms + (size_t)L * 2 * DIM + DIM, DIM * 4);
+                        off += DIM;
                     }
-                    memset(pgap_z_proj, 0, pgap_d * sizeof(float));
-                    for (int i = 0; i < pgap_r; i++) {
-                        cblas_saxpy((int)pgap_d, z_small[i],
-                                    pgap_Q_basis + (size_t)i * pgap_d, 1,
-                                    pgap_z_proj, 1);
-                    }
+                    // rms_final
+                    memcpy(pgap_z_flat + off, pgap_z_rms + (size_t)NLAYERS * 2 * DIM, DIM * 4);
+                    off += DIM;
                 }
                 t_perturb += tb_ms(mach_absolute_time() - t0);
 
-                // 1. Perturb +epsilon using z_proj
+                // 1. Perturb +epsilon using z_flat
                 t0 = mach_absolute_time();
-                perturb_lora_with_z(lora_layers, lw, rms_final, NLAYERS, pgap_z_proj, +epsilon);
+                perturb_lora_with_z(lora_layers, lw, rms_final, NLAYERS, pgap_z_flat, +epsilon);
                 t_perturb += tb_ms(mach_absolute_time() - t0);
 
                 // 2. Forward pass -> loss_plus
@@ -1447,7 +1734,7 @@ int main(int argc, char *argv[]) {
 
                 // 3. Perturb -2*epsilon
                 t0 = mach_absolute_time();
-                perturb_lora_with_z(lora_layers, lw, rms_final, NLAYERS, pgap_z_proj, -2.0f * epsilon);
+                perturb_lora_with_z(lora_layers, lw, rms_final, NLAYERS, pgap_z_flat, -2.0f * epsilon);
                 t_perturb += tb_ms(mach_absolute_time() - t0);
 
                 // 4. Forward pass -> loss_minus
@@ -1457,21 +1744,21 @@ int main(int argc, char *argv[]) {
 
                 // 5. Restore to original theta
                 t0 = mach_absolute_time();
-                perturb_lora_with_z(lora_layers, lw, rms_final, NLAYERS, pgap_z_proj, +epsilon);
+                perturb_lora_with_z(lora_layers, lw, rms_final, NLAYERS, pgap_z_flat, +epsilon);
                 t_perturb += tb_ms(mach_absolute_time() - t0);
 
-                // 6. Gradient estimate + update
+                // 6. Gradient estimate (scalar) + update using same z_flat
                 proj_grad = (loss_plus - loss_minus) / (2.0f * epsilon);
                 float update_scale = -lr * proj_grad;
 
                 t0 = mach_absolute_time();
-                perturb_lora_with_z(lora_layers, lw, rms_final, NLAYERS, pgap_z_proj, update_scale);
+                perturb_lora_with_z(lora_layers, lw, rms_final, NLAYERS, pgap_z_flat, update_scale);
                 t_perturb += tb_ms(mach_absolute_time() - t0);
 
                 // 7. LR schedule
                 float min_lr = base_lr * 0.1f;
-                float decay = (float)(step - start_step) / (float)(total_steps - start_step);
-                lr = min_lr + 0.5f * (1.0f + cosf(M_PI * decay)) * (base_lr - min_lr);
+                float decay_frac = (float)(step - start_step) / (float)(total_steps - start_step);
+                lr = min_lr + 0.5f * (1.0f + cosf(M_PI * decay_frac)) * (base_lr - min_lr);
 
                 double step_ms = tb_ms(mach_absolute_time() - t_step);
                 total_train_ms += step_ms;
@@ -1481,9 +1768,10 @@ int main(int argc, char *argv[]) {
 
                 // 8. Log
                 if (step % 100 == 0 || step == start_step) {
-                    printf("step %d  [P-GAP proj] loss_plus=%.4f  loss_minus=%.4f  proj_grad=%.6f  lr=%.2e  "
-                           "step_ms=%.0f (fwd=%.0f perturb=%.0f)\n",
-                           step, loss_plus, loss_minus, proj_grad, lr, step_ms, t_fwd, t_perturb);
+                    printf("step %d  [P-GAP proj] loss+=%.4f  loss-=%.4f  proj_grad=%.6f  "
+                           "lr=%.2e  delta=%.3f  step_ms=%.0f (fwd=%.0f perturb=%.0f)\n",
+                           step, loss_plus, loss_minus, proj_grad, lr, pgap_delta,
+                           step_ms, t_fwd, t_perturb);
                 }
 
             } else {
@@ -1563,28 +1851,98 @@ int main(int argc, char *argv[]) {
                 // Re-build compact embedding after weight update
                 if (!lora_split) { free(cembed); cembed = vocab_compact_embed(embed, &vm, DIM); }
 
-                // P-GAP: store gradient estimate for basis construction
-                if (pgap_r > 0 && lora_split && (step % pgap_k) < pgap_r) {
-                    int col_idx = step % pgap_k;
+                // Faithful P-GAP probe phase: every pgap_k steps, run h probes
+                // to estimate gradient and build per-matrix SVD bases.
+                // Probes happen on the SAME data batch as the current step.
+                if (pgap_r > 0 && lora_split && (step % pgap_k) == 0 && step > start_step) {
                     t0 = mach_absolute_time();
-                    extract_lora_z(lora_layers, NLAYERS, mezo_seed, pgap_z_tmp);
-                    float *g_col = pgap_G_hist + (size_t)col_idx * pgap_d;
-                    // g = proj_grad * z (gradient estimate = scalar * direction)
-                    for (size_t j = 0; j < pgap_d; j++) {
-                        g_col[j] = proj_grad * pgap_z_tmp[j];
-                    }
-                    t_perturb += tb_ms(mach_absolute_time() - t0);
+                    printf("  [P-GAP probe phase at step %d: h=%d probes...]\n", step, pgap_h);
 
-                    // After collecting pgap_r columns, build orthonormal basis
-                    if (col_idx + 1 == pgap_r) {
-                        t0 = mach_absolute_time();
-                        memcpy(pgap_Q_basis, pgap_G_hist, pgap_d * (size_t)pgap_r * sizeof(float));
-                        gram_schmidt_qr(pgap_Q_basis, pgap_d, pgap_r);
-                        pgap_basis_ready = true;
-                        double qr_ms = tb_ms(mach_absolute_time() - t0);
-                        printf("  [P-GAP basis %s at step %d, QR %.0fms]\n",
-                               step < pgap_r ? "initialized" : "refreshed", step, qr_ms);
+                    // Zero all G matrices
+                    for (int mi = 0; mi < pgap_total_mats; mi++) {
+                        memset(pgap_bases[mi].G, 0, (size_t)pgap_bases[mi].rows * pgap_bases[mi].cols * 4);
                     }
+
+                    // Run h probe perturbations (Gaussian, per paper)
+                    for (int hi = 0; hi < pgap_h; hi++) {
+                        uint64_t probe_seed = mezo_seed + (uint64_t)(hi + 1) * 7777777ULL;
+
+                        // Generate Gaussian perturbation and extract z vector
+                        xo_seed(probe_seed);
+                        size_t off = 0;
+                        for (int L = 0; L < NLAYERS; L++) {
+                            int base_idx = L * PGAP_ATTN_MATS;
+                            for (int mi = 0; mi < PGAP_ATTN_MATS; mi++) {
+                                PGAPMatrixBasis *b = &pgap_bases[base_idx + mi];
+                                size_t sz = (size_t)b->rows * b->cols;
+                                gaussian_fill(pgap_z_flat + off, sz);
+                                off += sz;
+                            }
+                            // RMS norms: Gaussian
+                            gaussian_fill(pgap_z_flat + off, DIM); off += DIM;
+                            gaussian_fill(pgap_z_flat + off, DIM); off += DIM;
+                        }
+                        gaussian_fill(pgap_z_flat + off, DIM); off += DIM;
+
+                        // Perturb +epsilon
+                        perturb_lora_with_z(lora_layers, lw, rms_final, NLAYERS, pgap_z_flat, +epsilon);
+
+                        // Forward pass -> loss_probe_plus
+                        float loss_probe_plus = 0;
+                        DO_FORWARD_PASS(input_tokens, ctargets, loss_probe_plus);
+
+                        // Perturb -2*epsilon
+                        perturb_lora_with_z(lora_layers, lw, rms_final, NLAYERS, pgap_z_flat, -2.0f * epsilon);
+
+                        // Forward pass -> loss_probe_minus
+                        float loss_probe_minus = 0;
+                        DO_FORWARD_PASS(input_tokens, ctargets, loss_probe_minus);
+
+                        // Restore
+                        perturb_lora_with_z(lora_layers, lw, rms_final, NLAYERS, pgap_z_flat, +epsilon);
+
+                        // Scalar gradient estimate
+                        float rho = (loss_probe_plus - loss_probe_minus) / (2.0f * epsilon);
+
+                        // Accumulate per-matrix: G_l += (rho / h) * Q_l
+                        float scale_rho = rho / (float)pgap_h;
+                        off = 0;
+                        for (int L = 0; L < NLAYERS; L++) {
+                            int base_idx = L * PGAP_ATTN_MATS;
+                            for (int mi = 0; mi < PGAP_ATTN_MATS; mi++) {
+                                PGAPMatrixBasis *b = &pgap_bases[base_idx + mi];
+                                size_t sz = (size_t)b->rows * b->cols;
+                                cblas_saxpy((int)sz, scale_rho, pgap_z_flat + off, 1, b->G, 1);
+                                off += sz;
+                            }
+                            off += DIM * 2;  // skip RMS
+                        }
+                        off += DIM;  // skip rms_final
+
+                        if (hi == 0 || hi == pgap_h - 1) {
+                            printf("    probe %d/%d: loss+=%.4f loss-=%.4f rho=%.6f\n",
+                                   hi+1, pgap_h, loss_probe_plus, loss_probe_minus, rho);
+                        }
+                    }
+
+                    // SVD each per-matrix G to get basis (U, S, Vt)
+                    int svd_ok = 0;
+                    for (int mi = 0; mi < pgap_total_mats; mi++) {
+                        pgap_compute_svd(&pgap_bases[mi]);
+                        if (pgap_bases[mi].has_basis) svd_ok++;
+                    }
+                    pgap_basis_ready = (svd_ok == pgap_total_mats);
+
+                    double probe_ms = tb_ms(mach_absolute_time() - t0);
+                    printf("  [P-GAP probe complete: %d/%d SVDs ok, %.0fms, S[0] range: ",
+                           svd_ok, pgap_total_mats, probe_ms);
+                    // Print S[0] range across all bases
+                    float s_min = 1e30f, s_max = 0;
+                    for (int mi = 0; mi < pgap_total_mats; mi++) {
+                        if (pgap_bases[mi].S[0] < s_min) s_min = pgap_bases[mi].S[0];
+                        if (pgap_bases[mi].S[0] > s_max) s_max = pgap_bases[mi].S[0];
+                    }
+                    printf("%.4f..%.4f]\n", s_min, s_max);
                 }
 
                 // 7. Defer re-transpose
@@ -1669,13 +2027,15 @@ int main(int argc, char *argv[]) {
         printf("lr:               %g\n", lr);
         if (use_lora) printf("lora_rank:        %d\n", lora_rank);
         if (fzoo_K > 0) printf("fzoo_K:           %d\n", fzoo_K);
-        if (pgap_r > 0) printf("pgap_r:           %d\npgap_k:           %d\n", pgap_r, pgap_k);
+        if (pgap_r > 0) printf("pgap_r:           %d\npgap_k:           %d\npgap_h:           %d\npgap_xi:          %g\npgap_delta0:      %g\n", pgap_r, pgap_k, pgap_h, pgap_xi, pgap_delta0);
 
         // Cleanup
-        if (pgap_Q_basis) free(pgap_Q_basis);
-        if (pgap_G_hist) free(pgap_G_hist);
-        if (pgap_z_proj) free(pgap_z_proj);
-        if (pgap_z_tmp) free(pgap_z_tmp);
+        if (pgap_bases) {
+            for (int mi = 0; mi < pgap_total_mats; mi++) pgap_basis_free(&pgap_bases[mi]);
+            free(pgap_bases);
+        }
+        if (pgap_z_rms) free(pgap_z_rms);
+        if (pgap_z_flat) free(pgap_z_flat);
         if (lora_tmp) free(lora_tmp);
         if (use_lora) {
             for (int L = 0; L < NLAYERS; L++) lora_layer_free(&lora_layers[L]);
